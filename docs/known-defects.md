@@ -18,7 +18,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Apply for me | 0 | 3 | 9 | 12 |
+| Apply for me | 0 | 4 | 9 | 13 |
 | Mail, Gmail and inboxes | 0 | 4 | 8 | 12 |
 | Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
@@ -26,7 +26,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Scoring, scheduling and configuration | 1 | 2 | 8 | 11 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **28** | **36** | **65** |
+| **Total** | **1** | **29** | **36** | **66** |
 
 ## Start here: the high-severity entries
 
@@ -184,6 +184,13 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** Playwright's `Request.headers` leaves out cookie headers, so a value a page script writes to `document.cookie` rides on the request to the page's own host and is never checked. `leaked_field` does read a `Cookie` header it is given (the pure-function tests in `tests/test_apply_lever_policy.py` show that), but the handler never gives it one. The cookie goes only to the cookie's own domain, which is the ATS's, so the reach is a value written into the ATS's own cookie jar, not another host.
 - **Suggested fix:** Build the facts from `request.all_headers()` and fall back to refusing the request if that fails. Check first on a live run that `all_headers()` returns inside a route handler before the request is sent, since it waits for the browser's extra header info.
 - **Regression suite:** tests/test_apply_agent_browser.py (a page that sets a cookie holding a planned value; the next request to its host is refused)
+
+### A page script can send the attached résumé as text to an address the fill lets writes through
+- **Severity:** medium, privacy (found 2026-10-08, review of the Lever driver)
+- **Where:** `opportunity_app/apply/checks.py` `route_decision()` (the `upload_elsewhere` rule covers a multipart file part and an octet-stream body only), `LEVER_CLOUDFLARE_PATH_PREFIXES`, `LEVER_CAPTCHA_ENDPOINTS`
+- **What happens:** Once the app has put the résumé in the file input, a script on the page can read `input.files[0]` and send it as a base64 or JSON string in a POST to the Cloudflare challenge path of the Lever host or to a recorded hCaptcha host. A compressed PDF or DOCX holds none of the student's words, so the value guard finds nothing, and the request is not a file upload by its form. The same holds for a GET in pieces. `upload_elsewhere` refuses the multipart and octet-stream forms (and ends the run); this one passes. Cloudflare's allowed path is wider than the one beacon path the recording saw (`/cdn-cgi/challenge-platform/h/g/jsd/oneshot/`) because no interstitial has been recorded and its own requests are unseen.
+- **Suggested fix:** After a recording of a Cloudflare interstitial, narrow the allowed writes to the paths it and the beacon use. Refuse a write to these addresses whose body is longer than a beacon needs (a few hundred bytes), or whose bytes decode to the file's digest; or attach the résumé last, after the checks, for the page that does not read it on attach.
+- **Regression suite:** tests/test_apply_lever_browser.py (`GuardTests`: a script that sends `input.files[0]` as text to each allowed write address ends the run)
 
 ### A Lever form over the text budget counts as "1 question" while every question is left to the student
 - **Severity:** low (found 2026-10-08, review of Lever LV2)

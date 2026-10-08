@@ -2017,6 +2017,7 @@ class ApplyAgent:
         if handoff:
             self._resolve_check(frame, problems)
             self._check_managed(frame)
+            self._check_hidden(frame)
         else:
             self._check_problems.extend(problem_dict(problem) for problem in problems)
         self._page_defaults = self._defaults(seen, initial)
@@ -2162,6 +2163,12 @@ class ApplyAgent:
                 self._leave(key, "left_for_you", reason)
             else:
                 self._add_left(key, self._question(key), reason)
+
+    def _check_hidden(self, frame: Any) -> None:
+        """Handoff: a field and the hidden field the page keeps beside it agree (Lever's location, spec 6.8). One that does not leaves a value nobody confirmed in
+        what the form submits, so the run stops before the student's turn."""
+        for key in self.adapter.hidden_mismatch(frame):
+            raise _Stop("needs_you", self._field_took(key))
 
     def _check_managed(self, frame: Any) -> None:
         """Handoff: the fields the page keeps for itself are what they were before the app began (spec 6.10). A change is for the student to look at."""

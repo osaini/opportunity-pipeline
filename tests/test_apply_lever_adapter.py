@@ -261,6 +261,36 @@ class NotReachableInProductionTests(unittest.TestCase):
 
 # --- The names this run's own request rules reach ------------------------------------------------------------------------------------------
 
+class HiddenMismatchTests(unittest.TestCase):
+    """The location field and the hidden ``selectedLocation`` beside it (spec 6.8), with the page's two controls stood in for."""
+
+    PLACE = "Springfield, Example State, United States"
+
+    def frame(self, shown, hidden, present=True):
+        field, box = mock.Mock(), mock.Mock()
+        field.count.return_value = 1 if present else 0
+        field.first.input_value.return_value = shown
+        box.count.return_value = 1
+        box.first.input_value.return_value = hidden
+        frame = mock.Mock()
+        frame.locator.side_effect = lambda selector: box if "selectedLocation" in selector else field
+        return frame
+
+    def test_a_shown_place_needs_the_json_of_an_option_of_that_name_and_an_empty_field_needs_an_empty_hidden_one(self):
+        adapter = LeverAdapter()
+        ok = '{"name": "%s", "id": "p1"}' % self.PLACE
+        self.assertEqual(adapter.hidden_mismatch(self.frame(self.PLACE, ok)), [])
+        self.assertEqual(adapter.hidden_mismatch(self.frame("", "")), [])
+        for shown, hidden in ((self.PLACE, '{"name": "Guessville, Example State, United States"}'), (self.PLACE, ""), (self.PLACE, "not json"), (self.PLACE, "[1]"),
+                              ("", ok)):
+            with self.subTest(shown=shown, hidden=hidden):
+                self.assertEqual(adapter.hidden_mismatch(self.frame(shown, hidden)), ["location"])
+        self.assertEqual(adapter.hidden_mismatch(self.frame("", "", present=False)), [], "a form with no location asks nothing")
+
+    def test_the_other_adapters_have_no_such_pair(self):
+        self.assertEqual(GreenhouseAdapter().hidden_mismatch(mock.Mock()), [])
+
+
 class PlanKeyTests(unittest.TestCase):
     def test_the_four_eeo_controls_are_read_under_the_plans_names_and_every_other_name_is_its_own(self):
         adapter = LeverAdapter()

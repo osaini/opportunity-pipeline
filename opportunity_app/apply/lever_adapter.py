@@ -393,6 +393,16 @@ class LeverAdapter(AdapterBase):
                 found.append(name)
         return found
 
+    def hidden_mismatch(self, frame: Any) -> list[str]:
+        """["location"] when the field and the hidden ``selectedLocation`` beside it disagree: a field that shows a place needs the JSON of an option of that name
+        (spec 6.8), and an empty one needs an empty hidden field. A late write of the page's own reader would leave exactly that."""
+        control = self.control(frame, "location")
+        if not control.count():
+            return []
+        shown = _norm(control.first.input_value())
+        agree = self._selected(frame) == "" if not shown else self._holds(frame, "location", shown)
+        return [] if agree else ["location"]
+
     def cleared(self, frame: Any, key: str) -> bool:
         """The control holds nothing, and for the location neither does the hidden field the page keeps beside it."""
         control = self.control(frame, key)

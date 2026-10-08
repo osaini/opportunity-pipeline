@@ -458,6 +458,17 @@ do not hold it, and `AtsSpec.adapter_built` stays false, so the runner still ans
   `RouteState.student_files_chosen`, so a file the student attaches would be refused and end their turn; both are LV4. The hand-over and the four outcome rows against FakeLever (10.4
   items 6 and 7) are LV4's; the generic hand-over path in `_route` is unchanged and its inputs for Lever are in place. Scrolling a target that the cookie banner covers and trying again
   (6.6) is not built: a covered control is left for the student by the usual failure path. A preflight that checks the shape of Lever's pages (R1) is not built.
+- **After the first review of the driver.** (1) The wait for the read comes right after the file is in the input, before the app looks at the input at all (`_attach_entry`'s `after`): a
+  check of the input that then fails (the page shows the name with its spaces squeezed, or not at all) can no longer let the fill go on while the page's reply is still to come. The file
+  name is compared with spaces read as text reads them. After the fill a last check (`hidden_mismatch`) stops the run if the location and the hidden `selectedLocation` beside it disagree
+  (6.8). (2) A file sent to a CAPTCHA endpoint or Cloudflare's path while the form is filled is refused as `upload_elsewhere` and ends the run like any other refused upload; the hCaptcha
+  endpoints are written only by the methods the recording saw (`Endpoint.methods`: POST to `api`, `api2` and `hcaptcha.com`; the script and frame hosts are only read). Cloudflare's
+  allowed path stays `/cdn-cgi/challenge-platform/`, wider than the one beacon path recorded, because no interstitial has been recorded and its own requests are unseen; the file check
+  above is what closes that path to a file. (3) Each run launches its own browser with the resolver rule of its own ATS (`ApplyAgent.run_launch_options`). (4) The independent check reads
+  the page's `eeo[...]` controls under the plan's names (`plan_key`). (5) The file posted under the attached name rewritten by the page (each run of odd characters one underscore) is
+  not read for a planned value. (6) A Cloudflare check served with 403 or 503 (`cf-mitigated: challenge`, or the title "Just a moment...") is waited for like a 200 with no form (6.3);
+  the page is a challenge whenever a Lever host shows no form and is not `/thanks`, which is wider than 6.3's title or body test. (7) FakeLever's page makes the writes a live one makes
+  as it loads (the three `/checksiteconfig` POSTs and Cloudflare's beacon), and `non_get_requests(noise=False)` leaves out only those.
 
 ### 5.3 The Lever modules
 

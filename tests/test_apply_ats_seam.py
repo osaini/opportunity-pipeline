@@ -280,7 +280,7 @@ class AdapterProtocolTests(unittest.TestCase):
             "form_frame", "detect_page", "loader_paths", "uploads_on_attach", "reads_on_attach", "posting_ids", "lookup_token", "confirmation_ids",
             "security_code_prompt", "security_code_inputs", "captcha_widget",
             "control", "control_kind", "is_react_select", "field_container", "choices", "fill_location", "read_options",
-            "scan", "page_facts", "page_managed", "owns", "plan_key", "is_typeahead", "parse_state", "guessed_fields", "cleared", "refuses",
+            "scan", "page_facts", "page_managed", "owns", "plan_key", "hidden_mismatch", "is_typeahead", "parse_state", "guessed_fields", "cleared", "refuses",
         })
 
     def test_the_agent_calls_nothing_on_its_adapter_that_the_protocol_does_not_name(self):

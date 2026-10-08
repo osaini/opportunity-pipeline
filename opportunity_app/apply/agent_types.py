@@ -255,6 +255,10 @@ class AdapterBase:
         """Whether a control of this name is one the page keeps for itself (never filled, never checked as an answer)."""
         return False
 
+    def hidden_mismatch(self, frame: Any) -> list[str]:
+        """The plan keys of fields whose companion the page keeps out of sight disagrees with what the field shows (read only; none for a page with no such pair)."""
+        return []
+
     def plan_key(self, name: str) -> str:
         """The plan's key for the control the page calls ``name``: the independent check reads every control under it, so it is compared with the plan's entry."""
         return name

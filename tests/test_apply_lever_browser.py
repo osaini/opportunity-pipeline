@@ -340,6 +340,15 @@ class ReadStartedTests(LeverCase):
         self.assertEqual(self.entries(run)["resume"]["disposition"], "fill")
         self.assert_the_form_is_the_students(forms)
 
+    def test_a_hidden_location_that_stops_agreeing_with_the_visible_one_before_the_turn_stops_the_run(self):
+        fake = FakeLever()
+        # Something on the page rewrites the hidden field after the app has chosen the place, when the app clears the reader's guess in another field.
+        fake.inject.append(script("""document.querySelector('[name="org"]').addEventListener('change', function () {
+            document.querySelector('[name="selectedLocation"]').value = JSON.stringify({name: 'Guessville, Example State, United States', id: 'x'}); });"""))
+        run = self.go(fake)
+        self.assertEqual((run.result.outcome, run.result.after_click, run.result.handed_over), ("needs_you", False, False))
+        self.assertEqual(run.result.reasons, ['The field "Current location" did not take the answer'])
+
     def test_a_check_of_the_input_that_fails_after_the_file_went_still_waits_for_the_read(self):
         fake = FakeLever()
         fake.parse_delay_s = 1.5
