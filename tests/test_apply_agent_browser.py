@@ -1320,6 +1320,11 @@ class MaskingTests(AgentCase):
 
 @requires_chromium
 class LaunchTests(AgentCase):
+    @staticmethod
+    def expected(headless):
+        """The options a Greenhouse run launches with: the switches, and a resolver rule of Greenhouse's names, the fonts and the test's own lookup host."""
+        return ApplyAgent(mode="lookup", adapter=GreenhouseAdapter(), headless=headless, lookup_endpoints=fakes.FIXTURE_LOOKUP).run_launch_options()
+
     def recorded(self, headless):
         calls = {}
         real_launch, real_context = apply_agent._launch_browser, apply_agent._new_context
@@ -1339,14 +1344,14 @@ class LaunchTests(AgentCase):
 
     def test_the_browser_is_launched_with_the_options_the_agent_declares_and_nothing_else(self):
         calls = self.recorded(True)
-        self.assertEqual(calls["launch"], ApplyAgent.launch_options(True))
+        self.assertEqual(calls["launch"], self.expected(True))
         self.assertEqual(calls["context"], ApplyAgent.context_options())
 
     @requires_headed
     def test_a_visible_window_opens_the_same_way(self):
         calls = self.recorded(False)
-        self.assertEqual(calls["launch"], ApplyAgent.launch_options(False))
-        self.assertEqual(calls["launch"], {"headless": False, "args": list(apply_agent.LAUNCH_ARGS)}, "a visible window, and the same switches as the headless one")
+        self.assertEqual(calls["launch"], self.expected(False))
+        self.assertEqual(calls["launch"]["args"][:2], list(apply_agent.LAUNCH_SWITCHES), "a visible window, and the same switches as the headless one")
         self.assertEqual(calls["context"], ApplyAgent.context_options())
 
 

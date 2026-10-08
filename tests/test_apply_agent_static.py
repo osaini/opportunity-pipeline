@@ -205,7 +205,7 @@ CDP_SESSION_OWNER = ("apply/agent.py", "_watch_presses")
 CDP_METHODS = {
     "Page.enable": None, "Runtime.enable": None,
     "Runtime.addBinding": ("name", "PRESS_BINDING"),
-    "Page.addScriptToEvaluateOnNewDocument": ("source", "PRESS_LISTENER"),
+    "Page.addScriptToEvaluateOnNewDocument": ("source", "listener"),
 }
 CDP_RECEIVERS = frozenset({"cdp", "_cdp", "session"})
 _CDP_METHOD_SHAPE = re.compile(r"^[A-Z][A-Za-z]+\.[a-z][A-Za-z]+$")
@@ -491,7 +491,7 @@ class MutationTests(unittest.TestCase):
             "def _start(self):\n    self._context.add_init_script(NO_SIDE_CHANNELS)\n",
             "def _watch_presses(self):\n    cdp = self._context.new_cdp_session(self._page)\n    cdp.send('Page.enable')\n    cdp.send('Runtime.enable')\n"
             "    cdp.send('Runtime.addBinding', {'name': PRESS_BINDING, 'executionContextName': PRESS_WORLD})\n"
-            "    cdp.send('Page.addScriptToEvaluateOnNewDocument', {'source': PRESS_LISTENER, 'worldName': PRESS_WORLD, 'runImmediately': True})\n",
+            "    cdp.send('Page.addScriptToEvaluateOnNewDocument', {'source': listener, 'worldName': PRESS_WORLD, 'runImmediately': True})\n",
             "def f(outbox, message):\n    outbox.send(message)\n",
             "def _launch_browser(playwright, **options):\n    return playwright.chromium.launch(**options)\n",
             "def _new_context(browser, **options):\n    return browser.new_context(**options)\n",
@@ -676,7 +676,8 @@ class LaunchIsPlain(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"playwright": mock.MagicMock(), "playwright.sync_api": fake_module}), \
                 mock.patch.object(apply_agent, "_launch_browser", launch):
             agent._start()
-        self.assertEqual(calls["launch"], ApplyAgent.launch_options(True))
+        self.assertEqual(calls["launch"], agent.run_launch_options())
+        self.assertEqual(calls["launch"]["args"][:2], self.ARGS[:2])
         self.assertEqual(calls["context"], ApplyAgent.context_options())
         self.assertEqual(calls["init_script"], apply_agent.NO_SIDE_CHANNELS, "the channels that skip the route handler are removed in every frame before a page script runs")
         for name in SIDE_CHANNELS:

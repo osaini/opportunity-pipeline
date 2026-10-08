@@ -7,8 +7,10 @@ address is fictional.
 
 import fnmatch
 import hashlib
+import json
 import sys
 import unittest
+import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -81,6 +83,15 @@ def state(**fields):
     return RouteState(**base)
 
 
+# The planned file of the file-leaving tests holds none of the student's values, as a compressed file does not: only its bytes can give it away.
+PLANNED = zlib.compress(b"a fictional file with nothing of the student in it " * 9)
+PLANNED_SHA = hashlib.sha256(PLANNED).hexdigest()
+
+
+def planned(**fields):
+    return state(**{"resume_sha256": PLANNED_SHA, **fields})
+
+
 def decide(phase, facts, st=None, mode="handoff"):
     return route_decision(mode, phase, facts, st if st is not None else state(), POLICY)
 
@@ -123,13 +134,19 @@ class PolicyValuesTests(Cases):
         self.assertIs(POLICY.captcha_endpoints, checks.LEVER_CAPTCHA_ENDPOINTS)
         self.assertEqual(set(checks.LEVER_CAPTCHA_RESOLVABLE_HOSTS), {e.host for e in checks.LEVER_CAPTCHA_ENDPOINTS})
 
+    def test_each_captcha_endpoint_is_written_by_the_methods_the_recording_saw_and_no_others(self):
+        recorded = json.loads((Path(__file__).resolve().parent / "fixtures" / "apply" / "lever" / "endpoints.json").read_text(encoding="utf-8"))["captcha_endpoints"]
+        self.assertEqual({e.host: set(e.methods) for e in POLICY.captcha_endpoints}, {e["host"]: set(e["methods"]) for e in recorded})
+
     def test_the_hcaptcha_widgets_posts_at_load_are_allowed_to_the_hosts_it_posts_to_and_to_no_other_path_of_its_frame_host(self):
         for phase in (FILL, STUDENT):
             for host in ("api.hcaptcha.com", "api2.hcaptcha.com", "hcaptcha.com"):
                 with self.subTest(phase=phase, host=host):
                     self.assertAllowed(decide(phase, request("POST", host, "/checksiteconfig", query="v=1&host=jobs.lever.co", body=b"{}")), "captcha")
             with self.subTest(phase=phase, host="newassets.hcaptcha.com"):
-                self.assertAllowed(decide(phase, request("POST", "newassets.hcaptcha.com", "/captcha/v1/log", body=b"{}")), "captcha")
+                # The recording saw only GETs to the frame host and to the script host (spec 11, Q3): neither is written to.
+                self.assertAborted(decide(phase, request("POST", "newassets.hcaptcha.com", "/captcha/v1/log", body=b"{}")), "non_get_before_hand_over")
+                self.assertAborted(decide(phase, request("POST", "js.hcaptcha.com", "/1/log", body=b"{}")), "non_get_before_hand_over")
                 self.assertAborted(decide(phase, request("POST", "newassets.hcaptcha.com", "/elsewhere", body=b"{}")), "non_get_before_hand_over")
 
     def test_the_other_lists_and_flags(self):
@@ -140,6 +157,7 @@ class PolicyValuesTests(Cases):
         # Bugsnag's own host is bugs.lever.co (a lever.co host, named exactly), and the "Apply with LinkedIn" widget some boards load posts to LinkedIn.
         self.assertEqual(set(POLICY.telemetry_hosts), {"googletagmanager.com", "google-analytics.com", "bugsnag.com", "bugs.lever.co", "linkedin.com"})
         self.assertIs(POLICY.outcome_table, checks.lever_outcome)
+        self.assertTrue(POLICY.no_files_before_press)
 
     def test_greenhouse_has_none_of_it(self):
         greenhouse = checks.GREENHOUSE_ROUTE_POLICY
@@ -147,6 +165,21 @@ class PolicyValuesTests(Cases):
                          ((), "", (), False, None))
         self.assertIs(type(greenhouse.telemetry_hosts), frozenset)
         self.assertFalse(greenhouse.is_challenge_request("boards.greenhouse.io", "/cdn-cgi/challenge-platform/x"))
+        self.assertFalse(greenhouse.no_files_before_press)
+
+    def test_greenhouses_captcha_writes_keep_the_answers_they_had_the_stricter_file_rules_are_lever_s(self):
+        # reCAPTCHA's own requests are protobuf; the rule that refuses a body of an odd declared type, and the one that refuses a file in the student's turn
+        # before their press, are read from the policy and belong to the ATS whose widget was recorded (Lever's).
+        gh = checks.GREENHOUSE_ROUTE_POLICY
+        protobuf = request("POST", "www.recaptcha.net", "/recaptcha/enterprise/reload", body=bytes([10, 2, 97, 98]), headers={"Content-Type": "application/x-protobuf"})
+        file_form = request("POST", "www.recaptcha.net", "/recaptcha/enterprise/x", body=multipart(("file", "a.pdf", "application/pdf", PLANNED)), headers=form_headers())
+        st = lambda: RouteState(submit_path="/applications", values=dict(VALUES))
+        for phase, facts, expected in (
+            (FILL, protobuf, "captcha"), (STUDENT, protobuf, "captcha"), (STUDENT, file_form, "captcha"), (FILL, file_form, "upload_elsewhere"),
+        ):
+            with self.subTest(phase=phase, path=facts.url):
+                decision = route_decision("handoff", phase, facts, st(), gh)
+                self.assertEqual(decision.rule, expected)
 
     def test_a_domain_set_holds_the_domain_and_every_subdomain_and_nothing_that_only_ends_the_same(self):
         telemetry = POLICY.telemetry_hosts
@@ -274,10 +307,97 @@ class BeforeHandOverCellTests(Cases):
 
     def test_a_write_to_a_captcha_endpoint_is_allowed(self):
         for phase in self.PHASES:
-            for host, path in (("hcaptcha.com", "/checkcaptcha/x"), ("api.hcaptcha.com", "/getcaptcha/y"), ("js.hcaptcha.com", "/1/z")):
-                for method in ("POST", "PUT"):
-                    with self.subTest(phase=phase, host=host, method=method):
-                        self.assertAllowed(decide(phase, request(method, host, path, body=b"{}")), "captcha")
+            for host, path in (("hcaptcha.com", "/checkcaptcha/x"), ("api.hcaptcha.com", "/getcaptcha/y"), ("api2.hcaptcha.com", "/checksiteconfig")):
+                with self.subTest(phase=phase, host=host):
+                    self.assertAllowed(decide(phase, request("POST", host, path, body=b"{}")), "captcha")
+                with self.subTest(phase=phase, host=host, method="PUT"):
+                    self.assertAborted(decide(phase, request("PUT", host, path, body=b"{}")), "non_get_before_hand_over")
+            for host, path in (("js.hcaptcha.com", "/1/z"), ("newassets.hcaptcha.com", "/captcha/v1/z")):
+                with self.subTest(phase=phase, host=host, where="a host that was only read from"):
+                    self.assertAborted(decide(phase, request("POST", host, path, body=b"{}")), "non_get_before_hand_over")
+
+    def test_a_file_sent_to_a_captcha_endpoint_or_cloudflares_path_during_the_fill_is_refused_as_an_upload_and_the_students_turn_is_left_as_it_was(self):
+        """The attached résumé is in the input, and a script can post it anywhere a write is allowed. A compressed file holds none of the student's words, so
+        the value guard cannot see it; the kind of request does (spec 6.9, 7)."""
+        compressed = zlib.compress(b"a fictional resume with nothing in it the guard could find " * 8)
+        file_body = multipart(("file", "a.pdf", "application/pdf", compressed))
+        sends = (
+            {"headers": form_headers(), "body": file_body},
+            {"headers": {"Content-Type": "application/octet-stream"}, "body": compressed},
+            {"headers": form_headers()},   # a multipart body nobody can read is treated as holding a file
+        )
+        targets = [(host, path) for host, path in (("hcaptcha.com", "/x"), ("api.hcaptcha.com", "/x"), ("api2.hcaptcha.com", "/x"))]
+        targets += [(host, "/cdn-cgi/challenge-platform/h/g/jsd/oneshot/x") for host in (HOST, EU)]
+        for host, path in targets:
+            for send in sends:
+                for resume_allowed in (True, False):
+                    with self.subTest(host=host, content_type=send["headers"]["Content-Type"][:20], resume_upload_allowed=resume_allowed):
+                        facts = request("POST", host, path, **send)
+                        self.assertTrue(checks.is_upload(facts))
+                        self.assertAborted(decide(FILL, facts, state(resume_upload_allowed=resume_allowed)), "upload_elsewhere")
+            with self.subTest(host=host, phase="the student's turn, before their first press"):
+                self.assertAborted(decide(STUDENT, request("POST", host, path, **sends[0])), "upload_elsewhere")
+            with self.subTest(host=host, phase="the student's turn, after their press: hCaptcha runs now, and a file of the student's own choosing is left as it was"):
+                self.assertAllowed(decide(STUDENT, request("POST", host, path, **sends[0]), state(last_press_at=1.0)))
+
+    def targets(self):
+        found = [(host, "/x") for host in ("hcaptcha.com", "api.hcaptcha.com", "api2.hcaptcha.com")]
+        return found + [(host, "/cdn-cgi/challenge-platform/h/g/jsd/oneshot/x") for host in (HOST, EU)]
+
+    def test_the_planned_file_as_the_raw_body_of_a_write_is_refused_whatever_type_it_claims_and_whatever_the_phase(self):
+        """``fetch(address, {method: 'POST', body: input.files[0]})`` sends the file's own bytes under the file's own type. Neither the shape nor the type
+        says file; the bytes do (the digest the plan holds)."""
+        for host, path in self.targets():
+            for content_type in ("application/pdf", "text/plain", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", None):
+                headers = {"Content-Type": content_type} if content_type else {}
+                for phase, st in ((FILL, planned()), (FILL, planned(resume_upload_allowed=False)), (STUDENT, planned()), (STUDENT, planned(last_press_at=1.0)), (AFTER, planned(submit_posts_passed=1))):
+                    with self.subTest(host=host, content_type=content_type, phase=phase, press=st.last_press_at):
+                        self.assertAborted(decide(phase, request("POST", host, path, body=PLANNED, headers=headers), st), "upload_elsewhere")
+
+    def test_a_part_of_a_form_that_is_the_planned_file_is_refused_with_or_without_a_file_name(self):
+        for host, path in self.targets():
+            for parts in (
+                (("file", "x.pdf", "application/pdf", PLANNED),),
+                (("note", None, "", PLANNED),),
+                (("a", None, "", b"1"), ("blob", "blob", "", PLANNED)),
+            ):
+                for phase, st in ((FILL, planned()), (STUDENT, planned(last_press_at=1.0))):
+                    with self.subTest(host=host, phase=phase, parts=[part[0] for part in parts]):
+                        facts = request("POST", host, path, body=multipart(*parts), headers=form_headers())
+                        self.assertAborted(decide(phase, facts, st), "upload_elsewhere")
+
+    def test_a_body_of_a_kind_no_form_or_beacon_writes_is_a_file_in_the_fill_and_before_the_students_first_press(self):
+        for host, path in self.targets():
+            for content_type in ("application/pdf", "image/png", "application/zip", "application/gzip", "application/vnd.ms-word"):
+                for phase, st, expected in (
+                    (FILL, planned(), "upload_elsewhere"), (STUDENT, planned(), "upload_elsewhere"), (STUDENT, planned(last_press_at=1.0), None), (AFTER, planned(submit_posts_passed=1), None),
+                ):
+                    with self.subTest(host=host, content_type=content_type, phase=phase, press=st.last_press_at):
+                        facts = request("POST", host, path, body=PLANNED[::-1], headers={"Content-Type": content_type})
+                        if expected:
+                            self.assertAborted(decide(phase, facts, st), expected)
+                        else:
+                            self.assertAllowed(decide(phase, facts, st))
+
+    def test_what_the_forms_hcaptcha_and_cloudflare_write_is_never_taken_for_a_file(self):
+        for host, path in self.targets():
+            for content_type, body in (
+                ("application/json", b'{"sitekey":"x"}'), ("application/json;charset=UTF-8", b"{}"), ("application/x-www-form-urlencoded", b"a=1&b=2"), ("text/plain;charset=UTF-8", b"ok"),
+                ("application/reports+json", b"[]"), (None, b"\x00\x01"), ("text/plain", b""),
+            ):
+                headers = {"Content-Type": content_type} if content_type else {}
+                for phase, st in ((FILL, planned()), (STUDENT, planned()), (STUDENT, planned(last_press_at=1.0))):
+                    with self.subTest(host=host, content_type=content_type, phase=phase):
+                        self.assertAllowed(decide(phase, request("POST", host, path, body=body, headers=headers), st), "challenge" if path.startswith("/cdn-cgi") else "captcha")
+
+    def test_with_no_planned_file_there_is_no_digest_to_compare_and_the_type_check_still_holds(self):
+        st = planned(resume_sha256="")
+        self.assertAllowed(decide(FILL, request("POST", "hcaptcha.com", "/x", body=b"", headers={"Content-Type": "application/json"}), st), "captcha")
+        self.assertAborted(decide(FILL, request("POST", "hcaptcha.com", "/x", body=PLANNED, headers={"Content-Type": "application/pdf"}), st), "upload_elsewhere")
+
+    def test_a_write_that_is_not_a_file_still_reaches_those_places_in_the_fill(self):
+        self.assertAllowed(decide(FILL, request("POST", "api.hcaptcha.com", "/checksiteconfig", body=b"{}", headers={"Content-Type": "application/json"})), "captcha")
+        self.assertAllowed(decide(FILL, request("POST", HOST, "/cdn-cgi/challenge-platform/h/g/jsd/oneshot/x", body=b"\x00\x01")), "challenge")
 
     def test_a_write_to_cloudflares_challenge_path_is_allowed_on_either_lever_host(self):
         for phase in self.PHASES:
@@ -666,6 +786,19 @@ class ResumePostConditionTests(Cases):
         # ...but only that exact name: with none planned, or any other, the name is read like the rest.
         self.assertAborted(decide(FILL, resume_request(), state(resume_file_name="")), "value_guard")
         self.assertAborted(decide(FILL, resume_request(body=resume_body(filename="Samantha_Rivera_Resume (2).pdf"))), "value_guard")
+
+    def test_the_fill_lets_the_attached_name_pass_as_the_page_posts_it_with_each_run_of_odd_characters_made_one_underscore(self):
+        # The page sanitizes the name it posts (the stand-in turns each run of characters outside letters, digits, dot, underscore and hyphen into one underscore).
+        # A name that holds a planned value is still the planned file, and only the attached name and that one rewriting of it are let through.
+        attached = "Resume 555-0100.pdf"
+        st = state(values={**VALUES, "phone": "555-0100"}, resume_file_name=attached)
+        self.assertAllowed(decide(FILL, resume_request(body=resume_body(filename=attached)), st), "resume_upload")
+        self.assertAllowed(decide(FILL, resume_request(body=resume_body(filename="Resume_555-0100.pdf")), st), "resume_upload")
+        self.assertAllowed(decide(FILL, resume_request(body=resume_body(filename="Sam  Rivera (cv).pdf")), state(resume_file_name="Sam  Rivera (cv).pdf")), "resume_upload")
+        for other in ("Resume_555-0100_2.pdf", "Resume-555-0100.pdf", "555-0100.pdf", "Resume 555-0100 .pdf"):
+            with self.subTest(filename=other):
+                self.assertAborted(decide(FILL, resume_request(body=resume_body(filename=other)), st), "value_guard")
+        self.assertAborted(decide(FILL, resume_request(body=resume_body(filename="Resume_555-0100.pdf")), state(values={**VALUES, "phone": "555-0100"}, resume_file_name="")), "value_guard")
 
     def test_a_plain_file_name_and_type_pass_in_the_fill(self):
         self.assertAllowed(decide(FILL, resume_request(body=resume_body(filename="cv.pdf", content_type="application/vnd.example"))), "resume_upload")

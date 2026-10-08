@@ -4,6 +4,7 @@ is in tests/test_apply_lever_browser.py. Every company, person and address is fi
 """
 
 import ast
+import fnmatch
 import inspect
 import json
 import re
@@ -29,6 +30,8 @@ from opportunity_app.apply import agent_types
 from opportunity_app.apply import ats as apply_ats
 from opportunity_app.apply import lever, lever_adapter
 from opportunity_app.apply.agent import ApplyAgent, GreenhouseAdapter
+from opportunity_app.apply.checks import GREENHOUSE_ROUTE_POLICY, LEVER_ROUTE_POLICY, Endpoint
+from opportunity_app.apply.greenhouse import BOARD_HOSTS
 from opportunity_app.apply.lever_adapter import DENYLIST, PARSER_FIELDS, PARSER_PREFIX, LeverAdapter
 
 ADAPTER_PATH = "apply/lever_adapter.py"
@@ -171,6 +174,42 @@ class ConstantsTests(unittest.TestCase):
         self.assertEqual(lever_adapter.PAGE_SETS, frozenset({"resumeStorageId"}))
 
 
+# --- The student's press, seen on each ATS's own page ------------------------------------------------------------------------------------
+
+class PressListenerTests(unittest.TestCase):
+    """``PRESS_LISTENER`` was Greenhouse's alone: on Lever the student's press was never seen, so the strict file reading stayed on through hCaptcha's check."""
+
+    def test_lever_s_listener_names_lever_s_hosts_and_the_visible_submit_button_only(self):
+        source = apply_agent.press_listener(LEVER_ROUTE_POLICY.navigation_hosts, LeverAdapter.press_selector)
+        self.assertEqual(LeverAdapter.press_selector, "#btn-submit, #hcaptchaSubmitBtn")
+        for host in lever.LEVER_HOSTS:
+            self.assertIn(f'"{host}"', source)
+        self.assertNotIn("greenhouse", source)
+        self.assertIn("event.isTrusted", source, "a click the page makes itself would count as the student's")
+
+    def test_greenhouse_s_listener_is_still_its_boards_and_its_form_s_submit_control(self):
+        source = apply_agent.press_listener(GREENHOUSE_ROUTE_POLICY.navigation_hosts, GreenhouseAdapter.press_selector)
+        for host in BOARD_HOSTS:
+            self.assertIn(f'"{host}"', source)
+        self.assertNotIn("lever", source)
+        self.assertIn("form#application-form button[type='submit']", GreenhouseAdapter.press_selector)
+        self.assertIn("#application_form #submit_app", GreenhouseAdapter.press_selector)
+
+    def test_an_adapter_that_names_no_submit_control_reports_no_press(self):
+        self.assertEqual(agent_types.AdapterBase.press_selector, "")
+        self.assertIn('const submit = "";', apply_agent.press_listener(["jobs.lever.co"], ""))
+        self.assertIn("if (!submit ||", apply_agent.press_listener(["jobs.lever.co"], ""))
+
+    def test_the_selector_and_hosts_are_written_as_literals_whatever_they_hold(self):
+        source = apply_agent.press_listener(['a".b', "c"], 'x"); alert(1); ("')
+        self.assertIn(json.dumps(['a".b', "c"]), source)
+        self.assertIn(json.dumps('x"); alert(1); ("'), source)
+
+    def test_the_agent_builds_the_listener_from_its_policy_s_hosts_and_its_adapter_s_selector(self):
+        text = helpers_source.apply_modules()["apply/agent.py"]
+        self.assertIn("press_listener(self._policy.navigation_hosts, self.adapter.press_selector,", text)
+
+
 # --- 10.5: static scans, through tests/helpers_source.py (a directory, never one file) ---------------------------------------------------
 
 class StaticScanTests(unittest.TestCase):
@@ -262,6 +301,47 @@ class ReachableByOnePlaceTests(unittest.TestCase):
 
 # --- The names this run's own request rules reach ------------------------------------------------------------------------------------------
 
+class HiddenMismatchTests(unittest.TestCase):
+    """The location field and the hidden ``selectedLocation`` beside it (spec 6.8), with the page's two controls stood in for."""
+
+    PLACE = "Springfield, Example State, United States"
+
+    def frame(self, shown, hidden, present=True):
+        field, box = mock.Mock(), mock.Mock()
+        field.count.return_value = 1 if present else 0
+        field.first.input_value.return_value = shown
+        box.count.return_value = 1
+        box.first.input_value.return_value = hidden
+        frame = mock.Mock()
+        frame.locator.side_effect = lambda selector: box if "selectedLocation" in selector else field
+        return frame
+
+    def test_a_shown_place_needs_the_json_of_an_option_of_that_name_and_an_empty_field_needs_an_empty_hidden_one(self):
+        adapter = LeverAdapter()
+        ok = '{"name": "%s", "id": "p1"}' % self.PLACE
+        self.assertEqual(adapter.hidden_mismatch(self.frame(self.PLACE, ok)), [])
+        self.assertEqual(adapter.hidden_mismatch(self.frame("", "")), [])
+        for shown, hidden in ((self.PLACE, '{"name": "Guessville, Example State, United States"}'), (self.PLACE, ""), (self.PLACE, "not json"), (self.PLACE, "[1]"),
+                              ("", ok)):
+            with self.subTest(shown=shown, hidden=hidden):
+                self.assertEqual(adapter.hidden_mismatch(self.frame(shown, hidden)), ["location"])
+        self.assertEqual(adapter.hidden_mismatch(self.frame("", "", present=False)), [], "a form with no location asks nothing")
+
+    def test_the_other_adapters_have_no_such_pair(self):
+        self.assertEqual(GreenhouseAdapter().hidden_mismatch(mock.Mock()), [])
+
+
+class PlanKeyTests(unittest.TestCase):
+    def test_the_four_eeo_controls_are_read_under_the_plans_names_and_every_other_name_is_its_own(self):
+        adapter = LeverAdapter()
+        self.assertEqual(
+            [adapter.plan_key(name) for name in ("eeo[gender]", "eeo[race]", "eeo[veteran]", "eeo[disability]")], ["gender", "race", "veteran_status", "disability_status"],
+        )
+        for name in ("name", "eeo[disabilitySignature]", "cards[a][field0]", "urls[LinkedIn]"):
+            self.assertEqual(adapter.plan_key(name), name)
+        self.assertEqual(GreenhouseAdapter().plan_key("eeo[gender]"), "eeo[gender]")
+
+
 class ResolvableForARunTests(unittest.TestCase):
     LEVER_ONLY = ("jobs.lever.co", "jobs.eu.lever.co", "js.hcaptcha.com", "api.hcaptcha.com", "api2.hcaptcha.com", "hcaptcha.com", "newassets.hcaptcha.com",
                   "cdn.lever.co", "lever-client-logos.s3.amazonaws.com")
@@ -285,6 +365,28 @@ class ResolvableForARunTests(unittest.TestCase):
         for host in self.LEVER_ONLY:
             with self.subTest(host=host):
                 self.assertFalse(agent._resolvable(host))
+
+    @staticmethod
+    def looked_up(agent):
+        """The names the browser of this run can look up: the ones its launch switch excludes from failing."""
+        (rule,) = [arg for arg in agent.run_launch_options()["args"] if arg.startswith("--host-resolver-rules=")]
+        return {part.strip().removeprefix("EXCLUDE ") for part in rule.split(" , ")[1:]}
+
+    def test_the_browser_a_greenhouse_run_launches_can_look_up_none_of_the_names_only_lever_needs(self):
+        names = self.looked_up(ApplyAgent(mode="handoff", adapter=GreenhouseAdapter()))
+        self.assertTrue({"boards.greenhouse.io", "www.recaptcha.net", "fonts.gstatic.com"} <= names, names)
+        self.assertEqual(names & set(self.LEVER_ONLY), set())
+
+    def test_the_browser_a_lever_run_launches_can_look_up_none_of_the_names_only_greenhouse_needs(self):
+        names = self.looked_up(ApplyAgent(mode="handoff", adapter=LeverAdapter()))
+        self.assertTrue(set(self.LEVER_ONLY) | {"fonts.gstatic.com"} <= names, names)
+        for host in self.GREENHOUSE_ONLY:
+            with self.subTest(host=host):
+                self.assertFalse(any(fnmatch.fnmatchcase(host, pattern) for pattern in names), host)
+
+    def test_a_test_pages_own_lookup_hosts_are_looked_up_too(self):
+        agent = ApplyAgent(mode="lookup", adapter=GreenhouseAdapter(), lookup_endpoints=(Endpoint("lookup.example-robotics.test", "/places", "location"),))
+        self.assertIn("lookup.example-robotics.test", self.looked_up(agent))
 
     def test_the_browsers_one_resolver_rule_holds_the_names_of_both(self):
         for host in (*self.LEVER_ONLY, *(name for name in self.GREENHOUSE_ONLY if "?" not in name and not name.startswith("s12"))):
@@ -351,15 +453,21 @@ class StudentFileSignalTests(unittest.TestCase):
         agent._on_binding({"name": "somebodyElse", "payload": "file"})
         self.assertEqual(agent._state.student_files_chosen, 0)
 
-    def test_the_listener_runs_on_both_boards_and_counts_only_a_trusted_change_of_a_file_box_in_the_application_form(self):
-        source = apply_agent.PRESS_LISTENER
-        for host in (*lever.LEVER_HOSTS, "job-boards.greenhouse.io", "boards.greenhouse.io"):
+    def test_the_listener_counts_only_a_trusted_change_of_a_file_box_in_the_application_form_and_only_on_a_board_whose_page_reads_a_file_at_once(self):
+        source = apply_agent.press_listener(LEVER_ROUTE_POLICY.navigation_hosts, LeverAdapter.press_selector, LEVER_ROUTE_POLICY.navigation_hosts)
+        for host in lever.LEVER_HOSTS:
             self.assertIn(f'"{host}"', source)
         self.assertEqual(source.count("isTrusted"), 2, "each of the two kinds of event is checked for the browser's own mark")
         reads = re.search(r"const filesRead = (\[[^\]]*\])\.indexOf", source)
         self.assertEqual(sorted(json.loads(reads.group(1))), sorted(lever.LEVER_HOSTS), "only a board whose page reads a file at once has its files looked at")
         self.assertIn("box.type === 'file'", source)
         self.assertIn("form#application-form", source)
+        greenhouse = apply_agent.press_listener(GREENHOUSE_ROUTE_POLICY.navigation_hosts, GreenhouseAdapter.press_selector)
+        self.assertEqual(json.loads(re.search(r"const filesRead = (\[[^\]]*\])\.indexOf", greenhouse).group(1)), [], "a Greenhouse page's files are never opened")
+
+    def test_the_agent_names_file_hosts_only_when_its_policy_has_a_resume_post_path(self):
+        text = helpers_source.apply_modules()["apply/agent.py"]
+        self.assertIn("self._policy.navigation_hosts if self._policy.resume_post_path else ()", text)
 
     def test_an_unasked_read_waits_no_grace_when_it_cannot_be_the_students(self):
         for agent in (self.agent(phase=apply_agent.PHASE_FILL), self.agent(GreenhouseAdapter(), phase=apply_agent.PHASE_STUDENT)):

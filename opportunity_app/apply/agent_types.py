@@ -305,6 +305,7 @@ class AdapterBase:
     waits_for_challenge = False           # a visible CAPTCHA challenge while the app fills makes it stop, touch nothing and wait for the student
     required_from_load = False            # which controls are required is read from the page as it loaded (its script drops ``required`` from every box once one is ticked)
     page_sentences: dict[str, str] = {}   # a kind of page ``detect_page`` answers -> the sentence a run ends with (needs_you) when it finds it
+    press_selector = ""                   # the CSS selector of the form's Submit control: the press listener reports a trusted click inside it ("" reports none)
 
     def scan(self, frame: Any) -> list[dict[str, Any]]:
         raise NotImplementedError("this adapter reads its form with the shared engine")
@@ -320,6 +321,14 @@ class AdapterBase:
     def owns(self, name: str) -> bool:
         """Whether a control of this name is one the page keeps for itself (never filled, never checked as an answer)."""
         return False
+
+    def hidden_mismatch(self, frame: Any) -> list[str]:
+        """The plan keys of fields whose companion the page keeps out of sight disagrees with what the field shows (read only; none for a page with no such pair)."""
+        return []
+
+    def plan_key(self, name: str) -> str:
+        """The plan's key for the control the page calls ``name``: the independent check reads every control under it, so it is compared with the plan's entry."""
+        return name
 
     def is_typeahead(self, frame: Any, key: str) -> bool:
         """Whether this text field is a list the student's confirmed label is chosen from, typed key by key (``fill_location``)."""

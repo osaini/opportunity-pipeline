@@ -2014,6 +2014,18 @@
       education_end_month: "Education end month", education_end_year: "Education end year",
     };
 
+    // One status line for each list, made once: paint() rebuilds the block after a save, and a message set before that repaint must be on
+    // the page after it. Each says "Saved." or "Removed." under its own form, never under another list's.
+    const statuses = new Map();
+    function statusFor(ats) {
+      if (!statuses.has(ats)) {
+        const status = element("p", "form-status");
+        status.setAttribute("role", "status");
+        statuses.set(ats, status);
+      }
+      return statuses.get(ats);
+    }
+
     function paint(settings) {
       host.replaceChildren();
       if (settings.requirement) host.appendChild(element("p", "profile-help", `To turn it on: ${settings.requirement}.`));
@@ -2041,9 +2053,7 @@
 
     // The exact option labels the student confirmed for one ATS's lists, and a form to add one.
     function labelSet(set, named) {
-      // Each list says "Saved." or "Removed." under its own form, never under another list's.
-      const status = element("p", "form-status");
-      status.setAttribute("role", "status");
+      const status = statusFor(set.ats || "greenhouse");
       const query = set.ats && set.ats !== "greenhouse" ? `?ats=${encodeURIComponent(set.ats)}` : "";
       host.appendChild(element("h5", "", named ? `Exact options for lists the ${set.name} form owns` : "Exact options for lists the form owns"));
       // Greenhouse's lists are school, location and more; another ATS names only the lists it has (Lever: location).
@@ -2130,11 +2140,16 @@
         item.append(...parts);
         return item;
       };
+      // While Lever has no window (state.window false) the app attaches nothing on Lever, so the line says so, whichever way the switch is set.
+      const resumeWords = state.window
+        ? ". Lever reads a résumé as soon as it is attached, so it is sent to Lever before you press Submit. With this off, you attach it yourself in the window."
+        : ". The app cannot attach it on Lever yet, because Finish in browser is not available for Lever: you attach it yourself on Lever's application page. "
+          + "Once it can, Lever reads a résumé as soon as it is attached, so with this on it is sent to Lever before you press Submit.";
       host.appendChild(element("h5", "", "Lever"));
       const about = element("ul", "reason-list apply-lever-settings");
       about.append(
         line("Apply for me on Lever is ", word("apply_agent_lever", state.mode), `. With it on, a saved Lever role shows what the app would fill and what is missing${state.window ? ", and Finish in browser opens its form in a window for you to finish" : ". Filling a Lever form in a window is not available yet"}.`),
-        line("Let the app attach my résumé on Lever is ", word("apply_lever_resume_upload", state.resume_upload), `. Lever reads a résumé as soon as it is attached, so it is sent to Lever before you press Submit. With this off, you attach it yourself ${state.window ? "in the window" : "on Lever's application page"}.`),
+        line("Let the app attach my résumé on Lever is ", word("apply_lever_resume_upload", state.resume_upload), resumeWords),
       );
       host.append(about, element("p", "profile-help", "Both are switches under Applications, above. Each is off until you turn it on."));
     }

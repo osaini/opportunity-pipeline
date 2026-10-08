@@ -284,6 +284,12 @@ class AnswerRouteTests(ApplyApiCase):
 
 
 class SettingsRouteTests(ApplyApiCase):
+    def test_the_settings_say_whether_lever_has_a_window_so_the_page_words_its_switches_for_now(self):
+        from opportunity_app.apply import ats as apply_ats
+        lever = self.get("/api/v1/apply-agent/settings").json()["lever"]
+        self.assertIs(lever["window"], apply_ats.LEVER.adapter_built)
+        self.assertIs(lever["window"], False, "Lever's Finish in browser is built later (LV4)")
+
     def test_the_settings_show_the_limits_in_force_and_which_are_the_students_own(self):
         settings = self.get("/api/v1/apply-agent/settings").json()
         limits = {item["key"]: item for item in settings["limits"]}

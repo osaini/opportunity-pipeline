@@ -257,12 +257,13 @@ class FakeLeverReplyTests(unittest.TestCase):
         self.assertEqual(set(LEVER_HCAPTCHA_HOSTS), {"js.hcaptcha.com", "api.hcaptcha.com", "newassets.hcaptcha.com"})
         self.assertEqual(set(FAKE_LEVER_HOSTS), {"jobs.lever.co", "jobs.eu.lever.co"})
 
-    def test_the_cloudflare_script_posts_a_beacon_only_when_asked(self):
+    def test_the_cloudflare_script_posts_a_beacon_unless_it_is_switched_off(self):
         fake = FakeLever()
+        self.assertTrue(fake.cloudflare_beacon, "a live page posts it, so the fake does by default")
+        self.assertIn(LEVER_CLOUDFLARE_BEACON_PATH, fake.answer("GET", "https://jobs.lever.co/cdn-cgi/challenge-platform/scripts/jsd/main.js").body)
+        fake.cloudflare_beacon = False
         quiet = fake.answer("GET", "https://jobs.lever.co/cdn-cgi/challenge-platform/scripts/jsd/main.js").body
         self.assertNotIn(LEVER_CLOUDFLARE_BEACON_PATH, quiet)
-        fake.cloudflare_beacon = True
-        self.assertIn(LEVER_CLOUDFLARE_BEACON_PATH, fake.answer("GET", "https://jobs.lever.co/cdn-cgi/challenge-platform/scripts/jsd/main.js").body)
 
     def test_the_interstitial_lasts_as_long_as_it_is_told_to(self):
         fake = FakeLever()
@@ -694,7 +695,7 @@ class SubmitBrowserTests(FakeLeverBrowserCase):
     def test_submit_posts_to_hcaptchas_api_before_the_form_is_posted(self):
         fake, page = self.submit("to_thanks")
         page.wait_for_url(f"**{LEVER_THANKS_PATH}")
-        posts = [index for index, seen in enumerate(fake.requests) if seen.method == "POST" and seen.host == "api.hcaptcha.com"]
+        posts = [index for index, seen in enumerate(fake.requests) if seen.method == "POST" and seen.host == "api.hcaptcha.com" and seen.path != "/checksiteconfig"]
         (apply_at,) = [index for index, seen in enumerate(fake.requests) if seen.method == "POST" and seen.host == "jobs.lever.co" and seen.path == LEVER_APPLY_PATH]
         self.assertEqual(len(posts), 1)
         asked = fake.requests[posts[0]]
@@ -712,7 +713,8 @@ class SubmitBrowserTests(FakeLeverBrowserCase):
         page.wait_for_selector(CHALLENGE_FRAME, state="visible")
         page.frame_locator(CHALLENGE_FRAME).locator("#solve").click()
         self.assertTrue(self.wait_until(page, lambda: fake.apply_posts()))
-        paths = [seen.path.split("/")[1] for seen in fake.requests if seen.method == "POST" and seen.host in ("api.hcaptcha.com", "jobs.lever.co") and seen.path != "/parseResume"]
+        paths = [seen.path.split("/")[1] for seen in fake.requests if seen.method == "POST" and seen.host in ("api.hcaptcha.com", "jobs.lever.co") and seen.path != "/parseResume"
+                 and seen not in fake.page_writes()]
         self.assertEqual(paths, ["getcaptcha", "checkcaptcha", LEVER_APPLY_PATH.split("/")[1]])
 
     def test_when_hcaptchas_posts_are_refused_the_press_does_nothing(self):
@@ -721,11 +723,13 @@ class SubmitBrowserTests(FakeLeverBrowserCase):
         fake, page = self.open(fake)
         self.fill_required(page)
         page.click("#btn-submit")
-        self.assertTrue(self.wait_until(page, lambda: [seen for seen in fake.requests if seen.method == "POST" and seen.host == "api.hcaptcha.com"]))
+        asks = lambda: [seen for seen in fake.requests if seen.method == "POST" and seen.host == "api.hcaptcha.com" and seen.path.startswith("/getcaptcha/")]
+        self.assertTrue(self.wait_until(page, asks))
         page.wait_for_timeout(500)
         self.assertEqual((fake.apply_posts(), self.token(page)), ([], ""))
-        (asked,) = [seen for seen in fake.requests if seen.method == "POST" and seen.host == "api.hcaptcha.com"]
+        (asked,) = asks()
         self.assertEqual(asked.status, 0)
+        self.assertEqual({seen.status for seen in fake.page_writes() if seen.host == "api.hcaptcha.com"}, {0}, "the load-time write to the same host is refused too")
 
     def test_the_widget_adds_the_response_boxes_a_live_one_does_and_the_post_carries_both(self):
         fake, page = self.open()
@@ -859,12 +863,26 @@ class PageBrowserTests(FakeLeverBrowserCase):
         (beacon,) = fake.requests_to(host="notify.bugsnag.com")
         self.assertEqual((tag.method, tag.path, tag.status, tag.resource_type), ("GET", "/gtm.js", 200, "script"))
         self.assertEqual((beacon.method, beacon.status), ("POST", 200))
-        self.assertEqual(fake.non_get_requests(), [beacon])
+        self.assertIn(beacon, fake.non_get_requests())
         self.assertEqual(fake.non_get_requests(noise=False), [])
 
-    def test_the_cloudflare_script_loads_on_the_page_and_posts_a_beacon_when_asked(self):
+    def test_the_page_writes_by_itself_as_it_loads_what_the_load_recording_saw(self):
+        fake, page = self.open()
+        self.assertTrue(self.wait_until(page, lambda: len([seen for seen in fake.requests if seen.path == "/checksiteconfig"]) == 3))
+        self.assertTrue(self.wait_until(page, lambda: fake.requests_to(path=LEVER_CLOUDFLARE_BEACON_PATH)))
+        self.assertEqual(sorted(seen.host for seen in fake.requests if seen.method == "POST" and seen.path == "/checksiteconfig"), ["api.hcaptcha.com", "api2.hcaptcha.com", "hcaptcha.com"])
+        self.assertEqual(len(fake.page_writes()), 5, [(seen.host, seen.path) for seen in fake.page_writes()])   # the three, Cloudflare's beacon and Bugsnag's report
+        self.assertEqual(fake.non_get_requests(noise=False), [], "a test about writes that are not these sees none")
+
+    def test_a_write_to_a_place_the_page_does_not_write_to_by_itself_is_not_left_out_of_the_count(self):
+        fake, page = self.open()
+        page.evaluate("() => fetch('https://hcaptcha.com/exfil', {method: 'POST', body: 'x'})")
+        page.evaluate("() => fetch('/cdn-cgi/rum', {method: 'POST', body: 'x'})")
+        self.assertTrue(self.wait_until(page, lambda: len(fake.non_get_requests(noise=False)) == 2))
+        self.assertEqual([(seen.host, seen.path) for seen in fake.non_get_requests(noise=False)], [("hcaptcha.com", "/exfil"), ("jobs.lever.co", "/cdn-cgi/rum")])
+
+    def test_the_cloudflare_script_loads_on_the_page_and_posts_a_beacon_by_default(self):
         fake = FakeLever()
-        fake.cloudflare_beacon = True
         fake, page = self.open(fake)
         self.assertTrue(self.wait_until(page, lambda: fake.requests_to(path=LEVER_CLOUDFLARE_BEACON_PATH)))
         (beacon,) = fake.requests_to(path=LEVER_CLOUDFLARE_BEACON_PATH)
@@ -926,13 +944,13 @@ class PageBrowserTests(FakeLeverBrowserCase):
         fake, page = self.open(FakeLever(page="two_required_groups.html"))
         boxes = page.locator(".required-field input[type=checkbox]")
         required = lambda: page.evaluate("Array.from(document.querySelectorAll('.required-field input[type=checkbox]')).map((box) => box.required)")
-        self.assertEqual(required(), [True] * 4)
+        self.assertEqual(required(), [True] * 5)
         boxes.nth(0).check()
-        self.assertEqual(required(), [False] * 4)
+        self.assertEqual(required(), [False] * 5)
         boxes.nth(0).uncheck()
-        self.assertEqual(required(), [True] * 4)
+        self.assertEqual(required(), [True] * 5)
         boxes.nth(2).check()
-        self.assertEqual(required(), [False] * 4)
+        self.assertEqual(required(), [False] * 5)
 
     def test_any_disability_answer_makes_the_signature_and_date_required(self):
         fake, page = self.open()

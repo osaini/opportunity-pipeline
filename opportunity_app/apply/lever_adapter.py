@@ -185,6 +185,8 @@ class LeverAdapter(AdapterBase):
 
     ats = lever.ATS_LEVER
     form_page_kind = "application_form"   # what ``detect_page`` answers for a form the app fills
+    # The student's Submit, for the press listener: a trusted click on the page's own button (the hidden one is only ever clicked by the page's script, which is not trusted).
+    press_selector = ", ".join(f"#{name}" for name in DENYLIST)
     uses_engine = False
     closed_on_404 = True
     waits_for_challenge = True
@@ -269,6 +271,11 @@ class LeverAdapter(AdapterBase):
     def owns(name: str) -> bool:
         """Whether a control of this name is one the page keeps for itself (spec 5.4 item 7)."""
         return name in PAGE_MANAGED_FIELDS or bool(_TEMPLATE_NAME.fullmatch(name))
+
+    @staticmethod
+    def plan_key(name: str) -> str:
+        """The plan's name for a control: the four EEO questions are ``gender``, ``race``, ``veteran_status`` and ``disability_status`` there, ``eeo[...]`` on the page."""
+        return EEO_FIELDS.get(name, name)
 
     def page_managed(self, frame: Any) -> dict[str, str]:
         """The page's own hidden fields and their values now, except the ones the page sets itself after it read a file. The app writes none of these."""
@@ -405,6 +412,16 @@ class LeverAdapter(AdapterBase):
             if name in PARSER_FIELDS or name.startswith(PARSER_PREFIX) or name == "selectedLocation":
                 found[name] = value
         return found
+
+    def hidden_mismatch(self, frame: Any) -> list[str]:
+        """["location"] when the field and the hidden ``selectedLocation`` beside it disagree: a field that shows a place needs the JSON of an option of that name
+        (spec 6.8), and an empty one needs an empty hidden field. A late write of the page's own reader would leave exactly that."""
+        control = self.control(frame, "location")
+        if not control.count():
+            return []
+        shown = _norm(control.first.input_value())
+        agree = self._selected(frame) == "" if not shown else self._holds(frame, "location", shown)
+        return [] if agree else ["location"]
 
     def cleared(self, frame: Any, key: str) -> bool:
         """The control holds nothing, and for the location neither does the hidden field the page keeps beside it."""

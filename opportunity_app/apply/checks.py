@@ -71,11 +71,13 @@ S3_UPLOAD_ENABLED = False
 
 
 class Endpoint(NamedTuple):
-    """An exact host and a path prefix. ``kind`` names the field a lookup serves."""
+    """An exact host and a path prefix. ``kind`` names the field a lookup serves. ``methods`` are the methods the request rules let through to it
+    when it is a write (a CAPTCHA endpoint); empty for any."""
 
     host: str
     path_prefix: str
     kind: str = ""
+    methods: tuple[str, ...] = ()
 
 
 class DomainSet(frozenset):
@@ -146,6 +148,7 @@ class RoutePolicy:
     submit_content_types: tuple[str, ...] = ()        # the submit POST must carry one of these content types; empty means any
     bind_submit_host: bool = False                    # the submit POST must go to the posting's own host (``RouteState.board_host``); with none bound, nothing is one
     security_code_posts: bool = True                  # one more POST to the submit path may pass for an emailed code (Greenhouse's); False where the ATS emails none (Lever, Q5)
+    no_files_before_press: bool = False               # a write to a CAPTCHA endpoint or the bot check carries no file of any kind in the fill or before the student's first press (Lever's hCaptcha runs on Submit)
     outcome_table: Callable[..., Any] | None = None   # this ATS's own rows of the outcome table, which ``decide_outcome`` hands over to; None means the shared one
 
     def is_submit_request(self, host: str, path: str, submit_path: str, board_host: str = "") -> bool:
@@ -349,9 +352,11 @@ class Abort:
         return entry
 
 
-def _endpoint_matches(endpoints: Iterable[Endpoint], host: str, path: str, kind: str | None = None) -> bool:
+def _endpoint_matches(endpoints: Iterable[Endpoint], host: str, path: str, kind: str | None = None, method: str | None = None) -> bool:
+    """Whether the request is to one of ``endpoints``; with ``method``, one whose ``methods`` (when it names any) include it."""
     return any(
         host == endpoint.host.lower() and path.startswith(endpoint.path_prefix) and (kind is None or endpoint.kind == kind)
+        and (method is None or not endpoint.methods or method.upper() in endpoint.methods)
         for endpoint in endpoints
     )
 
@@ -581,7 +586,12 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
                 return abort("code_post_before_press", "A request that would send the security code was refused because you had not pressed Submit")
             return Allow("security_code", code_post=True)
         return abort("second_submit_post", "A second submit request was refused")
-    if _endpoint_matches(captcha_endpoints, host, path):
+    if (_endpoint_matches(captcha_endpoints, host, path) or policy.is_challenge_request(host, path)) and file_leaving(request, phase, state, policy):
+        # The attached file is in the input, and a page's script can read it and send it anywhere a write is let through. A compressed file holds none of
+        # the student's words, so the value guard cannot tell. Nothing the fill lets through to these addresses is a file, and neither is anything before the
+        # student's first press (hCaptcha runs on Submit, so it asks nothing of these addresses until then); the planned file's own bytes never go, in any phase.
+        return abort("upload_elsewhere", "The page tried to send a file to an address that is not the file read the app allowed")
+    if _endpoint_matches(captcha_endpoints, host, path, method=method):
         return Allow("captcha")
     if policy.is_challenge_request(host, path):
         return Allow("challenge")
@@ -590,11 +600,16 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
     return abort("non_get_before_hand_over", "Nothing that could carry the application may leave before hand-over")
 
 
-def _content_type(request: RouteRequest) -> str:
+def _content_type_header(request: RouteRequest) -> str:
+    """The Content-Type header as sent (any case of the name; the value keeps its case, which a multipart boundary needs)."""
     for name, value in request.headers.items():
         if str(name).lower() == "content-type":
-            return str(value).lower()
+            return str(value)
     return ""
+
+
+def _content_type(request: RouteRequest) -> str:
+    return _content_type_header(request).lower()
 
 
 # ---------------------------------------------------------------------------------------------
@@ -670,6 +685,11 @@ def _is_resume_post(mode: str, phase: str, method: str, host: str, path: str, st
     )
 
 
+def _posted_name(attached: str) -> str | None:
+    """The file name as the page posts it: each run of characters outside letters, digits, dot, underscore and hyphen is one underscore. None for no name."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", attached) if attached else None
+
+
 def resume_post_decision(phase: str, request: RouteRequest, state: RouteState, policy: RoutePolicy) -> Allow | Abort:
     """The file read of a page (spec 7, "The resume POST"): it passes only if every condition holds, and each one that does not has its own rule.
 
@@ -717,9 +737,9 @@ def resume_post_decision(phase: str, request: RouteRequest, state: RouteState, p
         return abort("resume_post_account", "A request that sends an account number other than the page's own was refused")
     rest = bytes(body)[:resume.start] + bytes(body)[resume.end:]
     # The part's bytes are the file (pinned by digest in the fill), but its type and its file name are text a script chooses. The type is always
-    # read. The name is read in the fill unless it is the one the app attached the file under; in the student's turn it is the student's own file's.
+    # read. The name is read in the fill unless it is the one the app attached the file under, or that name as the page rewrites it; in the student's turn it is the student's own file's.
     kind = next((value for name, value in resume.headers if name == "content-type"), "")
-    if filling and resume.filename != state.resume_file_name:
+    if filling and resume.filename not in (state.resume_file_name, _posted_name(state.resume_file_name)):
         rest += (resume.filename or "").encode("utf-8", errors="replace")
     leaked = leaked_field(RouteRequest(method="POST", url="", headers={"content-type": kind}, body=rest), state.values)
     if leaked:
@@ -750,6 +770,40 @@ def looks_like_a_send(request: RouteRequest, state: RouteState, policy: RoutePol
     if not request.body or not _content_type(request).startswith(_FORM_BODY_TYPES):
         return False
     return True
+
+
+_PLAIN_BODY_TYPES = ("text/", "application/x-www-form-urlencoded", "application/json")
+
+
+def carries_planned_file(request: RouteRequest, state: RouteState) -> bool:
+    """Whether the body is the planned file's bytes (``RouteState.resume_sha256``), or a multipart part of it is: the file sent as itself, under any type or none."""
+    wanted = state.resume_sha256.lower()
+    body = request.body
+    if not wanted or not isinstance(body, (bytes, bytearray)) or not body:
+        return False
+    body = bytes(body)
+    if hashlib.sha256(body).hexdigest() == wanted:
+        return True
+    parts = read_multipart(_content_type_header(request), body)
+    return parts is not None and any(hashlib.sha256(part.data).hexdigest() == wanted for part in parts)
+
+
+def file_leaving(request: RouteRequest, phase: str, state: RouteState, policy: RoutePolicy) -> bool:
+    """Whether a write to an address that is let through for its own sake (a CAPTCHA endpoint, the page's bot check) is a file leaving.
+
+    The planned file's own bytes: in every phase. A body ``is_upload`` calls a file: in the app's fill. For a policy with ``no_files_before_press`` (Lever's:
+    hCaptcha runs only on Submit) also a body whose declared type is none a form, a script's JSON or a beacon writes (not text, URL-encoded or JSON; a body
+    with no type is left alone), and both readings in the student's turn until their first press. After the press the widget is running and a false reading
+    would close the turn in the middle of it, so only the planned file is looked for. Another ATS's widget (reCAPTCHA posts protobuf) keeps its answers.
+    """
+    if carries_planned_file(request, state):
+        return True
+    if phase == PHASE_FILL and is_upload(request):
+        return True
+    if policy.no_files_before_press and (phase == PHASE_FILL or (phase == PHASE_STUDENT and not state.last_press_at)):
+        kind = _content_type(request)
+        return is_upload(request) or bool(request.body and kind and not kind.startswith(_PLAIN_BODY_TYPES) and not re.match(r"application/[\w.+-]*\+json", kind))
+    return False
 
 
 def is_upload(request: RouteRequest) -> bool:
@@ -1052,13 +1106,14 @@ LEVER_LOOKUP_ENDPOINTS: tuple[Endpoint, ...] = tuple(Endpoint(host, lever.SEARCH
 
 # The hCaptcha hosts a Lever apply page was seen to use at load (spec 11, Q3; tests/fixtures/apply/lever/endpoints.json): its script (js), the
 # three hosts its widget posts to by itself before anyone presses anything (api, api2 and hcaptcha.com), and the host its frames load from, under the
-# one path prefix they were seen at. Each is an exact host: a name under w.hcaptcha.com (the logo shards) is not here, because a wildcard there would
+# one path prefix they were seen at. Each is written only by the method it was seen with (``Endpoint.methods``): js and the frame host were only read
+# (a write to either is refused like any other), the other three only posted to. Each is an exact host: a name under w.hcaptcha.com (the logo shards) is not here, because a wildcard there would
 # let a name carry a planned value. What the widget posts to once Submit is pressed (getcaptcha, checkcaptcha and the like) was not seen, and until the
 # first real handoff shows it, a request to any host not listed is refused: the student is told ("the form tried to send to an address the app doesn't
 # recognize") and nothing has left. THIS TUPLE IS WHAT A RECORDING EXTENDS, and nothing else.
 LEVER_CAPTCHA_ENDPOINTS: tuple[Endpoint, ...] = (
-    Endpoint("js.hcaptcha.com", "/"), Endpoint("hcaptcha.com", "/"), Endpoint("api.hcaptcha.com", "/"), Endpoint("api2.hcaptcha.com", "/"),
-    Endpoint("newassets.hcaptcha.com", "/captcha/v1/"),
+    Endpoint("js.hcaptcha.com", "/", methods=("GET",)), Endpoint("hcaptcha.com", "/", methods=("POST",)), Endpoint("api.hcaptcha.com", "/", methods=("POST",)),
+    Endpoint("api2.hcaptcha.com", "/", methods=("POST",)), Endpoint("newassets.hcaptcha.com", "/captcha/v1/", methods=("GET",)),
 )
 # The names the browser must be able to look up for those endpoints to be reachable at all (``js.hcaptcha.com`` by GET: without it Submit does nothing,
 # spec 3.10). They are in ``LEVER_ROUTE_POLICY.resolvable_hosts``, so the resolver rule (one list for every ATS) names them; a Greenhouse run's own
@@ -1116,6 +1171,7 @@ LEVER_ROUTE_POLICY = RoutePolicy(
     submit_content_types=("multipart/form-data",),
     bind_submit_host=True,
     security_code_posts=False,
+    no_files_before_press=True,
     outcome_table=lever_outcome,
 )
 
