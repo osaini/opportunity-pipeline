@@ -207,6 +207,8 @@ class RouteState:
     # However long a widget waits, and however often it retries, a send before that press is refused (D1 B, owner decision 2026-10-08).
     code_press_required: bool = False
     code_pressed: bool = False
+    # Handoff only: when (time.monotonic()) the student last pressed the form's Submit, as the press listener reports it; 0 for never.
+    last_press_at: float = 0.0
 
     @property
     def code_typing(self) -> bool:
@@ -218,7 +220,8 @@ class RouteState:
         self.code_pressed = False
 
     def note_student_press(self) -> None:
-        """A trusted click on the form's submit control was seen. It counts only once the app has typed the code and finished typing."""
+        """A trusted click on the form's submit control was seen. For the code POST it counts only once the app has typed the code and finished."""
+        self.last_press_at = time.monotonic()
         if self.code_press_required and not self.code_typing:
             self.code_pressed = True
 
@@ -495,6 +498,30 @@ def _content_type(request: RouteRequest) -> str:
         if str(name).lower() == "content-type":
             return str(value).lower()
     return ""
+
+
+# How soon after the student's press a refused request still counts as the form's attempt to send (seconds).
+SEND_AFTER_PRESS_S = 15.0
+_FORM_BODY_TYPES = ("multipart/form-data", "application/x-www-form-urlencoded", "application/json")
+
+
+def looks_like_a_send(request: RouteRequest, state: RouteState) -> bool:
+    """Handoff, the student's turn: a refused request that is probably the form sending the application to an address the app does not know.
+
+    True for a non-GET with a body of a form's kind (multipart, URL-encoded or JSON) to a host that is neither one of the form's own hosts
+    (``student_submit_elsewhere`` says those), Greenhouse's usage reporting nor a CAPTCHA endpoint, made within ``SEND_AFTER_PRESS_S`` of the
+    student's press of Submit. The request is refused either way; this only decides whether the student is told. Nothing it reads is kept.
+    """
+    if request.method.upper() in SAFE_METHODS or not state.last_press_at:
+        return False
+    if time.monotonic() - state.last_press_at > SEND_AFTER_PRESS_S:
+        return False
+    host, path = _host(request.url), urlsplit(request.url).path
+    if host in FORM_POST_HOSTS or host in TELEMETRY_HOSTS or _endpoint_matches(state.captcha_endpoints, host, path):
+        return False
+    if not request.body or not _content_type(request).startswith(_FORM_BODY_TYPES):
+        return False
+    return True
 
 
 def is_upload(request: RouteRequest) -> bool:

@@ -189,7 +189,10 @@ in browser** is the part of it that fills a real form. The student presses Submi
    a value it filled to any other address, before and after the press (spec 11). It checks only what the app itself put in
    the form: an answer you type in the window is not known to the app, so it is not watched for. After the press the
    confirmation page's own requests to Greenhouse's board addresses are not checked, and every other address still is.
-3. A second press, a file upload, or a send to an address the app does not recognize is stopped. **Stop**, closing the window,
+3. A second press, a file upload, or a send to an address the app does not recognize is stopped. When a form sends its fields
+   to an address the app does not recognize just after your press, the app refuses it as always, leaves the window open for
+   you, and the panel says "The form tried to send to {address}, which the app doesn't recognize, so the app stopped it.
+   Nothing was sent", so you are not left looking at the page's own error. **Stop**, closing the window,
    or 20 minutes with no press close the window and send nothing. After the press Stop is gone: the app can no longer
    say that nothing was sent, and it tells the student what it saw.
 4. If Greenhouse asks for its emailed security code, the app reads the code from Gmail (read-only, a verified Greenhouse

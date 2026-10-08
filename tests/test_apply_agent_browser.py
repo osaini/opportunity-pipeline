@@ -49,7 +49,7 @@ from opportunity_app.apply.agent import ApplyAgent, GreenhouseAdapter
 from opportunity_app.apply import agent_types as apply_agent_types
 from opportunity_app.apply.agent_types import (
     HANDOFF_CRASHED, HANDOFF_EARLY, HANDOFF_ELSEWHERE, HANDOFF_HIDDEN, HANDOFF_NO_LOADER, HANDOFF_NOT_SUBMITTED, HANDOFF_S3, HANDOFF_UNRECORDED, HANDOFF_UPLOAD, LEFT_COVER_LETTER,
-    WINDOW_CLOSED, AgentJob, ApplyTimeouts, LookupRequest,
+    PROGRESS_STEPS, WINDOW_CLOSED, AgentJob, ApplyTimeouts, LookupRequest,
 )
 
 EMAIL = "sam.rivera@example.test"
@@ -1287,7 +1287,7 @@ class HandoffCase(unittest.TestCase):
         schema = fakes.fixture_schema() if schema is None else schema
         fake = fakes.HandoffGreenhouse(scenario)
         link = fakes.FakeLink() if link == "default" else link
-        steps, beats, purposes = [], [], []
+        steps, beats, purposes, texts = [], [], [], []
         calls = SimpleNamespace(count=0, posts=[], answers=[])
         holder = {}
 
@@ -1301,6 +1301,7 @@ class HandoffCase(unittest.TestCase):
 
         def progress(step, text):
             steps.append(step)
+            texts.append((step, text))
             if on_progress:
                 on_progress(holder["agent"], step)
 
@@ -1330,7 +1331,7 @@ class HandoffCase(unittest.TestCase):
                 cancelled=cancelled, link=link,
             )
             record = agent.record()
-        run = SimpleNamespace(result=result, record=record, steps=steps, beats=beats, link=link, fake=fake, calls=calls, agent=agent, purposes=purposes)
+        run = SimpleNamespace(result=result, record=record, steps=steps, texts=texts, beats=beats, link=link, fake=fake, calls=calls, agent=agent, purposes=purposes)
         self.assertIn(record["forbidden_clicks"], (0, -1), "the agent pressed a button it must never press")
         self.assertEqual([entry for entry in record["non_get"] if not (entry["host"] == SUBMIT_HOST and entry["path"] == JOB_PATH)], [],
                          "a request other than the submit POST reached the fake")
@@ -1452,6 +1453,30 @@ class HandoffTests(HandoffCase):
         self.assertSent_nothing(run)
         self.assertEqual(run.calls.count, 0, "the parent was asked to commit a POST that was not the submit path's")
         self.assertEqual(run.result.evidence["handoff_end"], "elsewhere")
+
+    def test_a_form_that_posts_its_application_to_an_address_the_app_does_not_recognize_is_stopped_and_the_student_is_told(self):
+        run = self.handoff("form_posts_elsewhere", timeouts=replace(fakes.HANDOFF_TIMEOUTS, handoff_s=4))
+        result = run.result
+        # The refusal stays: nothing reached the other address, the parent was never asked to commit, and the window stayed the student's.
+        self.assertEqual((result.outcome, result.reasons), ("needs_you", [HANDOFF_NOT_SUBMITTED]))
+        self.assertEqual(result.evidence["handoff_end"], "timeout")
+        self.assertEqual(run.calls.count, 0)
+        self.assertSent_nothing(run)
+        sent = self.refused(run, host="apply.example-robotics.test")
+        self.assertEqual([entry["method"] for entry in sent], ["POST"], "the request to the other address was refused (by the value guard: it carried the email)")
+        # ... and the student is told what happened, in the app's words, with the host and without anything the form held.
+        told = [text for step, text in run.texts if step == "form_elsewhere"]
+        self.assertEqual(told, [PROGRESS_STEPS["form_elsewhere"].format(host="apply.example-robotics.test")])
+        self.assertIn("doesn't recognize", told[0])
+        self.assertIn("Nothing was sent", told[0])
+        self.assertEqual(result.evidence["elsewhere_seen"], {"host": "apply.example-robotics.test"})
+        self.assertLess(run.steps.index("your_turn"), run.steps.index("form_elsewhere"))
+        self.assertNotIn("Rivera", json.dumps(result.evidence) + json.dumps(told))
+
+    def test_a_beacon_after_the_press_is_refused_without_telling_the_student_the_form_tried_to_send(self):
+        run = self.handoff("telemetry")
+        self.assertNotIn("form_elsewhere", run.steps)
+        self.assertNotIn("elsewhere_seen", run.result.evidence)
 
     def test_telemetry_does_not_end_the_turn(self):
         run = self.handoff("telemetry")

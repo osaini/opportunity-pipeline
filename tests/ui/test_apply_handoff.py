@@ -379,6 +379,22 @@ def test_stop_during_the_turn_ends_it_and_offers_finish_in_browser_again(apply_r
         assert conn.execute("SELECT stage FROM applications WHERE opportunity_id=?", (opportunity_id(live_server),)).fetchone()[0] == "applying"
 
 
+def test_a_form_that_tried_to_send_to_an_address_the_app_does_not_know_is_said_in_the_turn_and_the_turn_goes_on(apply_ready, owner_page, live_server, canned_agent):
+    handoff(canned_agent, wait=60.0)
+    canned_agent["handoff"]["elsewhere"] = "apply.example.test"
+    section = open_section(owner_page)
+    start_finish(section)
+    turn = section.locator(".apply-turn")
+    expect(turn).to_be_visible(timeout=30_000)
+    expect(turn.locator(".apply-run-step")).to_contain_text("The form tried to send to apply.example.test, which the app doesn't recognize")
+    expect(turn.locator(".apply-run-step")).to_contain_text("Nothing was sent")
+    # Still the student's turn: Stop is there, the error advice is there, and Stop ends it as always.
+    expect(turn.get_by_role("button", name="Stop")).to_be_visible()
+    expect(turn.locator(".apply-turn-help")).to_be_visible()
+    turn.get_by_role("button", name="Stop").click()
+    expect(section.locator(".apply-result .apply-result-title")).to_contain_text(NOT_SUBMITTED, timeout=30_000)
+
+
 def test_a_run_that_stopped_on_a_property_of_the_board_offers_the_posting_and_not_finish_in_browser_again(apply_ready, owner_page, live_server, canned_agent):
     handoff(canned_agent, outcome="no_loader")
     section = open_section(owner_page)

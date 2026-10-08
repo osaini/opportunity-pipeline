@@ -96,6 +96,7 @@ from .checks import (
     confirmation_reached,
     decide_outcome,
     is_upload,
+    looks_like_a_send,
     leaked_field,
     new_code_prompt,
     question_key,
@@ -921,6 +922,7 @@ class ApplyAgent:
         self._page_defaults: list[str] = []
         self._initial: dict[str, Any] = {}
         self._handoff_end = ""
+        self._elsewhere_seen: dict[str, str] | None = None   # the first refused send, after the student's press, to an address the app does not know
         self._browser_closed = False
         self._parent_gone = False
         self._code_typed_once = False
@@ -1072,16 +1074,24 @@ class ApplyAgent:
             except Exception:  # noqa: BLE001 - already handled
                 pass
 
-    def _press_arrives(self) -> bool:
+    def _press_arrives(self, *, after: float | None = None) -> bool:
         """Wait up to ``PRESS_GRACE_S`` for the student's press to be reported. The press is reported before the request it makes, but the two
-        reach this process by different routes, so a request can be judged first. True when the press is in. Page events run during the wait."""
+        reach this process by different routes, so a request can be judged first. True when the press is in: the code's press (the default), or,
+        with ``after``, any press newer than that instant of ``RouteState.last_press_at``. Page events run during the wait."""
         deadline = time.monotonic() + PRESS_GRACE_S
-        while not self._state.code_pressed and time.monotonic() < deadline:
+        while time.monotonic() < deadline:
+            if (self._state.code_pressed if after is None else self._state.last_press_at > after):
+                break
             try:
                 self._page.wait_for_timeout(20)
             except Exception:  # noqa: BLE001 - the page is going away: the request is refused
                 break
-        return self._state.code_pressed
+        return self._state.code_pressed if after is None else self._state.last_press_at > after
+
+    def _send_after_a_late_press(self, facts: RouteRequest) -> bool:
+        """``looks_like_a_send`` for a request whose press has not been reported yet: wait a moment for it, and ask again."""
+        before = self._state.last_press_at
+        return self._press_arrives(after=before) and looks_like_a_send(facts, self._state)
 
     def _resolvable(self, host: str) -> bool:
         """Whether this host is one of the names the browser may look up (``RESOLVABLE_HOSTS`` and a test's own lookup endpoints)."""
@@ -1130,6 +1140,10 @@ class ApplyAgent:
                     self._closing, self._why_closing = True, "elsewhere"
                 elif file_leaving:
                     self._closing, self._why_closing = True, "upload"
+                elif self._elsewhere_seen is None and (looks_like_a_send(facts, self._state) or self._send_after_a_late_press(facts)):
+                    # Refused as always, and the turn goes on; but the page would only show its own error, so the student is told.
+                    self._elsewhere_seen = {"host": safe_host(host, self._state.values)}
+                    self._progress("form_elsewhere", host=self._elsewhere_seen["host"])
         route.abort("blockedbyclient")
 
     def _hand_over_and_continue(self, route: Any, request: Any, decision: Any) -> None:
@@ -2642,6 +2656,7 @@ class ApplyAgent:
             "confirmation_path": str(outcome.get("confirmation_path") or ""),
             "form_absent": bool(outcome.get("form_absent", False)),
             "upload_refused": dict(self._upload_refused) if self._upload_refused else None,
+            **({"elsewhere_seen": dict(self._elsewhere_seen)} if self._elsewhere_seen else {}),
             "security_code": {**self._evidence_code, "posted": self._state.code_posts_passed > 0},
             "challenge": self._challenge,
             "browser_closed": self._browser_closed,

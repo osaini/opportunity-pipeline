@@ -18,6 +18,7 @@ from urllib.parse import quote
 from opportunity_app.apply import checks as apply_checks
 from opportunity_app.apply.checks import (
     CAPTCHA_ENDPOINTS,
+    looks_like_a_send,
     PHASE_AFTER_HAND_OVER,
     PHASE_AFTER_INPUT,
     PHASE_BEFORE_INPUT,
@@ -844,6 +845,30 @@ class StudentSubmitElsewhereAndUploadTests(unittest.TestCase):
         for asked, expected in cases:
             with self.subTest(method=asked.method, url=asked.url):
                 self.assertEqual(student_submit_elsewhere(asked, state()), expected)
+
+    def test_a_send_after_the_students_press_to_an_address_the_app_does_not_recognize_looks_like_the_form_sending(self):
+        FORM = {"content-type": "application/x-www-form-urlencoded"}
+        run = state()
+        other = "https://apply.example-robotics.test/submit"
+        # No press seen: nothing says this request has to do with Submit.
+        self.assertFalse(looks_like_a_send(request("POST", other, headers=MULTIPART, body=WITH_FILE), run))
+        run.note_student_press()
+        cases = (
+            (request("POST", other, headers=MULTIPART, body=WITHOUT_FILE), True),
+            (request("POST", other, headers=FORM, body="a=1"), True),
+            (request("PUT", other, headers={"content-type": "application/json"}, body="{}"), True),
+            (request("POST", other, headers=FORM), False),                                  # no body: a ping
+            (request("POST", other, headers={"content-type": "text/csv"}, body="a"), False),
+            (request("POST", TELEMETRY_URL, headers=FORM, body="a=1"), False),
+            (request("POST", "https://www.google.com/recaptcha/api2/reload", headers=FORM, body="a=1"), False),
+            (request("GET", other), False),
+            (request("POST", SUBMIT_URL, headers=FORM, body="a=1"), False),                  # the form's own address is the route's business, not this
+        )
+        for asked, expected in cases:
+            with self.subTest(method=asked.method, url=asked.url):
+                self.assertEqual(looks_like_a_send(asked, run), expected)
+        run.last_press_at = time.monotonic() - apply_checks.SEND_AFTER_PRESS_S - 1
+        self.assertFalse(looks_like_a_send(request("POST", other, headers=MULTIPART, body=WITHOUT_FILE), run), "a press long ago explains nothing")
 
     def test_is_upload_table(self):
         cases = (

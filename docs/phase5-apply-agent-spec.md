@@ -2017,6 +2017,15 @@ spec left a choice open:
 - **A posting that differs from the saved role** needs the student's tick (`posting_confirmed`) before Finish in browser.
 - **A pause does not stop a Finish in browser window**, and the pause reply and the health card say so.
 - **Failed outcomes name the field, never the page's error text**, so a value the student typed cannot reach a note.
+- **A send to an address the app does not recognize is said in the turn (2026-10-08).** Only an aborted non-GET to a form host, a
+  file going anywhere, or a form navigation ends the turn (above). Any other refused non-GET that carries a form-like body
+  (multipart, URL-encoded or JSON) within 15 s of the student's press of Submit (`checks.looks_like_a_send`, the press as the
+  listener of 6.13 reports it) is refused as before, the turn goes on, and the agent reports the progress step `form_elsewhere` with
+  the host ("The form tried to send to {host}, which the app doesn't recognize, so the app stopped it. Nothing was sent. ...") once.
+  The run view shows it as the turn's sentence (phase `form_elsewhere`, still the student's turn), and a finished run lists "While the
+  window was open the form tried to send to {host} ... nothing was sent" beside its ending (`evidence.elsewhere_seen` holds the host
+  only). A beacon with no form body, Greenhouse's telemetry and a CAPTCHA request say nothing. The board's real submit address for such
+  a form is still unknown: when a live board shows one, add it to `FORM_POST_HOSTS` so the turn ends as it does for the others.
 - **Finish in browser is offered again only where a second try can differ (2026-10-08).** A run that stops before the turn on a
   property of the board itself (no submit address the app knows, a board that uploads on attach, a hidden field the app would have
   filled) records `handoff_end` "board". The run view carries `handoff_end` and `finish_again`; the result panel offers Finish in

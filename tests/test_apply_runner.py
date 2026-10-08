@@ -1344,6 +1344,20 @@ class ViewTests(RunnerCase):
                 self.assertEqual(self.make("handoff", outcome=outcome, plan=plan, evidence=evidence)["handed_over"], expected)
         self.assertFalse(self.make(outcome="rehearsed", plan=plan)["handed_over"])
 
+    def test_a_finished_run_that_saw_the_form_try_to_send_elsewhere_says_so_once_and_nothing_was_sent(self):
+        plan = self.plan()
+        not_submitted = "You didn't submit it in the window. Your application was not sent."
+        seen = self.make("handoff", outcome="needs_you", plan=plan, reasons=[not_submitted],
+                         evidence={"handoff_end": "timeout", "elsewhere_seen": {"host": "apply.example.test"}})
+        sentence = "While the window was open the form tried to send to apply.example.test, which the app doesn't recognize. The app stopped it, and nothing was sent."
+        self.assertEqual(seen["reasons"], [not_submitted, sentence])
+        self.assertEqual(seen["summary"], not_submitted, "the result's title is still the run's own")
+        plain = self.make("handoff", outcome="needs_you", plan=plan, reasons=[not_submitted], evidence={"handoff_end": "timeout"})
+        self.assertEqual(plain["reasons"], [not_submitted])
+        # A made-up evidence entry is read as a host only: anything else is dropped.
+        odd = self.make("handoff", outcome="needs_you", plan=plan, reasons=[not_submitted], evidence={"elsewhere_seen": {"host": ["x"]}})
+        self.assertEqual(odd["reasons"], [not_submitted])
+
     def test_finish_in_browser_is_offered_again_only_when_the_student_or_the_clock_ended_the_turn(self):
         plan = self.plan()
         offered = ("stopped", "closed", "timeout", "refused", "early", "elsewhere", "upload", "crashed")

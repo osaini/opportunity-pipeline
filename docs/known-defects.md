@@ -18,7 +18,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Apply for me | 0 | 4 | 5 | 9 |
+| Apply for me | 0 | 4 | 4 | 8 |
 | Mail, Gmail and inboxes | 0 | 4 | 9 | 13 |
 | Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
@@ -26,7 +26,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Scoring, scheduling and configuration | 1 | 2 | 6 | 9 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **29** | **31** | **61** |
+| **Total** | **1** | **29** | **30** | **60** |
 
 ## Start here: the high-severity entries
 
@@ -155,13 +155,6 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** `orphaned` decides a "running" row is dead because this process holds no run of that id, on the reasoning that only this server runs rehearsals. Two servers on one database (`python -m opportunity_app.api` on another port beside the launcher's) break that: the second shows the first's live run as stopped after 15 seconds, its Stop closes the row as "The app stopped during this run", and `recover_stale` can do the same after two minutes of failed heartbeat writes. When the first run ends, its result is not stored (the runner now logs that and reports the row's outcome, not its own).
 - **Suggested fix:** Write a server instance id on the run row when it starts, and let `orphaned`, the cancel route and `recover_stale` close only rows that carry this server's id (or none).
 - **Regression suite:** tests/test_apply_runner.py (two runners on one database; the second does not close the first's running row)
-
-### A form that posts its application to an address the app does not recognize is stopped without a word on the page
-- **Severity:** low (found 2026-10-03, planning Finish in browser, M5b part 2)
-- **Where:** `opportunity_app/apply/checks.py` `FORM_POST_HOSTS`, `student_submit_elsewhere` and `route_decision` (handoff, the student's turn); `opportunity_app/apply/agent.py` `_route`
-- **What happens:** Finish in browser aborts every non-GET that is not the form's own submission, and it knows the form's own submission only by its path on `boards.greenhouse.io`. A board whose form posts the application to another host outside `FORM_POST_HOSTS` is aborted without the app saying so while the student's turn is open: the page shows its own error, nothing is sent, and the panel's only advice is to fix the field and press Submit again, or to press Stop. A form whose address is outside `job-boards.greenhouse.io`, `boards.greenhouse.io` and `boards-api.greenhouse.io` ends the turn only if it is a form navigation.
-- **Suggested fix:** Record, from a live board that does this, which host its submission goes to, add it to `FORM_POST_HOSTS`, and say in the panel when a refused request looks like a submission ("The form tried to send to {host}, which the app doesn't recognize") instead of waiting for the student to notice.
-- **Regression suite:** tests/test_apply_agent_browser.py (a fixture whose form posts to another host) and tests/ui/test_apply_handoff.py (the panel's sentence)
 
 ### The answers the student types in the Finish in browser window are not watched by the request guard
 - **Severity:** low (found 2026-10-03, review of Finish in browser, M5b part 2)

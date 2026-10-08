@@ -456,7 +456,7 @@
   const runIsOver = (view) => view.status === "finished" || Boolean(view.stalled);
 
   // The run phases in which a Finish in browser run is the student's (or past their Submit), not the app's filling.
-  const TURN_PHASES = ["your_turn", "submitting", "security_code", "code_typed", "code_yours", "challenge"];
+  const TURN_PHASES = ["your_turn", "form_elsewhere", "submitting", "security_code", "code_typed", "code_yours", "challenge"];
 
   // The result panels whose Answer column is on screen. Signing out takes the column away: it holds the student's answers.
   const valuePanels = new Set();
@@ -774,7 +774,8 @@
     guarded(stop, "Stop", "Stopping…", onStop);
     function update(fresh) {
       setText(step, fresh.summary);
-      const turn = fresh.phase === "your_turn";
+      // "form_elsewhere" is the same turn: the form tried to send somewhere the app stopped, and the student goes on or stops.
+      const turn = fresh.phase === "your_turn" || fresh.phase === "form_elsewhere";
       const closes = turn && fresh.handoff_until ? clockTime(fresh.handoff_until) : "";
       setText(until, closes ? `The window closes at ${closes} if you haven't pressed Submit application.` : "");
       const left = turn && fresh.handoff_until ? new Date(fresh.handoff_until).getTime() - Date.now() : 0;

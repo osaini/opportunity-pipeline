@@ -35,6 +35,8 @@ PROGRESS_STEPS = {
     "submitting": "Submitting to Greenhouse…",
     "security_code": ("Greenhouse emailed you a security code. The app is looking for it in your Gmail; "
                       "you can also type it into the window yourself"),
+    "form_elsewhere": ("The form tried to send to {host}, which the app doesn't recognize, so the app stopped it. Nothing was sent. "
+                       "If the form shows an error, fix it and press Submit application again, or press Stop and apply from the posting instead"),
     "code_typed": "The app typed the security code from your email. Press Submit application in the window",
     "code_yours": "Type the security code Greenhouse emailed you into the window, then press Submit application",
     "challenge": "Greenhouse showed a check in the window. Finish it there",

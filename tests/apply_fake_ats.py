@@ -585,6 +585,9 @@ class CannedAgent:
                 message["handoff_in_s"] = self.handoff["in_s"]   # how long the window really stays the student's (the real agent says it)
             link.ready(message)
         self.on_progress("your_turn", PROGRESS_STEPS["your_turn"])
+        if self.handoff.get("elsewhere"):
+            # The student pressed Submit and the form tried to send somewhere the app does not recognize: refused, and the turn goes on.
+            self.on_progress("form_elsewhere", PROGRESS_STEPS["form_elsewhere"].format(host=str(self.handoff["elsewhere"])))
         self._after_ready()
         waited, beat = 0.0, 0.0
         wait = float(self.handoff.get("wait", 1.5))
