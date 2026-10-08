@@ -18,7 +18,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Apply for me | 0 | 4 | 7 | 11 |
+| Apply for me | 0 | 4 | 6 | 10 |
 | Mail, Gmail and inboxes | 0 | 4 | 9 | 13 |
 | Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
@@ -26,7 +26,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Scoring, scheduling and configuration | 1 | 2 | 6 | 9 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **29** | **33** | **63** |
+| **Total** | **1** | **29** | **32** | **62** |
 
 ## Start here: the high-severity entries
 
@@ -262,13 +262,6 @@ The first was one of three left open by PR #54 (the fail-closed net) and recorde
 - **What happens:** A list or dict reason is unhashable when tested against the frozenset, so the script reports "failed (TypeError)" instead of CANNOT_READ or WAIT.
 - **Suggested fix:** Reuse `is_throttle` from `opportunity_app/integrations/gmail_client.py`.
 - **Regression suite:** tests/ unittest (`test_pipeline_mailbox`)
-
-### An email the Phase 1 reader set aside as an error stalls every Apply for me watch for the rest of its window
-- **Severity:** low (found in review of the confirmation watch, M5b part 1)
-- **Where:** `opportunity_app/applications/inbox.py` `_decide_safely()` and `_rescan()` (only `awaiting_resume` rows are read again); `opportunity_app/apply/watch.py` `reader_health()` (`READER_SET_ASIDE`)
-- **What happens:** A message whose decision raised is stored with state `error` and never read again. The watch now treats such a row received at or after the oldest watched hand-over (minus five minutes) as a stall, because the email that failed may be the confirmation. Nothing clears the row, so the watch stays paused until the 13-day give-up ends it as not watched, and the error row also pauses watches for unrelated applications handed over before it.
-- **Suggested fix:** Let the reader retry `error` rows a bounded number of times (or record the sender's domain on them), so the watch can tell an unrelated failure from the confirmation's.
-- **Regression suite:** tests/ unittest (`test_application_inbox`: an error row is retried; `test_apply_watch`: a retried row clears the pause)
 
 ### apply/watch.py keeps its own copy of runs.py's time helpers
 - **Severity:** low, latent (found in review of the confirmation watch, M5b part 1)

@@ -123,7 +123,10 @@ and was not reset since the pass began (note_off); a pass that finds it was
 stops there, so it never writes back a cursor that turning the switch on again
 would take for its own. A database that is busy (locked, a deadlock) stops the
 pass with the message still queued, to be decided on the next one; only a
-message that cannot be read or decided is set aside.
+message that cannot be read or decided is set aside. A message set aside is
+read again after half an hour, then after waits that double, for 14 days
+(ERROR_RETRY_FIRST, ERROR_RETRY_UNTIL), so one that was only unlucky stops
+being an error.
 
 The breaker. One email can make a stage change, a task and a deadline; taking
 all of them back counts once (automation.register_breaker_group), and turning
@@ -196,6 +199,11 @@ AUTO_ACT_FLOOR = 0.85
 MAX_GETS_PER_PASS = 50
 MAX_LIST_PAGES = 10
 PASS_EVERY = timedelta(minutes=10)
+# A message the reader could not decide is set aside as an error and read again: first half an hour after the failure, then after a
+# wait as long as the time since the first failure (30 minutes, 1 hour, 2, 4...), until this long after the first failure. Apply for me's
+# confirmation watch pauses while an error row it may depend on is unread (apply/watch.py), so the row must clear or give up.
+ERROR_RETRY_FIRST = timedelta(minutes=30)
+ERROR_RETRY_UNTIL = timedelta(days=14)
 BACKFILL_DAYS = 60
 RECOVERY_OVERLAP = timedelta(days=1)
 DATE_GAP_LIMIT = timedelta(hours=48)
@@ -771,7 +779,7 @@ def _record_outcome(conn: sqlite3.Connection, user_id: str, mail: Mail | None, g
                 subject=CASE WHEN ? THEN excluded.subject ELSE application_mail_messages.subject END,
                 sender_domain=CASE WHEN ? THEN excluded.sender_domain ELSE application_mail_messages.sender_domain END,
                 received_at=CASE WHEN ? THEN excluded.received_at ELSE application_mail_messages.received_at END
-            WHERE application_mail_messages.state='awaiting_resume'
+            WHERE application_mail_messages.state IN ('awaiting_resume', 'error')
             """,
             (
                 user_id, gmail_id, mail.thread_id if mail and keep else "", outcome.application_id if keep else "",
@@ -907,6 +915,40 @@ def _rescan(
         if data is None:
             _record_outcome(conn, user_id, None, row["gmail_id"], Outcome("gone"), queue=None, origin=row["origin"], expect=expect)
             continue
+        mail, outcome = _decide_safely(conn, user_id, data, decisions=decisions, sync=sync, origin=row["origin"], now=now)
+        _record_outcome(conn, user_id, mail, row["gmail_id"], outcome, queue=None, origin=row["origin"], expect=expect)
+        _tally(totals, outcome)
+
+
+def _retry_errors(
+    conn: sqlite3.Connection, gmail: GmailClient, user_id: str, budget: _Budget, decisions: DecisionClient | None,
+    now: datetime, totals: dict[str, int], *, expect: Any = _ANY,
+) -> None:
+    """Read again the messages set aside as errors whose wait is over (ERROR_RETRY_FIRST, ERROR_RETRY_UNTIL).
+
+    A message that fails again keeps its first-failure ``received_at`` and gets a new ``recorded_at``, so the wait doubles. One
+    that is decided stops being an error and takes what reading it found; one Gmail no longer has is recorded as gone.
+    """
+    rows = conn.execute(
+        "SELECT gmail_id, origin, received_at, recorded_at FROM application_mail_messages WHERE user_id=? AND state='error' ORDER BY recorded_at",
+        (user_id,),
+    ).fetchall()
+    sync = None
+    for row in rows:
+        first, last = parse_app_instant(row["received_at"]), parse_app_instant(row["recorded_at"])
+        if first is None or last is None or now - first > ERROR_RETRY_UNTIL or now - last < max(ERROR_RETRY_FIRST, last - first):
+            continue
+        if _outreach_owns(conn, user_id, row["gmail_id"]):
+            _record_outcome(conn, user_id, None, row["gmail_id"], Outcome("outreach"), queue=None, origin=row["origin"], expect=expect)
+            continue
+        if not budget.take():
+            break
+        data = _fetch(gmail, row["gmail_id"])
+        if data is None:
+            _record_outcome(conn, user_id, None, row["gmail_id"], Outcome("gone"), queue=None, origin=row["origin"], expect=expect)
+            continue
+        if sync is None:
+            sync = dict(conn.execute("SELECT * FROM application_mail_sync WHERE user_id=?", (user_id,)).fetchone())
         mail, outcome = _decide_safely(conn, user_id, data, decisions=decisions, sync=sync, origin=row["origin"], now=now)
         _record_outcome(conn, user_id, mail, row["gmail_id"], outcome, queue=None, origin=row["origin"], expect=expect)
         _tally(totals, outcome)
@@ -1185,6 +1227,7 @@ def run_pass(
                 _reclaim(conn, user_id, expect=expect)
                 _drain(conn, gmail, user_id, "pending_ids_json", "live", budget, decisions, now, totals, expect=expect)
                 _rescan(conn, gmail, user_id, budget, decisions, now, totals, expect=expect)
+                _retry_errors(conn, gmail, user_id, budget, decisions, now, totals, expect=expect)
                 _backfill(conn, gmail, user_id, budget, decisions, now, totals, expect=expect)
         except _Reset:
             if getattr(conn, "in_transaction", False):

@@ -571,6 +571,16 @@ class HonestClockTests(WatchCase):
         self.assertEqual([title for title in self.notices() if title.startswith("No confirmation email yet")], [])
         self.assertEqual(apply_watch.ats_statistics(self.conn, USER)["no_email_24h"], 0)
 
+    def test_an_email_the_reader_reads_again_and_no_longer_sets_aside_clears_the_pause(self):
+        token = self.expired()
+        gmail_id = self.aside(self.at(hours=-20))
+        self.assertEqual(self.watch(), self.zero(paused=1))
+        # The reader retries a set-aside email (inbox._retry_errors): it was not the confirmation, so the row is no longer an error.
+        with self.conn:
+            self.conn.execute("UPDATE application_mail_messages SET state='skipped' WHERE user_id=? AND gmail_id=?", (USER, gmail_id))
+        self.assertEqual(self.watch()["extended"], 1, "the stall is added to the deadline")
+        self.assertNotIn("watch_paused", self.detail(token))
+
     def test_an_email_set_aside_long_before_the_hand_over_does_not_stall(self):
         token = self.expired()
         self.aside(self.at(hours=-30))

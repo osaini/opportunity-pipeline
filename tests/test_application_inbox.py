@@ -1485,6 +1485,64 @@ class ReviewFixMailTests(MailCase):
         self.assertEqual(self.message_row("m-110")["state"], "done")
         self.assertEqual(self.stage(self.acme)[0], "applied")
 
+    def age(self, gmail_id, **delta):
+        """Let time pass for a set-aside message: its two stamps move back together, as if the pass that set it aside were that much older."""
+        row = self.message_row(gmail_id)
+        stamps = [(parse_app_instant(row[column]) - timedelta(**delta)).isoformat(timespec="microseconds") for column in ("received_at", "recorded_at")]
+        with self.conn:
+            self.conn.execute("UPDATE application_mail_messages SET received_at=?, recorded_at=? WHERE user_id=? AND gmail_id=?", (*stamps, USER, gmail_id))
+
+    def test_a_message_that_could_not_be_decided_is_read_again_after_a_growing_wait_until_it_is_mended(self):
+        self.started()
+        self.deliver("m-111", acme_confirmation())
+        real = automation.perform
+        failing = {"on": True, "calls": 0}
+
+        def broken(*args, **kwargs):
+            failing["calls"] += 1
+            if failing["on"]:
+                raise ValueError("this email made the decision fail")
+            return real(*args, **kwargs)
+
+        with mock.patch.object(application_inbox.automation, "perform", side_effect=broken):
+            self.assertEqual(self.pass_once()["state"], "message_errors")
+            self.assertEqual(self.message_row("m-111")["state"], "error")
+            calls = failing["calls"]
+            self.assertEqual(self.pass_once()["state"], "ok")
+            self.assertEqual(failing["calls"], calls, "too soon: the first wait is half an hour")
+            # After the wait it is read again; still failing, it stays set aside, and the next wait is as long as the time since the first failure.
+            self.age("m-111", minutes=40)
+            self.assertEqual(self.pass_once()["state"], "message_errors")
+            self.assertGreater(failing["calls"], calls)
+            self.assertEqual(self.message_row("m-111")["state"], "error")
+            calls = failing["calls"]
+            self.assertEqual(self.pass_once()["state"], "ok")
+            self.assertEqual(failing["calls"], calls, "the second wait is longer")
+            self.age("m-111", minutes=41)
+            failing["on"] = False
+            self.assertEqual(self.pass_once()["state"], "ok")
+        row = self.message_row("m-111")
+        self.assertEqual((row["state"], row["kind"]), ("done", "application_confirmation"))
+        self.assertEqual(self.stage(self.acme)[0], "applied")
+        self.assertIn("Acme", row["subject"], "what reading it found is recorded on the same row")
+
+    def test_a_message_that_keeps_failing_is_given_up_after_14_days(self):
+        self.started()
+        self.deliver("m-112", acme_confirmation())
+        calls = []
+
+        def broken(*args, **kwargs):
+            calls.append(1)
+            raise ValueError("this email made the decision fail")
+
+        with mock.patch.object(application_inbox.automation, "perform", side_effect=broken):
+            self.pass_once()
+            tries = len(calls)
+            self.age("m-112", days=15)
+            self.pass_once()
+        self.assertEqual(len(calls), tries, "after 14 days it is no longer tried")
+        self.assertEqual(self.message_row("m-112")["state"], "error")
+
     def test_the_first_look_back_reaches_past_when_the_live_cursor_was_taken(self):
         self.switch("on", since=now_utc() - timedelta(hours=1))
         before_call = int(datetime.now(timezone.utc).timestamp())
