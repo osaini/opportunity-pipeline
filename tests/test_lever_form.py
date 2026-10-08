@@ -567,9 +567,17 @@ class LimitTests(unittest.TestCase):
         self.assertEqual(len(form.fields[0].options), 3000)
 
     def test_a_page_of_nearly_two_megabytes_with_script_is_read_without_trouble(self):
-        text = page(text_control(0), "") .replace("</body>", "<script>" + "var a = '<input name=\"hack\">';" * 60000 + "</script></body>")
+        # The script is inside the form, where a control would be read if its text were taken for markup.
+        script = "<script>" + "var a = '<input name=\"hack\">';" * 60000 + "</script>"
+        text = page(text_control(0), script)
         self.assertGreater(len(text), 1_800_000)
         self.assertEqual(parse_lever_form(text).unknown, (), "a control written inside a script is not a control")
+
+    def test_a_control_written_inside_a_script_or_a_style_inside_the_form_is_not_a_control(self):
+        for tag in ("script", "style"):
+            with self.subTest(tag=tag):
+                form = parse_lever_form(page(f'<{tag}>var a = "<input name=hack required><label>', f'</{tag}>', '<input name="real">'))
+                self.assertEqual([item.name for item in form.unknown], ["real"])
 
 
 class MalformedMarkupTests(unittest.TestCase):
