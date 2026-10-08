@@ -29,10 +29,16 @@ def opportunity_id(live_server):
 
 
 @pytest.fixture(autouse=True)
-def canned_agent(live_server, base_url, pristine_database):
+def canned_agent(live_server, base_url, pristine_database, monkeypatch):
     """The listing requires a cover letter; the knobs go back, and the app's run slot is free, before the next test rewinds the database."""
     original = dict(apply_fake_ats.CANNED)
     apply_fake_ats.CANNED["letter_required"] = True
+    from opportunity_app.apply import preflight as apply_preflight
+
+    # The server keeps listings for an hour, and other tests share it: read nothing from that cache and leave nothing in it,
+    # or the listing that requires a letter would reach the next test file.
+    monkeypatch.setattr(apply_preflight.SchemaCache, "get", lambda self, key: None)
+    monkeypatch.setattr(apply_preflight.SchemaCache, "put", lambda self, key, listing: None)
     yield apply_fake_ats.CANNED
     apply_fake_ats.CANNED.clear()
     apply_fake_ats.CANNED.update(original)
