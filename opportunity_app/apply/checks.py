@@ -200,18 +200,33 @@ class RouteState:
     submit_posts_passed: int = 0
     security_code_prompts: int = 0
     code_posts_passed: int = 0
-    # A time.monotonic() instant. The agent sets it to infinity while it types a security code into the page and to now + 2 s
-    # afterwards, so a code widget that sends by itself as the last character arrives cannot send the application (D1 B).
+    # A time.monotonic() instant. The agent sets it to infinity while it types a security code into the page and back to 0 when it is done.
     code_typing_until: float = 0.0
+    # Handoff only. Once the app has typed the emailed code (``require_code_press``), the code POST waits for the student's own press of
+    # Submit: a trusted click on the form's submit control, seen after the typing finished, in a world the page's scripts cannot reach.
+    # However long a widget waits, and however often it retries, a send before that press is refused (D1 B, owner decision 2026-10-08).
+    code_press_required: bool = False
+    code_pressed: bool = False
 
     @property
     def code_typing(self) -> bool:
         return time.monotonic() < self.code_typing_until
 
+    def require_code_press(self) -> None:
+        """The app typed the code: the press that counts is the next one, so any earlier one is forgotten."""
+        self.code_press_required = True
+        self.code_pressed = False
+
+    def note_student_press(self) -> None:
+        """A trusted click on the form's submit control was seen. It counts only once the app has typed the code and finished typing."""
+        if self.code_press_required and not self.code_typing:
+            self.code_pressed = True
+
     def record(self, decision: "Allow") -> None:
         """Count a request the handler let through, so the one-submit-POST rule sees it."""
         if decision.code_post:
             self.code_posts_passed += 1
+            self.code_press_required = self.code_pressed = False    # the press was used by this POST
         elif decision.submit_post:
             self.submit_posts_passed += 1
 
@@ -450,8 +465,8 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
         # Every method: a GET beacon can carry a value as well as a POST, and none of it is the application. Refused and recorded.
         return abort("telemetry", "The page's own usage reporting was refused")
     if is_submit_post and state.code_typing:
-        # The app is typing a security code, or just did: a widget that sends by itself on the last character must not send the
-        # application (D1 B). Never counted, so the student's own press of Submit keeps the prompt's allowance.
+        # The app is typing a security code: a widget that sends by itself on the last character must not send the application (D1 B).
+        # Never counted, so the student's own press of Submit keeps the prompt's allowance.
         return abort("code_post_while_typing", "A submit request made while the app typed the security code was refused")
     if method in SAFE_METHODS:
         return Allow()
@@ -463,6 +478,9 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
         if not state.submit_posts_passed:
             return Allow("submit", submit_post=True)
         if state.security_code_prompts > state.code_posts_passed:
+            if state.code_press_required and not state.code_pressed:
+                # The app typed the code. The widget (or anything else on the page) may not send it before the student presses Submit.
+                return abort("code_post_before_press", "A request that would send the security code was refused because you had not pressed Submit")
             return Allow("security_code", code_post=True)
         return abort("second_submit_post", "A second submit request was refused")
     if _endpoint_matches(state.captcha_endpoints, host, path):

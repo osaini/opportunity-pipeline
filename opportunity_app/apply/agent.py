@@ -171,8 +171,8 @@ MAX_REFUSED = 500
 MAX_TELEMETRY_RECORDED = 20
 MAX_REQUESTS = 300
 CODE_PATTERN = re.compile(r"[A-Za-z0-9]{8}")
-CODE_GUARD_S = 2.0       # after the app typed a security code, no submit POST passes for this long (a widget that submits by itself)
 CODE_SETTLE_S = 0.3      # after typing the code: time for a widget that sends by itself to try, before the student is told what to do
+PRESS_GRACE_S = 0.15     # a code POST refused for want of a press waits this long for the press to be reported (it is reported first, by a few ms)
 TURN_POLL_MS = 250
 OUTCOME_POLL_MS = 500
 
@@ -278,6 +278,31 @@ NO_SIDE_CHANNELS = """(() => {
     });
   } catch (error) { /* no shadow roots */ }
 })();"""
+# The student's own press of Submit, seen from a world the page cannot reach. Finish in browser types the emailed security code and then waits for
+# the student: the code POST passes only after a trusted click on the form's submit control (or Enter in the form, which the browser turns into
+# one) was seen after the typing (owner decision 2026-10-08, open question Q4; ``RouteState.code_pressed``).
+#
+# The listener runs in an isolated world (a JavaScript realm of its own over the same page, made by the browser through the DevTools protocol), and
+# the binding it calls exists in that world only, so no script on the page can call it, read its name, or reach the listener's variables or copies
+# of the built-ins (the page changing ``Event.prototype`` or ``Element.prototype.closest`` changes its own realm, not this one). A click the page
+# makes itself (a script click, a made-up event, a submit by script) has ``isTrusted`` false and is ignored, and the property cannot be set by a
+# script. It is registered on the window, in the capture phase, before any script of the page runs, so a page listener cannot stop the event first.
+# Only a board's own page counts, so a frame the page makes up (about:blank, srcdoc) with a form of that name in it does not.
+PRESS_WORLD = "apply-student-press"
+PRESS_BINDING = "applyStudentPress"
+PRESS_LISTENER = """(() => {
+  const hosts = __HOSTS__;
+  if (hosts.indexOf(location.hostname) < 0) return;
+  const submit = "form#application-form button[type='submit'], form#application-form input[type='submit'], #application_form #submit_app";
+  window.addEventListener('click', (event) => {
+    if (!event.isTrusted) return;
+    const target = event.target;
+    if (target && typeof target.closest === 'function' && target.closest(submit)) window.__BINDING__('1');
+  }, true);
+})();""".replace("__HOSTS__", json.dumps(sorted(BOARD_HOSTS))).replace("__BINDING__", PRESS_BINDING)
+# The only DevTools calls the agent makes, and nothing else (tests/test_apply_agent_static.py reads the syntax tree for it).
+PRESS_CDP_CALLS = ("Page.enable", "Runtime.enable", "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument")
+
 # Chromium switches that turn some of those features off, and one that closes the rest at the network layer. None changes how the browser
 # presents itself to a page (user agent, language, screen); they only remove features this app has no use for. WebTransport has no switch
 # (measured on Playwright 1.62's Chromium: neither a feature flag nor --disable-quic stops its packets), so it, and every worker that could
@@ -883,8 +908,8 @@ class ApplyAgent:
         self._browser_closed = False
         self._parent_gone = False
         self._code_typed_once = False
-        # A refused submit POST counts as the widget sending the code by itself only before this instant (inf while the app types).
-        self._code_auto_until = 0.0
+        self._cdp: Any = None                # the DevTools session that carries the student's presses (handoff only)
+        self._press_channel = False          # the press listener is in place: only then does the app type the code
         # Handoff: the keys of the fields the agent filled and read back. Only these are described as filled in the result.
         self._filled: set[str] = set()
         # Handoff: the keys the agent acted on at all, recorded as each action starts. A key here and not in ``_filled`` was typed (or may
@@ -939,6 +964,31 @@ class ApplyAgent:
         self._context.route("**/*", self._route)
         self._context.route_web_socket("**/*", self._refuse_socket)
         self._page = self._context.new_page()
+        if self.mode == "handoff":
+            self._watch_presses()
+
+    def _watch_presses(self) -> None:
+        """Have the browser report the student's own presses of Submit, from a world the page's scripts cannot reach (``PRESS_LISTENER``).
+
+        A failure leaves ``_press_channel`` False: the app then does not type the emailed code, since it could not tell the student's press
+        from the widget's own send. This is the one DevTools session the agent opens, and it makes the four calls in ``PRESS_CDP_CALLS``.
+        """
+        try:
+            cdp = self._context.new_cdp_session(self._page)
+            cdp.on("Runtime.bindingCalled", self._on_binding)
+            cdp.send("Page.enable")
+            cdp.send("Runtime.enable")
+            cdp.send("Runtime.addBinding", {"name": PRESS_BINDING, "executionContextName": PRESS_WORLD})
+            cdp.send("Page.addScriptToEvaluateOnNewDocument", {"source": PRESS_LISTENER, "worldName": PRESS_WORLD, "runImmediately": True})
+        except Exception:  # noqa: BLE001 - a browser without DevTools sessions: no press can be seen
+            return
+        self._cdp = cdp
+        self._press_channel = True
+
+    def _on_binding(self, event: Mapping[str, Any]) -> None:
+        """The press listener called its binding. The binding exists only in the listener's world, and the listener calls it with "1" only."""
+        if event.get("name") == PRESS_BINDING and event.get("payload") == "1":
+            self._state.note_student_press()
 
     # --- the request policy -----------------------------------------------------------------------------------
 
@@ -968,6 +1018,8 @@ class ApplyAgent:
                 public=True, headers=request.headers, body=body,
             )
             decision = route_decision(self.mode, self._phase, facts, self._state)
+            if isinstance(decision, Abort) and decision.rule == "code_post_before_press" and self._press_arrives():
+                decision = route_decision(self.mode, self._phase, facts, self._state)   # the press was reported a moment after the request
             # Resolved last, and only for a request the policy would let through: the name of a request that is refused anyway
             # (after the first input, anything but Greenhouse's own hosts) is never sent to a resolver, since a hostname can carry a value.
             # A name the browser itself could not look up is not looked up here either: the resolver below runs in this process, outside the
@@ -1004,6 +1056,17 @@ class ApplyAgent:
             except Exception:  # noqa: BLE001 - already handled
                 pass
 
+    def _press_arrives(self) -> bool:
+        """Wait up to ``PRESS_GRACE_S`` for the student's press to be reported. The press is reported before the request it makes, but the two
+        reach this process by different routes, so a request can be judged first. True when the press is in. Page events run during the wait."""
+        deadline = time.monotonic() + PRESS_GRACE_S
+        while not self._state.code_pressed and time.monotonic() < deadline:
+            try:
+                self._page.wait_for_timeout(20)
+            except Exception:  # noqa: BLE001 - the page is going away: the request is refused
+                break
+        return self._state.code_pressed
+
     def _resolvable(self, host: str) -> bool:
         """Whether this host is one of the names the browser may look up (``RESOLVABLE_HOSTS`` and a test's own lookup endpoints)."""
         if not host:
@@ -1027,9 +1090,8 @@ class ApplyAgent:
         if self.mode == "handoff":
             if self._phase == PHASE_AFTER_HAND_OVER and unsafe and self._observer is not None:
                 self._observer.track(request, passed=False)
-            if decision.rule == "code_post_while_typing" and time.monotonic() < self._code_auto_until:
-                # Only a POST that arrives while the code is being typed, or within CODE_SETTLE_S of it, is the widget's own: a press
-                # by the student a moment later is refused too (the guard runs CODE_GUARD_S) but says nothing about the widget.
+            if decision.rule in ("code_post_while_typing", "code_post_before_press"):
+                # The code POST of a page nobody pressed Submit on: the widget sent it by itself, as the last box filled or later.
                 self._evidence_code["auto_submit_blocked"] = True
             if unsafe and self._phase == PHASE_FILL:
                 if decision.rule == "before_hand_over":
@@ -2401,9 +2463,9 @@ class ApplyAgent:
                             pending = None                         # answered: the link holds nothing for it any more
                             ev["typed"] = typed
                             if typed:
-                                # The page's own script, if it sends the code by itself, does so now; the guard on submit POSTs runs a
-                                # little longer. Only after it is the student told to press Submit, so that press is never refused.
-                                self._wait(max(CODE_SETTLE_S, self._state.code_typing_until - time.monotonic()))
+                                # The page's own script, if it sends the code by itself, does so now and is refused. Only after a moment
+                                # is the student told to press Submit (the refusal is then in the evidence).
+                                self._wait(CODE_SETTLE_S)
                             if typed:
                                 if ev["auto_submit_blocked"]:
                                     ev["reason"] = "auto_submit_blocked"   # the code is in the boxes; the page's own send was stopped
@@ -2454,6 +2516,8 @@ class ApplyAgent:
             return False, "already_typed"
         if not CODE_PATTERN.fullmatch(code):
             return False, "bad_code"                     # email text is data from outside: only eight letters or digits are typed
+        if not self._press_channel:
+            return False, "press_unseen"                 # the student's press could not be told from the widget's send: they type it
         try:
             parts = urlsplit(self._page.url)
             if (parts.hostname or "").lower() not in BOARD_HOSTS or not parts.path.rstrip("/").startswith(self._job_path):
@@ -2469,7 +2533,6 @@ class ApplyAgent:
         except Exception:  # noqa: BLE001
             return False, "inputs_missing"
         self._state.code_typing_until = math.inf
-        self._code_auto_until = math.inf
         self._code_typed_once = True
         held = False
         try:
@@ -2481,8 +2544,8 @@ class ApplyAgent:
         except Exception:  # noqa: BLE001 - a box that would not take its character is the student's to finish, never a crash of the run
             held = False
         finally:
-            self._state.code_typing_until = time.monotonic() + CODE_GUARD_S
-            self._code_auto_until = time.monotonic() + CODE_SETTLE_S
+            self._state.code_typing_until = 0.0
+            self._state.require_code_press()             # from here the code POST waits for the student's own press of Submit
         return (True, "") if held else (False, "typing_failed")
 
     # --- the picture and the result ------------------------------------------------------------------------------

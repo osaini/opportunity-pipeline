@@ -18,7 +18,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Apply for me | 0 | 6 | 8 | 14 |
+| Apply for me | 0 | 6 | 7 | 13 |
 | Mail, Gmail and inboxes | 0 | 4 | 9 | 13 |
 | Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
@@ -26,7 +26,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Scoring, scheduling and configuration | 1 | 2 | 6 | 9 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **31** | **34** | **66** |
+| **Total** | **1** | **31** | **33** | **65** |
 
 ## Start here: the high-severity entries
 
@@ -183,13 +183,6 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** Finish in browser aborts every non-GET that is not the form's own submission, and it knows the form's own submission only by its path on `boards.greenhouse.io`. A board whose form posts the application to another host outside `FORM_POST_HOSTS` is aborted without the app saying so while the student's turn is open: the page shows its own error, nothing is sent, and the panel's only advice is to fix the field and press Submit again, or to press Stop. A form whose address is outside `job-boards.greenhouse.io`, `boards.greenhouse.io` and `boards-api.greenhouse.io` ends the turn only if it is a form navigation.
 - **Suggested fix:** Record, from a live board that does this, which host its submission goes to, add it to `FORM_POST_HOSTS`, and say in the panel when a refused request looks like a submission ("The form tried to send to {host}, which the app doesn't recognize") instead of waiting for the student to notice.
 - **Regression suite:** tests/test_apply_agent_browser.py (a fixture whose form posts to another host) and tests/ui/test_apply_handoff.py (the panel's sentence)
-
-### The security-code widget has not been seen live: one that sends the typed code by itself more than 2 seconds later goes through without the student's press
-- **Severity:** low (found 2026-10-03, planning Finish in browser, M5b part 2; the owner's open question Q4 in `docs/phase5-apply-agent-spec.md`, called Q1 in the plan)
-- **Where:** `opportunity_app/apply/agent.py` `_security_code` and `_type_security_code`; `opportunity_app/apply/checks.py` `RouteState.code_typing` and `route_decision` (`code_post_while_typing`)
-- **What happens:** After the student presses Submit, Greenhouse may ask for an emailed security code. The app reads it from Gmail (D10 B) and types it into the window, but never presses the second Submit (D1 B: the student presses every Submit). The route refuses a submit POST while the code is typed and for two seconds after (`CODE_GUARD_S`), and the window is told to press Submit only after those two seconds, with the run view saying "The app typed the security code from your email. Press Submit application in the window". That is all the guard does; it does not wait for a press. A widget that submits by itself after more than two seconds, or that retries a refused send later, sends a POST that passes as the prompt's one code POST, so the final submission can reach Greenhouse without the student's press on it (the student did press Submit for the same application first). A refusal in the first 0.3 seconds is recorded as the widget sending by itself (`auto_submit_blocked`); a refusal after that is the student's own early press and is not. No fixture or recording of the live widget exists, so which behaviour it has is not known.
-- **Suggested fix:** Watch the first real Finish in browser that asks for a code, and write down whether the page sent by itself. If it does, the owner decides whether the app should stop typing the code (and show it instead), or whether typing it and leaving the press to the student is what is wanted. Add a recording of the widget to `tests/fixtures/apply/greenhouse/`. To make the claim "the student presses every Submit" hold for a slow or retrying widget, allow the code POST only after a trusted click on the submit control in the form frame (a click listener that reports `isTrusted`) was seen after the typing, and add a fixture whose widget retries after 2.5 seconds.
-- **Regression suite:** tests/test_apply_agent_browser.py (`security_code_autosubmit` fixture) and tests/test_apply_handoff.py (the sentences)
 
 ### The answers the student types in the Finish in browser window are not watched by the request guard
 - **Severity:** low (found 2026-10-03, review of Finish in browser, M5b part 2)

@@ -194,9 +194,10 @@ in browser** is the part of it that fills a real form. The student presses Submi
    say that nothing was sent, and it tells the student what it saw.
 4. If Greenhouse asks for its emailed security code, the app reads the code from Gmail (read-only, a verified Greenhouse
    sender, after the press, for the same company, once) and types it into the same window. It does not press Submit
-   again: the student does, and the app tells the student to press only after two seconds in which it refuses any send, so a
-   page that sends the code by itself as it is typed sends nothing (a page that waits longer than that is not stopped).
-   If the app cannot read it, the student types it. The code is never stored or logged, and the picture taken at the end
+   again: the student does. The app refuses to let the code leave the window until it has seen the student's own click on
+   the form's Submit button (or Enter in the form) after the typing finished, so a page that sends the code by itself, as it is
+   typed or seconds later, or again and again, sends nothing; a click a page script makes does not count. If the app cannot read
+   the code, or cannot watch for the student's click, the student types it. The code is never stored or logged, and the picture taken at the end
    covers the code boxes.
 5. Pausing automation does not stop a window the student opened (their own Submit is the confirm), and the pause reply
    says so.

@@ -1501,6 +1501,55 @@ class HandoffTests(HandoffCase):
         self.assertEqual(self.submit_posts(run), 2, "the 428 and exactly one code POST, the student's own")
         self.assertEqual(link.results, [(1, True, "")])
 
+    def test_a_widget_that_submits_at_once_and_again_after_2_5_seconds_is_refused_until_the_student_presses(self):
+        # Owner decision 2026-10-08 (Q4): the code POST waits for the student's press, however long the widget waits and however often it retries.
+        link = fakes.FakeLink(({"status": "found", "code": CODE},))
+        fakes.PRESSES.clear()
+        run = self.handoff("security_code_retry", student="press_after_the_widget_gave_up", link=link)
+        result = run.result
+        self.assertEqual(result.outcome, "submitted", result.reasons)
+        self.assertEqual(len(fakes.PRESSES), 1)
+        posts = run.fake.post_times
+        self.assertEqual(len(posts), 2, "the 428 and exactly one code POST")
+        self.assertGreater(posts[1], fakes.PRESSES[0], "the code POST reached Greenhouse before the student pressed Submit")
+        self.assertTrue(self.refused(run, rule="code_post_while_typing") or self.refused(run, rule="code_post_before_press"))
+        self.assertGreaterEqual(len(self.refused(run, rule="code_post_before_press")), 1, "the retry after 2.5 s was not refused by name")
+        evidence = result.evidence["security_code"]
+        self.assertTrue(evidence["auto_submit_blocked"])
+        self.assertIn("code_typed", run.steps)
+        self.assertNotIn("code_yours", run.steps)
+        self.assertEqual(link.results, [(1, True, "")])
+
+    def test_a_code_widget_cannot_fake_the_students_press(self):
+        link = fakes.FakeLink(({"status": "found", "code": CODE},))
+        fakes.PRESSES.clear()
+        seen = {}
+
+        def look(agent, step):
+            if step == "code_typed" and "agent" not in seen:
+                seen["agent"] = agent
+
+        def student(page, step):
+            agent = seen.get("agent")
+            if step == "security_code" and agent is not None and page.locator("#security-input-0").count() and page.input_value("#security-input-0"):
+                if page.evaluate("() => !!window.__forged") and "before" not in seen:
+                    seen["before"] = (len(agent.fake.submit_posts()), getattr(agent._state, "code_pressed", False), page.evaluate("() => window.__forged"))
+            fakes.press_after_the_widget_gave_up(page, step)
+
+        run = self.handoff("security_code_forger", hook=student, link=link, on_progress=look)
+        result = run.result
+        self.assertEqual(result.outcome, "submitted", result.reasons)
+        self.assertIn("before", seen, "the widget never ran its forgeries")
+        posts, pressed, forged = seen["before"]
+        self.assertEqual(posts, 1, "a forged press let the code POST through")
+        self.assertFalse(pressed, "the app counted a press the student never made")
+        self.assertEqual(forged["tried"], ["dispatch", "click", "pointer"])
+        # The form's own scripts define these three; anything else the page can see that a fresh frame lacks would be the app's.
+        self.assertEqual(sorted(forged["functions"]), ["grAfterSubmit", "grLookupUrl", "grValidate"], forged["functions"])
+        self.assertEqual(len(run.fake.post_times), 2, "the 428 and exactly one code POST")
+        self.assertGreater(run.fake.post_times[1], fakes.PRESSES[0])
+        self.assertGreaterEqual(len(self.refused(run, rule="code_post_before_press")), 1)
+
     def test_a_second_press_while_the_code_post_is_still_answering_is_refused_and_starts_no_second_prompt(self):
         # A real submit takes one to three seconds, and the boxes stay on the page until it answers: that is one prompt, not two.
         link = fakes.FakeLink(({"status": "found", "code": CODE},))
@@ -1526,32 +1575,54 @@ class HandoffTests(HandoffCase):
         self.assertEqual(result.evidence["security_code"]["rounds"], 1)
         self.assertEqual(link.results, [(1, True, "")])
 
-    def test_a_press_while_the_code_settles_is_refused_and_is_not_the_widget_sending_by_itself(self):
+    def test_a_press_right_after_the_code_is_typed_goes_through_and_is_not_the_widget_sending_by_itself(self):
+        # Before 2026-10-08 the app refused every send for two seconds after the last box. The wait is for the student's press now, so a
+        # quick student is not held up, and the press (reported by the browser a few ms before its request) is not mistaken for the widget.
         link = fakes.FakeLink(({"status": "found", "code": CODE},))
-        told = {}
 
-        def arm(agent, step):
-            if step == "security_code" and fakes._once(agent._page, "arm"):
-                # The student sees the code appear and presses at once: 0.9 s after the last box is filled.
-                agent._page.evaluate("""() => { const timer = setInterval(() => {
-                  const boxes = Array.from(document.querySelectorAll('#security-code input'));
-                  if (boxes.length === 8 && boxes.every((box) => box.value)) {
-                    clearInterval(timer);
-                    setTimeout(() => document.querySelector('form#application-form button[type=submit]').click(), 900);
-                  }
-                }, 25); }""")
-            if step == "code_typed":
-                told["refused"] = len(self.refused(SimpleNamespace(result=SimpleNamespace(refused=agent._refused)), rule="code_post_while_typing"))
+        def student(page, step):
+            if step == "handoff":
+                fakes.complete_and_submit(page, step)
+            elif step == "security_code" and page.locator("#security-input-0").count() and page.input_value("#security-input-0") and fakes._once(page, "quick"):
+                press_submit(page)                   # at once: the first look after the app told the student
 
-        run = self.handoff("security_code", student="press_when_typed", link=link, on_progress=arm)
+        run = self.handoff("security_code", hook=student, link=link)
         result = run.result
         self.assertEqual(result.outcome, "submitted", result.reasons)
-        self.assertEqual(len(self.refused(run, rule="code_post_while_typing")), 1, "the early press was not refused")
-        self.assertEqual(told.get("refused"), 1, "the student was told to press Submit before the guard on submit POSTs had ended")
+        self.assertEqual(self.refused(run, rule="code_post_before_press"), [], "a real press was refused for want of a press")
+        self.assertEqual(self.refused(run, rule="code_post_while_typing"), [])
         evidence = result.evidence["security_code"]
         self.assertFalse(evidence["auto_submit_blocked"], "the student's own press was recorded as the widget sending by itself")
         self.assertNotIn("code_yours", run.steps)
         self.assertEqual(self.submit_posts(run), 2)
+
+    def test_the_enter_key_in_the_form_is_the_students_press_too(self):
+        link = fakes.FakeLink(({"status": "found", "code": CODE},))
+
+        def student(page, step):
+            if step == "handoff":
+                fakes.complete_and_submit(page, step)
+            elif step == "security_code" and page.locator("#security-input-0").count() and page.input_value("#security-input-0") and fakes._once(page, "enter"):
+                page.focus("#security-input-7")
+                page.keyboard.press("Enter")
+
+        run = self.handoff("security_code", hook=student, link=link)
+        self.assertEqual(run.result.outcome, "submitted", run.result.reasons)
+        self.assertEqual(self.refused(run, rule="code_post_before_press"), [])
+
+    def test_a_script_click_on_submit_is_not_the_students_press(self):
+        link = fakes.FakeLink(({"status": "found", "code": CODE},))
+
+        def student(page, step):
+            if step == "handoff":
+                fakes.complete_and_submit(page, step)
+            elif step == "security_code" and page.locator("#security-input-0").count() and page.input_value("#security-input-0") and fakes._once(page, "script"):
+                page.evaluate("() => document.querySelector('form#application-form button[type=submit]').click()")
+
+        run = self.handoff("security_code", hook=student, link=link)
+        self.assertEqual(self.submit_posts(run), 1, "a click made by script sent the code")
+        self.assertTrue(self.refused(run, rule="code_post_before_press"))
+        self.assertEqual(run.result.outcome, "needs_you", run.result.reasons)
 
     def test_a_security_code_left_in_the_boxes_is_covered_in_the_final_picture(self):
         link = fakes.FakeLink(({"status": "found", "code": CODE},))

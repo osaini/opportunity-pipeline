@@ -773,15 +773,49 @@ class TelemetryAndCodeGuardTests(unittest.TestCase):
         refused = route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run)
         self.assertEqual(refused.rule, "code_post_while_typing")
         self.assertEqual((run.code_posts_passed, run.security_code_prompts), (0, 1))
-        # A refusal is not recorded as a pass, so the student's own press, after the guard, still gets the prompt's one POST.
-        run.code_typing_until = time.monotonic() + 0.05
-        self.assertEqual(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run).rule, "code_post_while_typing")
-        time.sleep(0.08)
+        # A refusal is not recorded as a pass. With the guard over and no code typed by the app, the next POST is the prompt's one.
+        run.code_typing_until = 0.0
         self.assertFalse(run.code_typing)
         allowed = route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run)
         self.assertEqual(allowed, Allow("security_code", code_post=True))
         run.record(allowed)
         self.assertEqual(run.code_posts_passed, 1)
+
+    def test_once_the_app_typed_the_code_the_code_post_waits_for_the_students_press_however_long_it_takes(self):
+        run = state()
+        run.record(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run))
+        run.note_security_code_prompt()
+        run.code_typing_until = float("inf")
+        run.note_student_press()                              # a press while the app types is not the press that counts
+        self.assertFalse(run.code_pressed)
+        run.code_typing_until = 0.0
+        run.require_code_press()
+        for _ in range(3):                                    # a widget that retries: refused each time, nothing spent
+            refused = route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run)
+            self.assertEqual(refused.rule, "code_post_before_press")
+            self.assertEqual((run.code_posts_passed, run.security_code_prompts), (0, 1))
+        run.note_student_press()
+        allowed = route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run)
+        self.assertEqual(allowed, Allow("security_code", code_post=True))
+        run.record(allowed)
+        self.assertEqual((run.code_press_required, run.code_pressed), (False, False), "the press was used by the POST it let through")
+        self.assertEqual(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run).rule, "second_submit_post")
+
+    def test_a_press_is_forgotten_when_the_app_starts_typing_again_and_does_not_count_before_the_app_typed(self):
+        run = state()
+        run.note_student_press()
+        self.assertFalse(run.code_pressed, "no code was typed, so there is no press to wait for")
+        run.require_code_press()
+        run.note_student_press()
+        self.assertTrue(run.code_pressed)
+        run.require_code_press()
+        self.assertFalse(run.code_pressed)
+
+    def test_a_code_the_student_typed_needs_no_press_from_the_guard(self):
+        run = state()
+        run.record(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run))
+        run.note_security_code_prompt()
+        self.assertEqual(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run), Allow("security_code", code_post=True))
 
     def test_the_guard_covers_only_the_submit_post(self):
         run = state(code_typing_until=float("inf"))

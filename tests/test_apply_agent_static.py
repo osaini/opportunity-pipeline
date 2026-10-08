@@ -198,6 +198,17 @@ ALLOWED_REQUEST_RECEIVERS = {
     ("apply/security_code.py", "gmail"): "the Gmail REST client (integrations.gmail_client over httpx) reading Greenhouse's security-code email",
     ("apply/agent.py", "response"): "a Playwright Response's own request, read to file its status under the request the route saw; it sends nothing",
 }
+# The agent opens one DevTools session, in ``_watch_presses``, to hear the student's own presses of Submit from a world the page cannot reach.
+# A DevTools session can do anything a page-level driver can (fetch, rewrite or fulfil requests, evaluate in the page), so every ``send`` on one
+# is read: only these methods, and the two that carry data carry only the agent's two constants.
+CDP_SESSION_OWNER = ("apply/agent.py", "_watch_presses")
+CDP_METHODS = {
+    "Page.enable": None, "Runtime.enable": None,
+    "Runtime.addBinding": ("name", "PRESS_BINDING"),
+    "Page.addScriptToEvaluateOnNewDocument": ("source", "PRESS_LISTENER"),
+}
+CDP_RECEIVERS = frozenset({"cdp", "_cdp", "session"})
+_CDP_METHOD_SHAPE = re.compile(r"^[A-Z][A-Za-z]+\.[a-z][A-Za-z]+$")
 # The one function of the agent that may call each of Playwright's ways to start a browser or a browser context.
 LAUNCHERS = {"launch": "_launch_browser", "new_context": "_new_context", "launch_persistent_context": "", "connect_over_cdp": "", "new_browser_context": ""}
 # ``getattr`` with a name that is not written in the source, by (module, enclosing function): reading a plan or a schema field by attribute.
@@ -246,6 +257,10 @@ def unsafe_driver_calls(modules: dict[str, str]) -> tuple[list[str], int]:
                     seen += 1
                     if relative != AGENT_PATH or _enclosing_function(node, parents) != LAUNCHERS[name]:
                         found.append(f"{where} .{name} outside {LAUNCHERS[name] or 'any function'}")
+                elif name == "new_cdp_session":
+                    seen += 1
+                    if (relative, _enclosing_function(node, parents)) != CDP_SESSION_OWNER:
+                        found.append(f"{where} .new_cdp_session outside {CDP_SESSION_OWNER[1]}: a DevTools session reaches past route_decision")
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
                 attr = node.func.attr
                 if attr == "continue_":
@@ -258,6 +273,26 @@ def unsafe_driver_calls(modules: dict[str, str]) -> tuple[list[str], int]:
                     only = len(node.args) == 1 and not node.keywords and isinstance(node.args[0], ast.Name) and node.args[0].id == "NO_SIDE_CHANNELS"
                     if not only or relative != AGENT_PATH:
                         found.append(f"{where} add_init_script of anything but NO_SIDE_CHANNELS")
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "send":
+                receiver = node.func.value.id if isinstance(node.func.value, ast.Name) else getattr(node.func.value, "attr", "")
+                first = node.args[0] if node.args else None
+                named = first.value if isinstance(first, ast.Constant) and isinstance(first.value, str) else None
+                if receiver in CDP_RECEIVERS or (named is not None and _CDP_METHOD_SHAPE.match(named)):
+                    seen += 1
+                    if named not in CDP_METHODS:
+                        found.append(f"{where} a DevTools call to {named or 'a method that is not written in the source'}")
+                    elif CDP_METHODS[named] is not None:
+                        key, constant = CDP_METHODS[named]
+                        params = node.args[1] if len(node.args) == 2 else None
+                        value = None
+                        if isinstance(params, ast.Dict):
+                            for dict_key, dict_value in zip(params.keys, params.values):
+                                if isinstance(dict_key, ast.Constant) and dict_key.value == key:
+                                    value = dict_value
+                        if not (isinstance(value, ast.Name) and value.id == constant):
+                            found.append(f"{where} {named} with anything but {constant} as its {key}")
+                    elif len(node.args) != 1 or node.keywords:
+                        found.append(f"{where} {named} with arguments")
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "getattr" and len(node.args) >= 2:
                 seen += 1
                 name = node.args[1]
@@ -436,6 +471,9 @@ class MutationTests(unittest.TestCase):
         "getattr(locator, 'click')()", "getattr(page, 'request')", "getattr(locator, name)()", "getattr(self._page, 'set_extra_http_headers')({})",
         "self._playwright.chromium.launch()", "self._browser.new_context()", "self._playwright.chromium.launch_persistent_context('x')",
         "self._playwright.chromium.connect_over_cdp('http://x')",
+        "self._context.new_cdp_session(self._page)", "self._cdp.send('Fetch.enable')", "self._cdp.send('Runtime.evaluate', {'expression': value})",
+        "self._cdp.send('Page.addScriptToEvaluateOnNewDocument', {'source': value})", "self._cdp.send('Runtime.addBinding', {'name': 'send'})",
+        "self._cdp.send(method)", "self._cdp.send('Page.enable', {'x': 1})", "other.send('Network.getAllCookies')",
     )
 
     def test_each_way_to_send_or_rewrite_a_request_outside_route_decision_is_found(self):
@@ -1103,12 +1141,17 @@ class FinishInBrowserKeepsD1B(unittest.TestCase):
         with self.assertRaises(apply_agent.ClickRefused):
             agent._type(box, "2", "security_code")
 
-    def test_the_code_guard_runs_for_two_seconds_after_the_last_box(self):
-        self.assertEqual(apply_agent.CODE_GUARD_S, 2.0)
+    def test_the_code_guard_ends_with_the_last_box_and_the_press_takes_over(self):
+        self.assertFalse(hasattr(apply_agent, "CODE_GUARD_S"), "the two-second tail was replaced by the wait for the student's press")
         source = inspect.getsource(ApplyAgent._type_security_code)
         self.assertIn("code_typing_until = math.inf", source)
-        self.assertIn("time.monotonic() + CODE_GUARD_S", source)
-        self.assertRegex(source, r"finally:\s+self\._state\.code_typing_until")
+        self.assertRegex(source, r"finally:\s+self\._state\.code_typing_until = 0\.0\s+self\._state\.require_code_press\(\)")
+
+    def test_the_app_types_the_code_only_when_it_can_see_the_students_press(self):
+        agent = self.handoff_agent()
+        agent._press_channel = False
+        self.assertEqual(agent._type_security_code("12345678"), (False, "press_unseen"))
+        self.assertFalse(agent._code_typed_once)
 
     def test_a_cancel_after_hand_over_is_not_a_stop(self):
         agent = self.handoff_agent()
@@ -1367,21 +1410,19 @@ class WhatAnAbortedRequestMeansInAHandoff(unittest.TestCase):
         self.abort(agent, "POST", "https://c.spl.greenhouse.io/x", body="{}")
         agent._state.security_code_prompts = 1
         agent._state.code_typing_until = float("inf")
-        agent._code_auto_until = float("inf")      # while the app types, and CODE_SETTLE_S after it
         self.assertEqual(self.abort(agent, "POST", self.SUBMIT, body="x").rule, "code_post_while_typing")
         self.assertTrue(agent._evidence_code["auto_submit_blocked"])
         self.assertEqual([(host, passed) for _request, _method, host, _path, passed in agent._observer.tracked],
                          [("c.spl.greenhouse.io", False), ("boards.greenhouse.io", False)])
         self.assertEqual(agent._closing, False, "a refused request after the press must not look like a stop")
 
-    def test_a_press_refused_after_the_settle_point_is_not_the_widget_sending_by_itself(self):
+    def test_a_code_post_before_the_students_press_is_marked_as_the_widget_sending_by_itself_at_any_time(self):
         agent = self.agent(apply_checks.PHASE_AFTER_HAND_OVER)
         agent._state.submit_posts_passed = 1
         agent._state.security_code_prompts = 1
-        agent._state.code_typing_until = time.monotonic() + 1.5     # still inside the 2 s guard
-        agent._code_auto_until = time.monotonic() - 0.2             # but past the point where the widget would have sent
-        self.assertEqual(self.abort(agent, "POST", self.SUBMIT, body="x").rule, "code_post_while_typing")
-        self.assertFalse(agent._evidence_code["auto_submit_blocked"], "the student's own early press was recorded as the widget's")
+        agent._state.require_code_press()
+        self.assertEqual(self.abort(agent, "POST", self.SUBMIT, body="x").rule, "code_post_before_press")
+        self.assertTrue(agent._evidence_code["auto_submit_blocked"], "a send with no press seen, 2.5 s after the typing, is the widget's")
 
     def test_telemetry_is_recorded_a_few_times_and_counted_always(self):
         agent = self.agent(apply_checks.PHASE_STUDENT)
