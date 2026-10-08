@@ -272,7 +272,8 @@ its page shows what is missing. A rehearsal or an option lookup there returns a 
 seconds, with no browser. Nothing reaches Greenhouse. **Finish in browser** returns a canned handoff there (no window): the Your turn panel, the
 student's own press, and the result, with the knobs in `apply_fake_ats.CANNED`. The flag also seeds Harbor Demo Labs, a saved
 fictional Lever role served by `FakeLeverPageClient`, with Apply for me on Lever switched on: its page shows the read-only check
-and no window action.
+and **Finish in browser** as its only action, a canned handoff like Greenhouse's (the fake agent stands in for Lever's driver, in the sandbox's process only;
+"Let the app attach my résumé on Lever" starts off, and turning it on shows the start and the run say the résumé goes to Lever).
 
 It seeds a throwaway database from the same fixture the unittest suite uses,
 prints fixed tokens, and serves `http://127.0.0.1:8799`. Sign in by pasting
