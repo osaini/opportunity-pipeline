@@ -68,11 +68,9 @@ from .agent_types import (
     problem_dict,
 )
 from .checks import (
-    CONFIRMED_CAPTCHA_HOSTS,
     GREENHOUSE_LOOKUP_ENDPOINTS,
     MORE_PAGES_SCRIPT,
     PHASE_AFTER_HAND_OVER,
-    STATIC_ASSET_HOSTS,
     TYPED_LOOKUP_KINDS,
     PHASE_AFTER_INPUT,
     PHASE_BEFORE_INPUT,
@@ -101,7 +99,7 @@ from .checks import (
     safe_host,
     student_submit_elsewhere,
 )
-from .ats import AtsAdapter, spec_for
+from .ats import REGISTRY, AtsAdapter, spec_for
 from .greenhouse import ATS_GREENHOUSE, BOARD_HOSTS, SUBMIT_HOST
 from .runs import INSTALL_PLAYWRIGHT, PlaywrightProbe
 
@@ -309,8 +307,8 @@ PRESS_CDP_CALLS = ("Page.enable", "Runtime.enable", "Runtime.addBinding", "Page.
 # (measured on Playwright 1.62's Chromium: neither a feature flag nor --disable-quic stops its packets), so it, and every worker that could
 # reach one, is closed by the init script alone, in every realm a page can make (tests/test_apply_agent_browser.py names each one).
 #
-# The resolver rule is the catch-all: the browser can look up only the hosts a Greenhouse form and its fonts, lookups, static files and
-# CAPTCHA use (``RESOLVABLE_HOSTS``), and any other name, an IP address included, fails inside Chromium with no query leaving the machine
+# The resolver rule is the catch-all: the browser can look up only the hosts a registered ATS's form and its lookups, static files and
+# CAPTCHA use (each spec's ``route_policy.resolvable_hosts``, joined here) and the fonts every page loads (``RESOLVABLE_HOSTS``), and any other name, an IP address included, fails inside Chromium with no query leaving the machine
 # (WebRTC to an ICE server given as an IP address is not a name lookup: the init script is the only thing that stops it. Measured on
 # Playwright 1.62's Chromium, the resolver rule left ten packets reaching a loopback listener, and no switch silenced both STUN over UDP
 # and TURN over TCP: ``--force-webrtc-ip-handling-policy=disable_non_proxied_udp`` stops the UDP and not the TCP, and the blink and
@@ -322,11 +320,8 @@ PRESS_CDP_CALLS = ("Page.enable", "Runtime.enable", "Runtime.addBinding", "Page.
 # whatever channel it takes, and a value put in a host name is never looked up: not by Chromium, and not by this process either, since the
 # route handler refuses a name outside the list (``unlisted_host``) before its own resolver is asked about it, in every mode and phase. The third-party widgets a board may load (Google Drive,
 # Dropbox, a recruiting-analytics script) do not load either: the app presses none of them.
-RESOLVABLE_HOSTS: tuple[str, ...] = tuple(sorted({
-    *BOARD_HOSTS, *(endpoint.host for endpoint in GREENHOUSE_LOOKUP_ENDPOINTS), *STATIC_ASSET_HOSTS,
-    "s?-recruiting.cdn.greenhouse.io", "s??-recruiting.cdn.greenhouse.io", "s???-recruiting.cdn.greenhouse.io",
-    *CONFIRMED_CAPTCHA_HOSTS, "fonts.googleapis.com", "fonts.gstatic.com",
-}))
+FONT_HOSTS = ("fonts.googleapis.com", "fonts.gstatic.com")   # whatever the ATS, its pages ask Google for their fonts
+RESOLVABLE_HOSTS: tuple[str, ...] = tuple(sorted({*(host for spec in REGISTRY for host in spec.route_policy.resolvable_hosts), *FONT_HOSTS}))
 
 
 def resolver_rule(extra_hosts: Sequence[str] = ()) -> str:

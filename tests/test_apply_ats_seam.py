@@ -9,6 +9,7 @@ the factory's ``ats`` argument) is pinned directly. No browser and no network.
 
 import copy
 import dataclasses
+import fnmatch
 import inspect
 import itertools
 import random
@@ -548,6 +549,57 @@ class RouteDecisionParityTests(unittest.TestCase):
         post = request("POST", "jobs.example-robotics.test", "/x", body=b"x")
         self.assertEqual(apply_checks.route_decision("handoff", "student", post, state_, other).rule, "hand_over")
         self.assertEqual(apply_checks.route_decision("handoff", "student", post, state_, POLICY).rule, "non_get_before_hand_over")
+
+
+class ResolvableHostsTests(unittest.TestCase):
+    """The names the browser may look up (the Chromium resolver rule) are the union over registered ATSs, and each one is there for a reason."""
+
+    OLD = sorted({
+        *old_route.BOARD_HOSTS, *(entry["host"] for entry in ENDPOINTS["lookup_endpoints"]), *ENDPOINTS["static_asset_hosts"],
+        "s?-recruiting.cdn.greenhouse.io", "s??-recruiting.cdn.greenhouse.io", "s???-recruiting.cdn.greenhouse.io",
+        *(entry["host"] for entry in ENDPOINTS["captcha_endpoints"] if entry["confirmed"]), "fonts.googleapis.com", "fonts.gstatic.com",
+    })
+
+    def test_with_greenhouse_alone_the_list_is_the_old_one(self):
+        self.assertEqual(apply_ats.REGISTRY, (GREENHOUSE,))
+        self.assertEqual(list(apply_agent.RESOLVABLE_HOSTS), self.OLD)
+        self.assertEqual(sorted(POLICY.resolvable_hosts), [host for host in self.OLD if not host.startswith("fonts.")])
+
+    def test_the_list_is_the_union_of_every_registered_policy_and_the_fonts(self):
+        union = {host for spec in apply_ats.REGISTRY for host in spec.route_policy.resolvable_hosts}
+        self.assertEqual(set(apply_agent.RESOLVABLE_HOSTS), union | set(apply_agent.FONT_HOSTS))
+        self.assertEqual(list(apply_agent.RESOLVABLE_HOSTS), sorted(apply_agent.RESOLVABLE_HOSTS))
+
+    def test_every_host_a_registered_policy_names_resolves(self):
+        for spec in apply_ats.REGISTRY:
+            policy = spec.route_policy
+            for host in (*policy.navigation_hosts, *policy.submit_hosts, *(endpoint.host for endpoint in policy.lookup_endpoints)):
+                with self.subTest(ats=spec.key, host=host):
+                    self.assertTrue(any(fnmatch.fnmatchcase(host, pattern) for pattern in apply_agent.RESOLVABLE_HOSTS))
+
+    def test_every_resolvable_name_belongs_to_a_registered_policy_or_is_a_font_host(self):
+        for pattern in apply_agent.RESOLVABLE_HOSTS:
+            sample = pattern.replace("?", "1")
+            with self.subTest(host=pattern):
+                if pattern in apply_agent.FONT_HOSTS:
+                    continue
+                reasons = [
+                    spec.key for spec in apply_ats.REGISTRY if any((
+                        sample in spec.route_policy.navigation_hosts, sample in spec.route_policy.submit_hosts,
+                        sample in {endpoint.host for endpoint in spec.route_policy.lookup_endpoints},
+                        sample in {endpoint.host for endpoint in spec.route_policy.captcha_endpoints},
+                        spec.route_policy.static_asset_host(sample),
+                    ))
+                ]
+                self.assertTrue(reasons, "nothing in any registered policy needs this name to resolve")
+
+    def test_a_second_registered_ats_adds_its_hosts_to_the_rule(self):
+        second = dataclasses.replace(
+            GREENHOUSE, key="second", route_policy=dataclasses.replace(POLICY, resolvable_hosts=("jobs.example-robotics.test",)),
+        )
+        union = {host for spec in (GREENHOUSE, second) for host in spec.route_policy.resolvable_hosts} | set(apply_agent.FONT_HOSTS)
+        self.assertIn("jobs.example-robotics.test", union)
+        self.assertEqual(union - set(apply_agent.RESOLVABLE_HOSTS), {"jobs.example-robotics.test"})
 
 
 class SendAndElsewhereParityTests(unittest.TestCase):
