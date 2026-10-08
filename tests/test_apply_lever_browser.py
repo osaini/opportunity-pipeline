@@ -762,11 +762,36 @@ class EeoAndConsentTests(LeverCase):
         near = self.go(page="cards_files_consent.html", src=lever_sources(allowed={"acknowledgment"}, store=other))
         self.assertEqual(near.agent.keys("tick"), [], "a statement that is not exactly the box's is no statement for it")
 
-    def test_a_required_group_of_boxes_is_left_whole_and_the_page_wide_relaxation_changes_nothing(self):
+    GROUPS = ("cards[c0c0c0c0-0000-5000-8000-0000000000c0][field1]", "cards[c0c0c0c0-0000-5000-8000-0000000000c0][field2]")
+    STATEMENT_BOX = "cards[c0c0c0c0-0000-5000-8000-0000000000c0][field0]"
+
+    def test_a_required_group_of_boxes_is_left_whole(self):
         run = self.go(page="two_required_groups.html")
         self.assertEqual(run.agent.keys("tick"), [])
         left = self.left(run)
-        self.assertEqual(len([key for key in left if key.startswith("cards[")]), 2, "both groups are the student's")
+        self.assertEqual(len([key for key in left if key.startswith("cards[")]), 3, "both groups and the statement are the student's")
+
+    def test_the_tick_of_one_box_takes_required_off_every_box_and_the_box_stays_ticked_and_the_other_required_questions_stay_the_students(self):
+        # Spec 10.4 item 13. The app ticks only the statement it has stored word for word. The page's script then drops `required` from every required box on the
+        # page, the ticked one included, so a check that read the page as it is now would no longer find that question required, and would take the tick back.
+        statement = "I certify that the answers above are true and complete."
+        stored = Store(entry("acknowledgment", statement, "checked", kind="checkbox", company_key=apply_policy.employer_key(LEVER_COMPANY)))
+        required = []
+
+        def student(page, step, seen):
+            if step == "handoff" and not required:
+                required.append(page.evaluate("Array.from(document.querySelectorAll('.required-field input[type=checkbox]')).map((box) => box.required)"))
+
+        run = self.go(page="two_required_groups.html", src=lever_sources(allowed={"acknowledgment"}, store=stored), student=student)
+        self.assertEqual(required, [[False] * 5], "the page's script took required off every box")
+        self.assertEqual(run.agent.keys("tick"), [self.STATEMENT_BOX], "ticked once, and not taken back")
+        self.assertEqual(run.seen["form"][self.STATEMENT_BOX], statement)
+        left = self.left(run)
+        for key in self.GROUPS:
+            self.assertIn(key, left, "a group nobody answered is still the student's")
+            self.assertNotIn(key, run.seen["form"], "and the app ticked nothing in it")
+        self.assertNotIn(self.STATEMENT_BOX, left)
+        self.assertEqual([item for item in run.result.check_problems if item["kind"] in ("required_not_seen", "unplanned_value", "empty")], [])
 
     def test_the_marketing_consent_and_the_pronouns_are_never_ticked(self):
         run = self.go(page="variants.html")

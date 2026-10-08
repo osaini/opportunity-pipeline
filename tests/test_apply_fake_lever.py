@@ -926,13 +926,13 @@ class PageBrowserTests(FakeLeverBrowserCase):
         fake, page = self.open(FakeLever(page="two_required_groups.html"))
         boxes = page.locator(".required-field input[type=checkbox]")
         required = lambda: page.evaluate("Array.from(document.querySelectorAll('.required-field input[type=checkbox]')).map((box) => box.required)")
-        self.assertEqual(required(), [True] * 4)
+        self.assertEqual(required(), [True] * 5)
         boxes.nth(0).check()
-        self.assertEqual(required(), [False] * 4)
+        self.assertEqual(required(), [False] * 5)
         boxes.nth(0).uncheck()
-        self.assertEqual(required(), [True] * 4)
+        self.assertEqual(required(), [True] * 5)
         boxes.nth(2).check()
-        self.assertEqual(required(), [False] * 4)
+        self.assertEqual(required(), [False] * 5)
 
     def test_any_disability_answer_makes_the_signature_and_date_required(self):
         fake, page = self.open()
