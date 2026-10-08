@@ -1,0 +1,113 @@
+"""Apply for me's "what's missing" view on a saved Lever role (docs/phase5-lever-handoff-spec.md, milestone LV2), and its settings.
+
+The server runs in this process with the fictional Lever page (tests/fixtures/apply/lever/) served by a fake page client, so nothing here
+reaches Lever and no browser is opened by the app. There is no window action for Lever yet: the view says so, and has no button for one.
+"""
+
+from __future__ import annotations
+
+import httpx
+from axe_core_python.sync_playwright import Axe
+from playwright.sync_api import expect
+
+from apply_fake_ats import LEVER_COMPANY, LEVER_URL
+from conftest import OWNER_TOKEN, wait_for_results
+from ui_helpers import AXE_OPTIONS, db, open_saved_role
+
+BEARER = {"Authorization": f"Bearer {OWNER_TOKEN}"}
+
+
+def tracker_rows(live_server):
+    with db(live_server) as conn:
+        return (
+            [tuple(row) for row in conn.execute("SELECT opportunity_id, stage FROM applications ORDER BY opportunity_id")],
+            conn.execute("SELECT COUNT(*) FROM opportunity_interactions").fetchone()[0],
+            conn.execute("SELECT COUNT(*) FROM apply_runs").fetchone()[0],
+            conn.execute("SELECT COUNT(*) FROM application_submit_claims").fetchone()[0],
+        )
+
+
+def test_a_saved_lever_role_shows_what_is_missing_and_offers_no_window_action(lever_ready, owner_page, live_server):
+    before = tracker_rows(live_server)
+    open_saved_role(owner_page, LEVER_COMPANY)
+    section = owner_page.locator(".apply-for-me")
+    expect(section).to_be_visible()
+    # The student here has no phone number confirmed, and Lever's form asks for one; the current company is the app's to leave.
+    expect(section.locator(".apply-summary")).to_have_text("1 question needs an answer first. 1 more is left for you to answer on the Lever form")
+    phone = section.locator('[data-apply-key="phone"]')
+    expect(phone.locator("strong")).to_have_text("Phone")
+    expect(phone).to_contain_text("Add your phone number to your profile")
+    expect(phone.get_by_role("button", name="Open your profile")).to_be_visible()
+    source = section.locator(".apply-source")
+    expect(source).to_contain_text("Read from Harbor Demo Labs - Customer Success Lead on Lever")
+    expect(source.locator("a")).to_have_attribute("href", f"{LEVER_URL}/apply")
+    expect(section.locator(".apply-mismatch")).to_have_count(0)
+    # What the app cannot fill is the student's to type in the window, named with the reason.
+    expect(section.locator(".apply-group")).to_have_text("Left for you: the app leaves these to you on the Lever form.")
+    company = section.locator('[data-apply-key="org"]')
+    expect(company.locator("strong")).to_have_text("Current company")
+    expect(company).to_contain_text("The app has no source for your current company. Type it in the window")
+    expect(company.locator("textarea, select, input, button")).to_have_count(0)
+    # The résumé is the student's to attach, and the sentence says why.
+    expect(section.locator(".apply-ats-note")).to_contain_text("you attach it yourself in the window")
+    expect(section.locator(".apply-ats-note")).to_contain_text("Lever reads it as soon as it is attached")
+    # Plainly: nothing can be started on Lever yet, and there is no button that looks as if it could.
+    expect(section.locator("[data-apply-not-offered]")).to_have_text("Finish in browser for Lever postings is not available yet")
+    for name in ("Rehearse in a window", "Finish in browser", "Look up options", "Submit application", "Submit"):
+        expect(section.get_by_role("button", name=name)).to_have_count(0)
+    expect(section.locator(".apply-note")).to_have_text("This only reads the form. Opening it changes nothing in your tracker, and nothing is filled or sent.")
+    # What the app would do with each field: the disability question and its signature are left whole to the student.
+    section.locator(".apply-fields > summary").click()
+    expect(section.locator(".apply-fields")).to_contain_text("Disability status (optional): Answering this makes Lever ask for a typed signature and a date")
+    expect(section.locator(".apply-fields")).to_contain_text("Pronouns (optional): The app doesn't answer this kind of question for you")
+    expect(section.locator(".apply-fields")).to_contain_text("Full name: from profile")
+    violations = Axe().run(owner_page, context=".apply-for-me", options=AXE_OPTIONS).get("violations", [])
+    assert not violations, [(item["id"], item["help"]) for item in violations]
+    assert tracker_rows(live_server) == before, "opening the section wrote nothing: no application, no interaction, no run, no claim"
+
+
+def test_the_greenhouse_role_beside_it_still_offers_both_window_actions(lever_ready, owner_page):
+    open_saved_role(owner_page)
+    section = owner_page.locator(".apply-for-me")
+    expect(section).to_be_visible()
+    expect(section.get_by_role("button", name="Rehearse in a window")).to_be_visible()
+    expect(section.get_by_role("button", name="Finish in browser")).to_be_visible()
+    expect(section.locator("[data-apply-not-offered]")).to_have_count(0)
+    expect(section.locator(".apply-note")).to_contain_text("A rehearsal changes nothing in your tracker")
+
+
+def test_with_the_lever_switch_off_the_role_says_how_to_turn_it_on(lever_ready, owner_page, base_url):
+    response = httpx.put(f"{base_url}/api/v1/automation/settings", headers=BEARER, json={"modes": {"apply_agent_lever": "off"}})
+    assert response.status_code == 200, response.text
+    owner_page.reload()
+    wait_for_results(owner_page)
+    open_saved_role(owner_page, LEVER_COMPANY)
+    section = owner_page.locator(".apply-for-me")
+    expect(section.locator(".apply-summary")).to_have_text("Apply for me works with Lever postings once you turn it on in Apply agent settings")
+    expect(section.get_by_role("button")).to_have_count(0)
+
+
+def test_the_settings_keep_levers_exact_location_apart_and_say_what_the_two_switches_do(lever_ready, owner_page, live_server):
+    owner_page.click("#profile-nav")
+    wait_for_results(owner_page)
+    block = owner_page.locator(".automation-apply-agent")
+    expect(block.get_by_role("heading", name="Exact options for lists the Greenhouse form owns")).to_be_visible()
+    expect(block.get_by_role("heading", name="Exact options for lists the Lever form owns")).to_be_visible()
+    lever = block.locator('form[data-ats="lever"]')
+    expect(lever.get_by_label("List").locator("option")).to_have_text(["Location"])
+    lever.get_by_label("Exact option").fill("Austin, Texas, United States")
+    lever.get_by_role("button", name="Save this option").click()
+    expect(block.locator('ul[data-ats="lever"]')).to_contain_text("Location: Austin, Texas, United States")
+    with db(live_server) as conn:
+        assert [tuple(row) for row in conn.execute("SELECT ats, field, label FROM apply_ats_labels")] == [("lever", "location", "Austin, Texas, United States")]
+    expect(block.locator('ul[data-ats="greenhouse"]')).not_to_contain_text("Austin")
+    expect(block.locator(".apply-lever-settings")).to_contain_text("Apply for me on Lever is on.")
+    expect(block.locator(".apply-lever-settings")).to_contain_text(
+        "Let the app attach my résumé on Lever is off. Lever reads a résumé as soon as it is attached, so it is sent to Lever before you press Submit."
+    )
+    block.get_by_role("button", name="Remove the saved Lever Location option").click()
+    expect(block.locator('ul[data-ats="lever"] li')).to_have_count(0)
+    with db(live_server) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM apply_ats_labels").fetchone()[0] == 0
+    violations = Axe().run(owner_page, context=".automation-apply-agent", options=AXE_OPTIONS).get("violations", [])
+    assert not violations, [(item["id"], item["help"]) for item in violations]
