@@ -380,7 +380,8 @@ class FakeSchemaClient:
 # Knobs the in-process UI suite may change between tests (a thread-isolated fake reads them when a run starts).
 # "handoff" is Finish in browser's canned run: "wait" is how long the fictional student takes before pressing Submit
 # application (seconds), and "outcome" is what the form then does: submitted, unconfirmed, security_code, refused (the
-# app says no to the hand-over), failed_4xx, or hang_after_hand_over.
+# app says no to the hand-over), failed_4xx, or hang_after_hand_over. "after_front" (optional) ends the wait that many seconds
+# after the first request to bring the window forward, so a test of that request waits for it rather than racing a fixed wait.
 CANNED: dict[str, Any] = {"hang": False, "outcome": "rehearsed", "step_delay": 0.3, "handoff": {"wait": 1.5, "outcome": "submitted"}}
 HANDOFF_OUTCOMES = ("submitted", "unconfirmed", "security_code", "refused", "failed_4xx", "hang_after_hand_over")
 STOPPED_TEXT = STOPPED
@@ -568,6 +569,8 @@ class CannedAgent:
             waited += 0.1
             if link is not None and link.front_requested():
                 fronts += 1
+                if "after_front" in self.handoff:
+                    wait = min(wait, waited + float(self.handoff["after_front"]))
             if waited - beat >= 1.0:
                 self.heartbeat()
                 beat = waited
