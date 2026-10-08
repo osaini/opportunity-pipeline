@@ -205,6 +205,7 @@ class RouteState:
     # Handoff only. Once the app has typed the emailed code (``require_code_press``), the code POST waits for the student's own press of
     # Submit: a trusted click on the form's submit control, seen after the typing finished, in a world the page's scripts cannot reach.
     # However long a widget waits, and however often it retries, a send before that press is refused (D1 B, owner decision 2026-10-08).
+    # The requirement stays for the rest of the run: a code POST that passes uses up the press, so a second prompt needs another.
     code_press_required: bool = False
     code_pressed: bool = False
     # Handoff only: when (time.monotonic()) the student last pressed the form's Submit, as the press listener reports it; 0 for never.
@@ -229,7 +230,7 @@ class RouteState:
         """Count a request the handler let through, so the one-submit-POST rule sees it."""
         if decision.code_post:
             self.code_posts_passed += 1
-            self.code_press_required = self.code_pressed = False    # the press was used by this POST
+            self.code_pressed = False    # the press was used by this POST; a later code POST (a second prompt) needs a new one
         elif decision.submit_post:
             self.submit_posts_passed += 1
 

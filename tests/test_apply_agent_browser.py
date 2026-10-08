@@ -1564,6 +1564,20 @@ class HandoffTests(HandoffCase):
         self.assertNotIn("code_yours", run.steps)
         self.assertEqual(link.results, [(1, True, "")])
 
+    def test_a_retrying_widget_cannot_send_the_app_typed_code_again_at_a_second_prompt_without_a_new_press(self):
+        # The press that sent the first code POST is used up. When the code is asked for again, the boxes still hold what the app typed and the
+        # widget keeps retrying: every code POST, the second prompt's included, needs a press made after the one before it went through.
+        link = fakes.FakeLink(({"status": "found", "code": CODE},))
+        fakes.PRESSES.clear()
+        run = self.handoff("security_code_retry_twice", student="press_at_each_prompt", link=link,
+                           timeouts=replace(fakes.HANDOFF_TIMEOUTS, security_code_s=20, code_read_s=4))
+        self.assertEqual(run.result.outcome, "submitted", run.result.reasons)
+        self.assertEqual(len(fakes.PRESSES), 2)
+        posts = run.fake.post_times
+        self.assertEqual(len(posts), 3, "the 428, the first code POST (428 again) and the second code POST")
+        self.assertGreater(posts[1], fakes.PRESSES[0])
+        self.assertGreater(posts[2], fakes.PRESSES[1], "the second prompt's code POST reached Greenhouse before the student pressed Submit again")
+
     def test_a_code_widget_cannot_fake_the_students_press(self):
         link = fakes.FakeLink(({"status": "found", "code": CODE},))
         fakes.PRESSES.clear()

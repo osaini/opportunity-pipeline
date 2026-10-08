@@ -221,6 +221,7 @@ HANDOFF_SCENARIOS = (
     "security_code_twice",        # the code is asked for again after the first code POST
     "security_code_slow",         # the code POST is answered two seconds after it arrives (a real submit takes one to three)
     "security_code_retry",        # the code widget submits on the 8th box and again every 2.5 s until the page moves on
+    "security_code_retry_twice",  # the retrying widget above, and the code is asked for again after the first code POST
     "security_code_forger",       # the code widget fakes the student's press (a script click, a made-up event, every function on window), then submits
     "form_posts_elsewhere",       # the form sends its application to an address the app does not recognize (the page's own submit listener)
     "challenge",                  # the answer to the POST is a visible reCAPTCHA challenge frame
@@ -229,7 +230,7 @@ HANDOFF_SCENARIOS = (
 CODE_ANSWER_DELAY_S = 2.0
 _ALIASES = {
     "security_code_autosubmit": "security_code", "error_echoes_input": "validation_422", "security_code_twice": "security_code",
-    "security_code_slow": "security_code", "security_code_retry": "security_code", "security_code_forger": "security_code",
+    "security_code_slow": "security_code", "security_code_retry": "security_code", "security_code_retry_twice": "security_code", "security_code_forger": "security_code",
     "bframe_hidden": "validation_422",
 }
 _FORM = 'document.getElementById("application-form")'
@@ -240,6 +241,15 @@ _HANDOFF_SCRIPTS = {
       if (Array.prototype.every.call(boxes, function (box) { return box.value; })) %s.requestSubmit();
     });""" % _FORM,
     "security_code_retry": """(function () {
+      var form = %s, retry = null;
+      document.getElementById("security-code").addEventListener("input", function () {
+        var boxes = document.querySelectorAll("#security-code input");
+        if (retry || !Array.prototype.every.call(boxes, function (box) { return box.value; })) return;
+        form.requestSubmit();
+        retry = setInterval(function () { form.requestSubmit(); }, 2500);
+      });
+    })();""" % _FORM,
+    "security_code_retry_twice": """(function () {
       var form = %s, retry = null;
       document.getElementById("security-code").addEventListener("input", function () {
         var boxes = document.querySelectorAll("#security-code input");
@@ -366,7 +376,7 @@ class HandoffGreenhouse(FakeGreenhouse):
     def _submit(self, body: str, cors: dict[str, str]) -> Any:
         real = self.scenario
         self.posts += 1
-        if real == "security_code_twice" and self.posts <= 2:
+        if real in ("security_code_twice", "security_code_retry_twice") and self.posts <= 2:
             return Reply(428, fixture_text("security_code_428.json"), "application/json", {"access-control-allow-origin": "https://job-boards.greenhouse.io"})
         self.scenario = _ALIASES.get(real, real)
         try:
@@ -477,6 +487,20 @@ def press_after_the_widget_gave_up(page: Any, step: str) -> None:
             press_submit(page)
 
 
+def press_at_each_prompt_after_the_widget_gave_up(page: Any, step: str) -> None:
+    """Like ``press_after_the_widget_gave_up``, but for a form that asks for the code twice: the same press, 3.4 s after the last one (or after
+    the first prompt), up to twice, a real mouse click each time. The boxes keep what the app typed; it types nothing."""
+    if step == "handoff":
+        complete_and_submit(page, step)
+    elif step == "security_code" and page.locator("#security-input-0").count() and page.input_value("#security-input-0"):
+        since = page.evaluate("() => { window.__armedAt = window.__armedAt || Date.now(); return window.__lastPressAt || window.__armedAt; }")
+        count = page.evaluate("() => window.__pressCount || 0")
+        if count < 2 and page.evaluate("() => Date.now()") - since > 3400:
+            page.evaluate("() => { window.__lastPressAt = Date.now(); window.__pressCount = (window.__pressCount || 0) + 1; }")
+            PRESSES.append(time.monotonic())
+            press_submit(page)
+
+
 def die_in_the_turn(page: Any, step: str) -> None:
     """The driver process ends without closing anything (a crash): the browser it started is left for the parent to find."""
     if step == "handoff" and _once(page, "die"):
@@ -534,7 +558,7 @@ def attach_and_upload(page: Any, step: str) -> None:
 
 STUDENTS = {
     "complete_and_submit": complete_and_submit, "do_nothing": do_nothing, "close_window": close_window, "press_and_close": press_and_close,
-    "type_code_and_submit": type_code_and_submit, "press_after_the_widget_gave_up": press_after_the_widget_gave_up, "type_code_late": type_code_late, "attach_and_upload": attach_and_upload, "press_when_typed": press_when_typed,
+    "type_code_and_submit": type_code_and_submit, "press_after_the_widget_gave_up": press_after_the_widget_gave_up, "press_at_each_prompt": press_at_each_prompt_after_the_widget_gave_up, "type_code_late": type_code_late, "attach_and_upload": attach_and_upload, "press_when_typed": press_when_typed,
     "die_in_the_turn": die_in_the_turn, "kill_the_driver_then_die": kill_the_driver_then_die,
 }
 
