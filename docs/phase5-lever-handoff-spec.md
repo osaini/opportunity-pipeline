@@ -368,7 +368,9 @@ reason a Lever role can get the read-only check with no browser.
    recorded as an unknown control, and one inside that names another form is not read); a control inside a
    `fieldset[disabled]` is disabled, except inside that fieldset's first `legend`; and an `application-form` that sits
    inside another form is not a form the browser builds, so the page has none. More than 100 disabled fieldsets open
-   inside one another is a page the parser will not read (it returns none).
+   inside one another, or more than 50 `<label>` elements open inside one another, is a page the parser will not read
+   (it returns none). The walk takes time in proportion to the page: a stray end tag is turned away at once, not found
+   by searching everything still open.
 3. **Standard fields** are recognised by exact name: `resume`, `name`, `email`, `phone`, `location`,
    `selectedLocation`, `org`, `urls[...]`, `pronouns`, `comments`, `opportunityLocationId`, `consent[marketing]` and
    `residentialLocation[...]`. A control with **no name** is never filled and never listed: it is not submitted.

@@ -39,6 +39,7 @@ MAX_TEMPLATE_BYTES = 2 * 1024 * 1024  # a university dropdown's template was 622
 MAX_TEMPLATE_FIELDS = 200
 MAX_FIELD_OPTIONS = 20_000
 MAX_NESTED_FIELDSETS = 100  # disabled fieldsets open inside one another
+MAX_OPEN_LABELS = 50  # <label> elements open inside one another (real pages have none, HTML allows none)
 CARD_TYPES = ("text", "textarea", "dropdown", "multiple-choice", "multiple-select", "file-upload")
 
 # Lever's field type -> the type the same control has in Greenhouse's listing, which ``policy.control_of`` reads.
@@ -143,13 +144,67 @@ class LeverForm:
 # --- Walking the page ------------------------------------------------------------------------------------------------
 
 
+class _Open:
+    """The tags still open, with a count per name so that an end tag that closes nothing is turned away at once.
+
+    Pages are up to 4 MB and may be broken or hostile: scanning the whole stack for every stray end tag would take time in
+    proportion to the square of the page.
+    """
+
+    __slots__ = ("items", "counts", "flagged")
+
+    def __init__(self) -> None:
+        self.items: list[tuple[str, bool]] = []
+        self.counts: Counter[str] = Counter()
+        self.flagged = 0  # how many open tags carry the flag
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def push(self, tag: str, flag: bool = False) -> None:
+        self.items.append((tag, flag))
+        self.counts[tag] += 1
+        self.flagged += flag
+
+    def close(self, tag: str) -> int | None:
+        """Close the newest open ``tag`` and what was left open inside it. How many flagged tags that closed, or None if none was open."""
+        if not self.counts[tag]:
+            return None
+        index = len(self.items) - 1
+        while self.items[index][0] != tag:
+            index -= 1
+        removed = self.items[index:]
+        del self.items[index:]
+        gone = 0
+        for name, flag in removed:
+            self.counts[name] -= 1
+            gone += flag
+        self.flagged -= gone
+        return gone
+
+
+class _LabelEl:
+    """One ``<label>`` element: where its text starts and ends in the page's shared run of text chunks, and its ``for``."""
+
+    __slots__ = ("chunks", "start", "end", "target")
+
+    def __init__(self, chunks: list[str], target: str) -> None:
+        self.chunks = chunks
+        self.start = len(chunks)
+        self.end: int | None = None  # None while it is open: its text runs to the end of the page
+        self.target = target
+
+    def text(self) -> str:
+        return "".join(self.chunks[self.start:self.end])
+
+
 class _Control:
     """One control as the page wrote it. For a radio or a checkbox it is one option of its group."""
 
     __slots__ = ("seq", "tag", "kind", "name", "required", "disabled", "value", "label", "starred", "dom_id", "options", "span", "label_el", "outside")
 
     def __init__(self, seq: int, tag: str, kind: str, name: str, required: bool, disabled: bool, value: str | None, label: str,
-                 starred: bool, dom_id: str, label_el: list[str] | None) -> None:
+                 starred: bool, dom_id: str, label_el: "_LabelEl | None") -> None:
         self.seq = seq
         self.tag = tag
         self.kind = kind
@@ -168,7 +223,7 @@ class _Control:
     def option_label(self) -> str:
         found = _collapse("".join(self.span)) if self.span is not None else ""
         if not found and self.label_el is not None:
-            found = _collapse("".join(self.label_el))
+            found = _collapse(self.label_el.text())
         return found or _collapse(self.value or "")
 
     def option_value(self) -> str:
@@ -188,18 +243,19 @@ class _Scanner(HTMLParser):
         self._forms_open = 0  # other forms that are open: a form inside one is not a form the browser builds
         self._fieldsets: list[list[int | None]] = []  # open ``fieldset[disabled]``: [stack index, index of its first legend, -1 once that closed]
         self.controls: list[_Control] = []
-        self.for_labels: dict[str, list[str]] = {}
-        self._stack: list[tuple[str, bool]] = []  # (tag, starts a scope that owns the current label)
-        self._label_div: list[tuple[str, bool]] | None = None  # the tags open inside the current div.application-label
+        self.for_labels: dict[str, _LabelEl] = {}
+        self._stack = _Open()  # flagged: starts a scope that owns the current label
+        self._label_div: _Open | None = None  # the tags open inside the current div.application-label; flagged: their text is not the label's
         self._label_buf: list[str] = []
         self._label_text = ""
         self._label_starred = False
         self._starred_now = False
-        self._label_els: list[tuple[list[str], str]] = []  # open <label> elements: their text so far, and their ``for``
+        self._chunks: list[str] = []  # the text seen while any <label> was open, once, shared by every label
+        self._label_els: list[_LabelEl] = []  # open <label> elements
         self._select: _Control | None = None
         self._option: tuple[str | None, str | None, list[str]] | None = None
         self._pending: _Control | None = None  # the radio or checkbox waiting for its option span
-        self._span: list[tuple[str, bool]] | None = None
+        self._span: _Open | None = None
         self._seq = 0
 
     # --- tags
@@ -225,7 +281,7 @@ class _Scanner(HTMLParser):
             if tag in ("input", "select", "textarea") and a.get("form") == "application-form":
                 self._outside(tag, a)
             if tag not in _VOID:
-                self._stack.append((tag, False))
+                self._stack.push(tag)
             return
         scope = "application-question" in classes or "section" in classes
         if scope:
@@ -235,7 +291,7 @@ class _Scanner(HTMLParser):
                 if fieldset[1] is None and len(self._stack) == fieldset[0] + 1:  # the fieldset's first legend, directly inside it
                     fieldset[1] = len(self._stack)
         if tag not in _VOID:
-            self._stack.append((tag, scope))
+            self._stack.push(tag, scope)
         if tag == "fieldset" and "disabled" in a:
             if len(self._fieldsets) >= MAX_NESTED_FIELDSETS:
                 raise ValueError("too many disabled fieldsets inside one another")
@@ -244,18 +300,22 @@ class _Scanner(HTMLParser):
             if tag not in _VOID:
                 skip = tag in ("svg", "script", "style") or (tag == "span" and "required" in classes) or (tag == "p" and "description" in classes)
                 self._starred_now = self._starred_now or (tag == "span" and "required" in classes)
-                self._label_div.append((tag, skip))
+                self._label_div.push(tag, skip)
         elif tag == "div" and "application-label" in classes:
-            self._label_div = [("div", False)]
+            self._label_div = _Open()
+            self._label_div.push("div")
             self._label_buf = []
             self._starred_now = False
         if self._span is not None and tag not in _VOID:
-            self._span.append((tag, False))
+            self._span.push(tag)
         elif tag == "span" and "application-answer-alternative" in classes and self._pending is not None:
-            self._span = [("span", False)]
+            self._span = _Open()
+            self._span.push("span")
             self._pending.span = []
         if tag == "label":
-            self._label_els.append(([], a.get("for") or ""))
+            if len(self._label_els) >= MAX_OPEN_LABELS:
+                raise ValueError("too many labels inside one another")
+            self._label_els.append(_LabelEl(self._chunks, a.get("for") or ""))
         elif tag == "input":
             self._input(a)
         elif tag == "select":
@@ -292,16 +352,17 @@ class _Scanner(HTMLParser):
             self._end_option()
             self._select = None
         elif tag == "label" and self._label_els:
-            text, target = self._label_els.pop()
-            if target:
-                self.for_labels.setdefault(target, text)
+            label = self._label_els.pop()
+            label.end = len(self._chunks)
+            if label.target:
+                self.for_labels.setdefault(label.target, label)
         if self._label_div is not None:
-            self._close_in(self._label_div, tag)
+            self._label_div.close(tag)
             if not self._label_div:
                 self._label_div = None
                 self._label_text, self._label_starred = _collapse("".join(self._label_buf)), self._starred_now
         if self._span is not None:
-            self._close_in(self._span, tag)
+            self._span.close(tag)
             if not self._span:
                 self._span = None
                 self._pending = None
@@ -311,22 +372,13 @@ class _Scanner(HTMLParser):
         if tag == "form":
             self.in_form = False
 
-    @staticmethod
-    def _close_in(opened: list[tuple[str, bool]], tag: str) -> None:
-        for index in range(len(opened) - 1, -1, -1):
-            if opened[index][0] == tag:
-                del opened[index:]
-                return
-
     def _pop(self, tag: str) -> bool:
         """Close ``tag`` and what was left open inside it. True when that closed a scope that owns the current label."""
-        for index in range(len(self._stack) - 1, -1, -1):
-            if self._stack[index][0] == tag:
-                scoped = any(scope for _, scope in self._stack[index:])
-                del self._stack[index:]
-                self._close_fieldsets()
-                return scoped
-        return False
+        scoped = self._stack.close(tag)
+        if scoped is None:
+            return False
+        self._close_fieldsets()
+        return bool(scoped)
 
     def _close_fieldsets(self) -> None:
         size = len(self._stack)
@@ -346,9 +398,9 @@ class _Scanner(HTMLParser):
             self.title.append(data)
         if not self.in_form or self._raw:
             return
-        for text, _ in self._label_els:
-            text.append(data)
-        if self._label_div is not None and not any(skip for _, skip in self._label_div):
+        if self._label_els:
+            self._chunks.append(data)
+        if self._label_div is not None and not self._label_div.flagged:
             self._label_buf.append(data)
         if self._span is not None and self._pending is not None and self._pending.span is not None:
             self._pending.span.append(data)
@@ -374,7 +426,7 @@ class _Scanner(HTMLParser):
         self._seq += 1
         control = _Control(
             self._seq, tag, kind, a.get("name") or "", "required" in a, "disabled" in a or self._in_disabled_fieldset(), a.get("value"), self._label_text,
-            self._label_starred, a.get("id") or "", self._label_els[-1][0] if self._label_els else None,
+            self._label_starred, a.get("id") or "", self._label_els[-1] if self._label_els else None,
         )
         self.controls.append(control)
         return control
@@ -606,7 +658,7 @@ def parse_lever_form(html: str) -> LeverForm | None:
         return None
     for control in scanner.controls:
         if not control.label and control.dom_id in scanner.for_labels:
-            control.label = _collapse("".join(scanner.for_labels[control.dom_id]))
+            control.label = _collapse(scanner.for_labels[control.dom_id].text())
     groups: dict[str, list[_Control]] = {}
     for control in scanner.controls:
         if control.name:  # a control with no name is not submitted: never filled, never listed (5.4 item 3)

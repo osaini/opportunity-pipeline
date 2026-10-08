@@ -572,6 +572,44 @@ class LimitTests(unittest.TestCase):
         self.assertEqual(parse_lever_form(text).unknown, (), "a control written inside a script is not a control")
 
 
+class MalformedMarkupTests(unittest.TestCase):
+    """Deep or unbalanced markup costs time in proportion to its size, never in proportion to its size squared."""
+
+    def timed(self, *body):
+        text = page(*body)
+        self.assertLess(len(text), 400_000)
+        started = time.monotonic()
+        form = parse_lever_form(text)
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 3, "a page of this size was read in %.1f seconds" % elapsed)
+        return form
+
+    def test_end_tags_that_match_nothing_under_deep_open_tags_are_cheap(self):
+        form = self.timed("<div>" * 20000 + "</span>" * 20000)
+        self.assertEqual((form.fields, form.unknown), ((), ()))
+
+    def test_labels_left_open_past_the_limit_are_a_page_the_parser_will_not_read_and_it_says_so_at_once(self):
+        self.assertIsNone(self.timed("<label>" * 20000 + "<b>x</b>" * 20000, text_control(0)))
+        limit = lever_form.MAX_OPEN_LABELS
+        self.assertIsNotNone(parse_lever_form(page("<label>" * limit + "</label>" * limit)))
+        self.assertIsNone(parse_lever_form(page("<label>" * (limit + 1))))
+
+    def test_thousands_of_labels_that_close_are_read_in_one_pass(self):
+        form = self.timed("<label>x</label>" * 20000, "<input name=\"favourite\">")
+        self.assertEqual(len(form.unknown), 1)
+
+    def test_deeply_nested_label_and_answer_markup_is_cheap(self):
+        form = self.timed('<div class="application-label">' + "<i>" * 20000 + "</u>" * 20000, '<span class="application-answer-alternative">' + "<i>" * 20000 + "</u>" * 20000)
+        self.assertEqual(form.fields, ())
+
+    def test_a_radio_is_named_by_the_label_around_it_when_there_is_no_answer_span(self):
+        name = name_of(0)
+        control = (f'<label><input type="radio" name="{name}" value="Yes"> Yes </label>'
+                   f'<label for="no"><b>No</b></label><label><input type="radio" id="no" name="{name}" value="No"></label>')
+        form = parse_lever_form(one_card("multiple-choice", options=["Yes", "No"], control=control))
+        self.assertEqual((len(form.fields), form.unreadable), (1, ()))
+
+
 class CrossCheckTests(unittest.TestCase):
     """5.4 item 5: the JSON says what the question is, the page says what can be filled. Any mismatch marks the field unreadable."""
 
