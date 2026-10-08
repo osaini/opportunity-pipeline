@@ -69,6 +69,7 @@ from uuid import uuid4
 
 from ..apply.claims import claim_held
 from ..apply.greenhouse import DISPLAY_NAME as GREENHOUSE_NAME
+from ..apply.lever import DISPLAY_NAME as LEVER_NAME
 from ..core.database import is_unique_violation
 from ..outreach.config import sender_account
 from ..core.schema import PAUSE_NEVER_CHANGED
@@ -193,6 +194,15 @@ FEATURES: dict[str, Feature] = {
         Feature("apply_agent", "Apply for me",
                 f"Fill a {GREENHOUSE_NAME} application from your confirmed facts and saved answers, show you the result, and send it only "
                 "when you press Submit", "applications", "external"),
+        # Lever (docs/phase5-lever-handoff-spec.md, section 9): both are off until the student turns them on, and nothing turns them on
+        # for the student. The first lets Apply for me read a saved Lever role; the second is the choice L1 asked for.
+        Feature("apply_agent_lever", f"Apply for me on {LEVER_NAME}",
+                f"Let Apply for me read saved {LEVER_NAME} roles and show what it would fill and what is missing. Needs Apply for me on",
+                "applications", "external"),
+        Feature("apply_lever_resume_upload", f"Let the app attach my résumé on {LEVER_NAME}",
+                f"Let the app attach my résumé on {LEVER_NAME}. {LEVER_NAME} reads it as soon as it is attached, so it is sent to {LEVER_NAME} "
+                "before you press Submit. While this is off, you attach it yourself in the window",
+                "applications", "external"),
         # Phase 2: changes that stay inside the app, each with an Undo (student/resume_variants.py,
         # automation/internal.py, automation/triage.py).
         Feature("outreach_auto_close", "Close companies that never answered",
@@ -262,12 +272,27 @@ def _thank_you_requirement(conn: Any, user_id: str) -> str:
 # Automation panel shows why. The ones that need another module's records are
 # registered by that module at startup (register_requirement, through
 # bootstrap.register_all); until then each answers with an error.
+LEVER_NEEDS_APPLY_AGENT = "Apply for me must be on first"
+RESUME_UPLOAD_NEEDS_LEVER = f"Apply for me on {LEVER_NAME} must be on first"
+
+
+def _lever_requirement(conn: Any, user_id: str) -> str:
+    """Apply for me on Lever reads a role through Apply for me, so that switch must be on."""
+    return "" if mode(conn, user_id, "apply_agent") == "on" else LEVER_NEEDS_APPLY_AGENT
+
+
+def _lever_resume_requirement(conn: Any, user_id: str) -> str:
+    return "" if mode(conn, user_id, "apply_agent_lever") == "on" else RESUME_UPLOAD_NEEDS_LEVER
+
+
 REQUIREMENTS: dict[str, Callable[[Any, str], str]] = {
     "auto_save": _unregistered_requirement("auto_save"),
     "auto_pass": _unregistered_requirement("auto_pass"),
     "resume_variant_pick": _unregistered_requirement("resume_variant_pick"),
     "decline_thank_you": _thank_you_requirement,
     "apply_agent": _unregistered_requirement("apply_agent"),
+    "apply_agent_lever": _lever_requirement,
+    "apply_lever_resume_upload": _lever_resume_requirement,
 }
 
 
