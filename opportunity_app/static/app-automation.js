@@ -199,6 +199,8 @@
   function syncAutomationControls(settings) {
     (settings?.features || []).forEach((feature) => {
       document.querySelectorAll(`[data-automation-key="${CSS.escape(feature.key)}"]`).forEach((control) => paintAutomationControl(control, feature));
+      // A sentence that names a switch's state ("... is on") follows it too (Apply for me settings, Lever).
+      document.querySelectorAll(`[data-automation-word="${CSS.escape(feature.key)}"]`).forEach((word) => { word.textContent = feature.mode === "on" ? "on" : "off"; });
     });
     if (settings) paintAutomationPause(settings.paused);
   }

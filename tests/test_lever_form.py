@@ -752,6 +752,20 @@ class MalformedMarkupTests(unittest.TestCase):
         self.assertEqual(len(form.unreadable), 1)
         self.assertEqual((form.fields, form.unknown), ((), ()))
 
+    def test_a_form_over_the_budget_names_itself_so_the_sentence_to_the_student_reads_whole(self):
+        from opportunity_app.apply import ats as apply_ats
+        from opportunity_app.apply.policy import build_plan
+        from helpers_apply import sources
+        form = parse_lever_form(page(*(f'<input name="extra{i}">' for i in range(5000))))
+        self.assertTrue(form.unreadable[0].label.strip(), "a blank label leaves the student a question with no name")
+        schema = apply_ats.lever_parse_schema({"lever_form": form})
+        plan = build_plan(schema, None, sources(), "Fixture Co", "handoff", ats_name="Lever", ats="lever")
+        problem = plan.fields[0].problem
+        self.assertNotIn(": (", problem)
+        self.assertNotIn("()", problem)
+        self.assertNotIn("so every question is left for you", problem, "the sentence already says the student answers it")
+        self.assertIn("too much text", problem)
+
     def test_a_form_of_ordinary_size_is_inside_the_budget(self):
         label = "w" * lever_form.MAX_LABEL_CHARS
         form = parse_lever_form(page(f'<label for="shared">{label}</label>', *(f'<input id="shared" name="extra{i}">' for i in range(100))))

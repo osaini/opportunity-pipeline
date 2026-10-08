@@ -745,6 +745,8 @@ input.settings-switch:disabled { opacity: .6; cursor: progress; }
 .apply-review-note textarea { width: 100%; }
 /* Apply for me: Finish in browser. The student's turn, what was left and ticked for them, the Answer column, and the plan groups. */
 .apply-start-block { display: grid; gap: var(--space-4); }
+.apply-start-block > .apply-limit { margin: 0; }
+.profile-help.apply-ats-note { margin: 0 0 var(--space-3); }
 .apply-start-block > .apply-handoff-start { padding-top: var(--space-4); border-top: 1px solid var(--line); }
 .apply-ticks { display: grid; gap: var(--space-2); justify-items: start; min-width: 0; max-width: 100%; margin: 0; padding: var(--space-3) var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); }
 .apply-ticks[hidden] { display: none; }

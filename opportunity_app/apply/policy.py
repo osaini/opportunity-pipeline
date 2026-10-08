@@ -670,6 +670,12 @@ class _Context:
         """Where the student does what the app leaves: in the window when there is one, else on the ATS's own application page."""
         return "in the window" if self.window else f"on {lever.DISPLAY_NAME}'s application page"
 
+    def leaves(self, what: str = "it") -> str:
+        """The closing sentence of a question the app never answers: Finish in browser leaves ``what`` for the student, or, while there is no window, the student does it on the ATS's own page."""
+        if self.window:
+            return f"Finish in browser leaves {what} for you"
+        return f"Do {what} {self.there}"
+
 
 def _answer_key(item: SchemaField, repeated: Mapping[str, list[str]]) -> tuple[str, bool]:
     """(the text a saved answer is filed under, whether this question depends on its context).
@@ -757,7 +763,7 @@ def _plan_lever_file(item: SchemaField, entry: PlanField, ctx: _Context) -> Plan
         if ctx.sources.resume_upload:
             return None
         entry.problem_kind = "window"
-        entry.problem = f"Attach your résumé {ctx.there}. The app doesn't attach it on Lever, because Lever reads it as soon as it is attached"
+        entry.problem = f"Attach your résumé {ctx.there}"  # why the app doesn't is said once, in the note above the list (preflight.LEVER_RESUME_YOURS)
         return entry
     entry.problem_kind = "window"
     entry.problem = f'The app attaches no file for "{item.label}" on Lever. Attach it {ctx.there} if you want to'
@@ -839,8 +845,8 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
         # student's own act: the app would be leaving a required signature it had just caused. So the whole question is the student's (spec 6.6).
         entry.problem_kind = "sensitive_never"
         entry.problem = (
-            "A signature and a date are yours to give. Finish in browser leaves them for you" if item.name in lever.EEO_SIGNATURE_FIELDS else
-            "Answering this makes Lever ask for a typed signature and a date, which only you give, so the app leaves the whole question to you. Finish in browser leaves it for you"
+            f"A signature and a date are yours to give. {ctx.leaves('them')}" if item.name in lever.EEO_SIGNATURE_FIELDS else
+            f"Answering this makes Lever ask for a typed signature and a date, which only you give, so the app leaves the whole question to you. {ctx.leaves()}"
         )
         return entry
     # A checkbox is matched on its own statement, a follow-up on its parent's question too: neither on the bare heading.
@@ -866,13 +872,13 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
     if category in STATEMENT_CATEGORIES and not statement_control(entry.control, entry.options):
         # A statement is stored only as ticked: a text field, a list or a choice that is not Yes/No has nothing it could be typed as.
         entry.problem_kind = "sensitive_never"
-        entry.problem = f"This asks for {words} in a way the app can't answer for you. Finish in browser leaves it for you"
+        entry.problem = f"This asks for {words} in a way the app can't answer for you. {ctx.leaves()}"
         return entry
     if category == "uncategorized" or category not in sources.sensitive_allowed:
         entry.problem_kind = "sensitive_never" if category == "uncategorized" else "sensitive_not_allowed"
         entry.problem = (
-            f"This follows a question the app doesn't answer for you ({words}), so it is left for you too. Finish in browser leaves it for you"
-            if follows else f"The app doesn't answer this kind of question for you ({words}). Finish in browser leaves it for you"
+            f"This follows a question the app doesn't answer for you ({words}), so it is left for you too. {ctx.leaves()}"
+            if follows else f"The app doesn't answer this kind of question for you ({words}). {ctx.leaves()}"
         )
         return entry
     if item.label_from_page or entry.text_cut:
@@ -880,16 +886,16 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
         # compare: nothing stored is matched to either, so the student reads it and ticks it (5.4, D9 B).
         entry.problem_kind = "sensitive_never"
         entry.problem = (
-            "The statement for this box is only on the form, so the app can't match it to one you stored. Finish in browser leaves it for you"
+            f"The statement for this box is only on the form, so the app can't match it to one you stored. {ctx.leaves()}"
             if item.label_from_page else
-            "The text around this box is too long for the app to check word for word, so it is left for you. Finish in browser leaves it for you"
+            f"The text around this box is too long for the app to check word for word, so it is left for you. {ctx.leaves()}"
         )
         return entry
     if boxlike and category in STATEMENT_CATEGORIES and len(normalized_text(entry.statement).split()) < 3:
         # A statement of one or two words ("Acknowledgment") says nothing the student could be shown as agreed to, and the store
         # refuses to hold one: it is left for the student rather than offered a form that cannot be saved.
         entry.problem_kind = "sensitive_never"
-        entry.problem = "The statement for this box is too short for the app to match to one you stored. Finish in browser leaves it for you"
+        entry.problem = f"The statement for this box is too short for the app to match to one you stored. {ctx.leaves()}"
         return entry
     stored = sources.sensitive_lookup(
         category=category, question_key=key, company_key=employer_key(ctx.company), mode=ctx.mode, company_only=entry.company_only,
@@ -950,7 +956,8 @@ def _plan_lever(item: SchemaField, entry: PlanField, ctx: _Context) -> bool:
         label = ctx.sources.ats_labels.get("location", "")
         if not label:
             entry.problem_kind, entry.label_field = "label_needed", "location"
-            entry.problem = "Choose your current location: type its exact name as Lever's list spells it, in Apply for me settings or here"
+            # "here" is a box under a required question; an optional one has none, so only the settings are named.
+            entry.problem = f"Choose your current location: type its exact name as Lever's list spells it, in Apply for me settings{' or here' if entry.required else ''}"
             return True
         entry.source, entry.value = Source("ats_label", "location", label="Option you confirmed"), label
         return True
@@ -1027,9 +1034,9 @@ def _plan_value(item: SchemaField, entry: PlanField, text: str, ctx: _Context) -
         words = ", ".join(NET_WORDS[topic] for topic in entry.net_never if topic in NET_WORDS)
         entry.problem_kind = "sensitive_never"
         entry.problem = (
-            f"This looks like a question about {words}, so the app never saves an answer to it or fills one in from your saved answers. Finish in browser leaves it for you"
+            f"This looks like a question about {words}, so the app never saves an answer to it or fills one in from your saved answers. {ctx.leaves()}"
             if words else
-            "The app never ticks a box for you from your saved answers, so this is left for you. Finish in browser leaves it for you"
+            f"The app never ticks a box for you from your saved answers, so this is left for you. {ctx.leaves()}"
         )
         return entry
     row, kind, problem = _saved_answer(item, text, ctx)
