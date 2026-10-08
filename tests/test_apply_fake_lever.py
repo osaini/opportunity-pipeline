@@ -237,6 +237,17 @@ class FakeLeverReplyTests(unittest.TestCase):
             fake.challenge = challenge
             found = json.loads(fake.answer("GET", "https://api.hcaptcha.com/checksiteconfig?v=fake").body)
             self.assertEqual((found["pass"], found["challenge"]), (True, challenge))
+        for challenge in (False, True):
+            fake.challenge = challenge
+            got = fake.answer("POST", "https://api.hcaptcha.com/getcaptcha/00000000-0000-0000-0000-000000000000", b"v=fake", content_type="application/x-www-form-urlencoded")
+            self.assertEqual((got.status, json.loads(got.body)["pass"], json.loads(got.body)["challenge"]), (200, True, challenge))
+        checked = fake.answer("POST", "https://api.hcaptcha.com/checkcaptcha/00000000-0000-0000-0000-000000000000/fake", b"v=fake")
+        self.assertEqual((checked.status, json.loads(checked.body)["pass"]), (200, True))
+        fake.hcaptcha_posts_refused = True
+        refused_post = fake.answer("POST", "https://api.hcaptcha.com/getcaptcha/00000000-0000-0000-0000-000000000000")
+        self.assertTrue(refused_post.abort)
+        self.assertEqual(fake.answer("GET", "https://api.hcaptcha.com/checksiteconfig?v=fake").status, 200)   # only the POSTs are refused
+        fake.hcaptcha_posts_refused = False
         frame = fake.answer("GET", "https://newassets.hcaptcha.com/captcha/v1/fake/hcaptcha.html#frame=challenge")
         self.assertEqual((frame.status, 'id="solve"' in frame.body), (200, True))
         fake.hcaptcha_loads = False
@@ -679,6 +690,55 @@ class SubmitBrowserTests(FakeLeverBrowserCase):
         fake, page = self.submit("server_5xx")
         page.wait_for_selector("text=Something went wrong")
         self.assertEqual((fake.apply_posts()[0].status, page.locator("form#application-form").count()), (500, 0))
+
+    def test_submit_posts_to_hcaptchas_api_before_the_form_is_posted(self):
+        fake, page = self.submit("to_thanks")
+        page.wait_for_url(f"**{LEVER_THANKS_PATH}")
+        posts = [index for index, seen in enumerate(fake.requests) if seen.method == "POST" and seen.host == "api.hcaptcha.com"]
+        (apply_at,) = [index for index, seen in enumerate(fake.requests) if seen.method == "POST" and seen.host == "jobs.lever.co" and seen.path == LEVER_APPLY_PATH]
+        self.assertEqual(len(posts), 1)
+        asked = fake.requests[posts[0]]
+        self.assertRegex(asked.path, r"^/getcaptcha/[0-9a-f-]+$")
+        self.assertEqual((asked.status, asked.content_type), (200, "application/x-www-form-urlencoded"))
+        self.assertEqual(asked.post_data, "v=fake&sitekey=00000000-0000-0000-0000-000000000000")   # the widget asks hCaptcha nothing about the form
+        self.assertLess(posts[0], apply_at)
+
+    def test_a_challenge_is_checked_with_hcaptcha_before_the_form_is_posted(self):
+        fake = FakeLever()
+        fake.challenge = True
+        fake, page = self.open(fake)
+        self.fill_required(page)
+        page.click("#btn-submit")
+        page.wait_for_selector(CHALLENGE_FRAME, state="visible")
+        page.frame_locator(CHALLENGE_FRAME).locator("#solve").click()
+        self.assertTrue(self.wait_until(page, lambda: fake.apply_posts()))
+        paths = [seen.path.split("/")[1] for seen in fake.requests if seen.method == "POST" and seen.host in ("api.hcaptcha.com", "jobs.lever.co") and seen.path != "/parseResume"]
+        self.assertEqual(paths, ["getcaptcha", "checkcaptcha", LEVER_APPLY_PATH.split("/")[1]])
+
+    def test_when_hcaptchas_posts_are_refused_the_press_does_nothing(self):
+        fake = FakeLever()
+        fake.hcaptcha_posts_refused = True
+        fake, page = self.open(fake)
+        self.fill_required(page)
+        page.click("#btn-submit")
+        self.assertTrue(self.wait_until(page, lambda: [seen for seen in fake.requests if seen.method == "POST" and seen.host == "api.hcaptcha.com"]))
+        page.wait_for_timeout(500)
+        self.assertEqual((fake.apply_posts(), self.token(page)), ([], ""))
+        (asked,) = [seen for seen in fake.requests if seen.method == "POST" and seen.host == "api.hcaptcha.com"]
+        self.assertEqual(asked.status, 0)
+
+    def test_the_widget_adds_the_response_boxes_a_live_one_does_and_the_post_carries_both(self):
+        fake, page = self.open()
+        names = page.evaluate("Array.from(document.querySelectorAll('#h-captcha textarea')).map((box) => box.name)")
+        self.assertEqual(names, ["h-captcha-response", "g-recaptcha-response"])
+        self.assertEqual(page.locator("form#application-form #h-captcha textarea").count(), 2)
+        self.fill_required(page)
+        self.assertTrue(self.press(page, fake))
+        values = fake.apply_posts()[0].text_values()
+        self.assertEqual(len(values["h-captcha-response"]), 2)   # the page's own hidden input and the widget's box
+        self.assertEqual(len(set(values["h-captcha-response"])), 1)
+        self.assertEqual(values["g-recaptcha-response"], values["h-captcha-response"][:1])
+        self.assertRegex(values["g-recaptcha-response"][0], r"^P1_fake-hcaptcha-token-\d+$")
 
     def test_the_browsers_own_required_checks_run_before_anything_is_posted(self):
         fake, page = self.open()

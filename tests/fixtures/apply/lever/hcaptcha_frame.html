@@ -1,7 +1,9 @@
 <!DOCTYPE html><html><head><meta charset="utf-8"><title>hCaptcha (stand-in)</title></head>
 <!-- The page FakeLever serves at https://newassets.hcaptcha.com/captcha/v1/fake/hcaptcha.html: the frames of the stand-in
      hCaptcha script (hcaptcha_api.js). The fragment says which frame this is. The challenge frame has two buttons; pressing
-     anything in it is reported to the page that holds it, so a test can see that nothing of the app's touched it. -->
+     anything in it is reported to the page that holds it, so a test can see that nothing of the app's touched it. The hidden
+     checkbox frame POSTs getcaptcha for the page, and the challenge's solve button POSTs checkcaptcha, both to
+     api.hcaptcha.com, as the real widget's frames do. -->
 <body style="margin:0;font-family:sans-serif">
 <div id="challenge" hidden style="padding:16px">
   <p id="prompt">Select every picture of a fictional harbor crane.</p>
@@ -10,12 +12,34 @@
 </div>
 <script>
   (function () {
-    var hash = location.hash || "";
-    if (hash.indexOf("frame=challenge") < 0) return;
+    var params = new URLSearchParams((location.hash || "").replace(/^#/, ""));
+    var kind = params.get("frame") || "";
+    var sitekey = params.get("sitekey") || "";
+    function tell(what, more) { parent.postMessage(Object.assign({ fakeHcaptcha: what }, more || {}), "*"); }
+    // What the frames send to api.hcaptcha.com: a form body, nothing the page holds.
+    function post(path) {
+      var body = new URLSearchParams({ v: "fake", sitekey: sitekey }).toString();
+      return fetch("https://api.hcaptcha.com" + path, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: body })
+        .then(function (reply) { if (!reply.ok) throw new Error("hcaptcha " + reply.status); return reply.json(); })
+        .then(function (found) { if (!found || found.pass === false) throw new Error("not passed"); return found; });
+    }
+    if (kind === "checkbox-invisible") {
+      window.addEventListener("message", function (event) {
+        var data = event.data;
+        if (event.source !== parent || !data || data.fakeHcaptchaTo !== "frame" || data.kind !== "getcaptcha") return;
+        post("/getcaptcha/" + encodeURIComponent(sitekey))
+          .then(function (found) { tell("captcha", { seq: data.seq, ok: true, challenge: !!found.challenge }); })
+          .catch(function () { tell("captcha", { seq: data.seq, ok: false }); });
+      });
+      tell("ready");
+      return;
+    }
+    if (kind !== "challenge") return;
     document.getElementById("challenge").hidden = false;
-    function tell(kind) { parent.postMessage({ fakeHcaptcha: kind }, "*"); }
     document.addEventListener("click", function () { tell("click"); }, true);
-    document.getElementById("solve").addEventListener("click", function () { tell("solve"); });
+    document.getElementById("solve").addEventListener("click", function () {
+      post("/checkcaptcha/" + encodeURIComponent(sitekey) + "/fake").then(function () { tell("solve"); }, function () { tell("error"); });
+    });
     document.getElementById("close").addEventListener("click", function () { tell("close"); });
   })();
 </script>

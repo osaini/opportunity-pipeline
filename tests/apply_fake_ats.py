@@ -1004,7 +1004,8 @@ def kill_if_same_process(pid: int, started: str | None) -> bool:
 #                                        POST /parseResume, GET /searchLocations, /js/parseResume.js, /js/application.js,
 #                                        /cdn-cgi/challenge-platform/scripts/jsd/main.js
 #     js.hcaptcha.com                    /1/api.js (a stand-in hCaptcha script, tests/fixtures/apply/lever/hcaptcha_api.js)
-#     api.hcaptcha.com                   /checksiteconfig (whether the next execute() shows a challenge: the switch ``challenge``)
+#     api.hcaptcha.com                   GET /checksiteconfig and POST /getcaptcha/{sitekey} (whether the next execute() shows a challenge: the
+#                                        switch ``challenge``), POST /checkcaptcha/{sitekey}/... (a pressed challenge); the POSTs are the widget's
 #     newassets.hcaptcha.com             /captcha/v1/fake/hcaptcha.html (the challenge frame and the invisible checkbox frame)
 #     www.googletagmanager.com           GET /gtm.js and notify.bugsnag.com POST (a fictional error report): the noise every live page makes,
 #                                        on by default (``third_party_noise``); answered, and recorded like any request
@@ -1153,6 +1154,7 @@ class FakeLever:
         self.invalid_field = "email"                  # the control "refused_4xx" marks aria-invalid
         self.challenge = False                        # the next hcaptcha.execute() shows a challenge frame instead of a token
         self.hcaptcha_loads = True                    # False: js.hcaptcha.com cannot be reached (Submit then does nothing)
+        self.hcaptcha_posts_refused = False           # True: every non-GET to api.hcaptcha.com (getcaptcha, checkcaptcha) is aborted (Submit then does nothing)
         self.interstitial_s = 0.0                     # the first GET of the form starts this many seconds of the Cloudflare interstitial
         self.cloudflare_beacon = False                # Cloudflare's script posts a beacon under /cdn-cgi/ when it runs
         self.cookie_banner = True
@@ -1302,8 +1304,12 @@ class FakeLever:
                 return Reply(200, lever_fixture_text("hcaptcha_api.js"), "application/javascript", self._cors)
             return Reply(404, "")
         if host == LEVER_HCAPTCHA_API_HOST:
-            if path == "/checksiteconfig":
+            if method not in ("GET", "HEAD") and self.hcaptcha_posts_refused:
+                return LeverReply(0, abort=True)
+            if path == "/checksiteconfig" or (method == "POST" and path.startswith("/getcaptcha/")):
                 return Reply(200, json.dumps({"pass": True, "challenge": bool(self.challenge)}), "application/json", self._cors)
+            if method == "POST" and path.startswith("/checkcaptcha/"):
+                return Reply(200, json.dumps({"pass": True}), "application/json", self._cors)
             return Reply(200, "{}", "application/json", self._cors)
         if host == LEVER_HCAPTCHA_FRAME_HOST:
             if method == "GET" and path == "/captcha/v1/fake/hcaptcha.html":
