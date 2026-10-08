@@ -266,7 +266,7 @@ class RefusalTests(HandoffCase):
         problem = self.refused(schema_client=FakeSchemaClient(closed=True))
         self.assertEqual((problem.status_code, problem.message, problem.code), (409, "The app couldn't find this posting on Greenhouse. It may be closed", ""))
         problem = self.refused(opportunity_id="job-b")
-        self.assertEqual(problem.message, "Apply for me works with Greenhouse postings only, for now")
+        self.assertEqual(problem.message, "Apply for me works with Greenhouse and Lever postings only, for now")
 
     def test_a_posting_that_differs_waits_for_the_students_word(self):
         with self.conn:
@@ -2514,7 +2514,7 @@ class HandoffStartTests(HandoffApiCase):
 
     def test_a_role_that_is_not_greenhouse_a_closed_posting_and_an_unknown_role(self):
         response = self.handoff(opportunity_id="job-b")
-        self.assertEqual((response.status_code, response.json()["detail"]), (409, "Apply for me works with Greenhouse postings only, for now"))
+        self.assertEqual((response.status_code, response.json()["detail"]), (409, "Apply for me works with Greenhouse and Lever postings only, for now"))
         self.schema.closed = True
         self.assertEqual(self.handoff().json()["detail"], "The app couldn't find this posting on Greenhouse. It may be closed")
         self.assertEqual(self.handoff(opportunity_id="no-such-role").status_code, 404)

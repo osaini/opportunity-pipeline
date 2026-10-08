@@ -54,6 +54,7 @@ from .classify import (
     classify_item,
     classify_sensitive,
     context_dependent,
+    eeo_field,
     field_net,
     follow_up_shaped,
     follow_up_wording,
@@ -66,13 +67,15 @@ from .classify import (
     without_enumeration,
 )
 from .greenhouse import ATS_GREENHOUSE
+from . import lever
+from .lever import ATS_LEVER
 from ..applications.extension import ExtensionApplyError, confirmed_resume_file
 from ..core.json_values import json_as
 
 __all__ = [
-    "ALLOWED_ATS_LABEL_FIELDS", "Plan", "PlanField", "SchemaField", "Source", "Sources", "build_plan", "company_matches", "control_of",
+    "ALLOWED_ATS_LABEL_FIELDS", "LABEL_FIELDS_BY_ATS", "Plan", "PlanField", "SchemaField", "Source", "Sources", "build_plan", "company_matches", "control_of",
     "cover_letter_for", "current_source", "letter_is_current", "mac_key", "match_options", "name_parts", "parse_schema", "plan_entries", "plan_hash", "preview_values", "profile_value_for",
-    "question_key", "resume_for", "sources_for", "stored_sensitive_answer", "value_mac", "with_page_labels",
+    "label_fields_for", "question_key", "resume_for", "sources_for", "stored_sensitive_answer", "value_mac", "with_page_labels",
 ]
 
 
@@ -90,6 +93,16 @@ ALLOWED_ATS_LABEL_FIELDS = (
     "location", "school", "degree", "discipline", "phone_country",
     "education_start_month", "education_start_year", "education_end_month", "education_end_year",
 )
+# The lists each ATS's form owns. Greenhouse's are ``ALLOWED_ATS_LABEL_FIELDS`` (kept under that name: the lookup run reads it); Lever's
+# form has one, the current location (docs/phase5-lever-handoff-spec.md section 9).
+LABEL_FIELDS_BY_ATS = {ATS_GREENHOUSE: ALLOWED_ATS_LABEL_FIELDS, ATS_LEVER: ("location",)}
+
+
+def label_fields_for(ats: str) -> tuple[str, ...]:
+    """The typeahead lists whose exact option the student may confirm for this ATS (none for one the app does not know)."""
+    return LABEL_FIELDS_BY_ATS.get(ats, ())
+
+
 _SELECTS = frozenset({"multi_value_single_select", "multi_value_multi_select"})
 MAX_DESCRIPTION_CHARS = 2000
 
@@ -302,6 +315,8 @@ class Sources:
     resume: dict[str, Any] = field(default_factory=dict)
     cover_letter: dict[str, Any] = field(default_factory=dict)
     mac_key: bytes = b""
+    # Lever only (L1): the student let the app attach their résumé there, knowing Lever reads it at once. Off unless the student turned it on.
+    resume_upload: bool = False
 
 
 def mac_key(apply_root: Path | None) -> bytes:
@@ -443,9 +458,12 @@ def letter_is_current(conn: sqlite3.Connection, user_id: str, opportunity_id: st
 
 def sources_for(
     conn: sqlite3.Connection, user_id: str, opportunity_id: str, *, company: str = "", storage_root: Path | None = None,
-    key: bytes | None = None,
+    key: bytes | None = None, ats: str = ATS_GREENHOUSE, resume_upload: bool = False,
 ) -> Sources:
-    """Gather everything a value may come from, reading only. Nothing here changes a row."""
+    """Gather everything a value may come from, reading only. Nothing here changes a row.
+
+    ``ats`` picks the confirmed option labels (a list's wording is one ATS's own). ``resume_upload`` is Lever's L1 choice, off unless given.
+    """
     facts = preparation.confirmed_facts(conn, user_id)
     answers = [
         {**dict(row), "tags": [str(tag) for tag in json_as(row["tags_json"], [])]}
@@ -455,7 +473,7 @@ def sources_for(
     ]
     labels = {
         str(row["field"]): str(row["label"])
-        for row in conn.execute("SELECT field, label FROM apply_ats_labels WHERE user_id=? AND ats=?", (user_id, ATS_GREENHOUSE)).fetchall()
+        for row in conn.execute("SELECT field, label FROM apply_ats_labels WHERE user_id=? AND ats=?", (user_id, ats)).fetchall()
     }
     allowed = apply_sensitive.allowed_categories(conn, user_id)
 
@@ -465,7 +483,7 @@ def sources_for(
     return Sources(
         facts=facts, answers=answers, ats_labels=labels, sensitive_allowed=allowed, sensitive_lookup=lookup,
         resume=resume_for(conn, user_id, opportunity_id, storage_root), cover_letter=cover_letter_for(conn, user_id, opportunity_id),
-        mac_key=key if key is not None else mac_key(None),
+        mac_key=key if key is not None else mac_key(None), resume_upload=bool(resume_upload),
     )
 
 
@@ -575,7 +593,8 @@ def profile_value_for(facts: Mapping[str, Any], ref: str) -> str:
     group, _, part = ref.partition(".")
     if group == "name_parts":
         first, last, preferred = name_parts(facts)
-        return {"first": first, "last": last, "preferred": preferred}.get(part, "")
+        # "full" is Lever's one Full name box: the first and last name for applications, never the preferred name.
+        return {"first": first, "last": last, "preferred": preferred, "full": f"{first} {last}" if first and last else ""}.get(part, "")
     if group == "contact" and part:
         return _contact(facts, part)
     return ""
@@ -643,6 +662,19 @@ class _Context:
     mode: str
     repeated: dict[str, list[str]]
     uploads_on_attach: bool
+    ats: str = ATS_GREENHOUSE
+    window: bool = True  # whether there is a Finish in browser window for the student to do the rest in (not yet, on Lever)
+
+    @property
+    def there(self) -> str:
+        """Where the student does what the app leaves: in the window when there is one, else on the ATS's own application page."""
+        return "in the window" if self.window else f"on {lever.DISPLAY_NAME}'s application page"
+
+    def leaves(self, what: str = "it") -> str:
+        """The closing sentence of a question the app never answers: Finish in browser leaves ``what`` for the student, or, while there is no window, the student does it on the ATS's own page."""
+        if self.window:
+            return f"Finish in browser leaves {what} for you"
+        return f"Do {what} {self.there}"
 
 
 def _answer_key(item: SchemaField, repeated: Mapping[str, list[str]]) -> tuple[str, bool]:
@@ -651,7 +683,7 @@ def _answer_key(item: SchemaField, repeated: Mapping[str, list[str]]) -> tuple[s
     A follow-up, an opener, a very short question, or a question the form asks twice is filed under its
     parent: "{parent} / {question}" (spec 7.1), so the same words under two questions are two keys.
     """
-    if item.section == "compliance":
+    if eeo_field(item):
         # An EEOC field is found by its own name and label (7.3 step 2): one decline serves every company and every form.
         return item.label, False
     key = question_key(item.label)
@@ -720,8 +752,30 @@ def _saved_answer(item: SchemaField, text: str, ctx: _Context) -> tuple[dict[str
     return None, "missing_answer", "No saved answer for this company"
 
 
+def _plan_lever_file(item: SchemaField, entry: PlanField, ctx: _Context) -> PlanField | None:
+    """Lever's files (spec 6.5, 6.6, 6.9), or None when the file is the résumé and the student let the app attach it (the ordinary plan then goes on).
+
+    Lever reads a résumé the moment it is attached, which sends it before Submit. So the app attaches it only when the student said so
+    (L1, ``Sources.resume_upload``, off by default); otherwise it is the student's to attach themselves. Any other file field is
+    never filled: the app attaches no file the student did not choose, and a Lever cover letter is not wired yet.
+    """
+    if item.name == "resume":
+        if ctx.sources.resume_upload:
+            return None
+        entry.problem_kind = "window"
+        entry.problem = f"Attach your résumé {ctx.there}"  # why the app doesn't is said once, in the note above the list (preflight.LEVER_RESUME_YOURS)
+        return entry
+    entry.problem_kind = "window"
+    entry.problem = f'The app attaches no file for "{item.label}" on Lever. Attach it {ctx.there} if you want to'
+    return entry
+
+
 def _plan_file(item: SchemaField, entry: PlanField, ctx: _Context) -> PlanField:
-    if item.name not in ("resume", "cover_letter"):
+    if ctx.ats == ATS_LEVER:
+        found = _plan_lever_file(item, entry, ctx)
+        if found is not None:
+            return found
+    elif item.name not in ("resume", "cover_letter"):
         # Row U: only the two documents the app holds are ever attached. A transcript, a writing sample or a
         # custom "Cover letter" question is some other upload, and the résumé is not the answer to it.
         entry.problem_kind, entry.problem = "unsupported", f'The app doesn\'t fill this kind of field ("{item.label}")'
@@ -784,6 +838,17 @@ def _stored_value(
 def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Context, *, follows: bool = False) -> PlanField:
     words = CATEGORY_WORDS.get(category, "a personal question")
     sources = ctx.sources
+    if ctx.ats == ATS_LEVER and _lever_not_read(item, entry, ctx):
+        return entry  # a control the app can never fill is not a stored answer to ask for, whatever its label sounds like
+    if ctx.ats == ATS_LEVER and (item.name == lever.EEO_DISABILITY or item.name in lever.EEO_SIGNATURE_FIELDS):
+        # Any answer to Lever's disability question, the decline included, makes the page require a typed signature and a date, and those are the
+        # student's own act: the app would be leaving a required signature it had just caused. So the whole question is the student's (spec 6.6).
+        entry.problem_kind = "sensitive_never"
+        entry.problem = (
+            f"A signature and a date are yours to give. {ctx.leaves('them')}" if item.name in lever.EEO_SIGNATURE_FIELDS else
+            f"Answering this makes Lever ask for a typed signature and a date, which only you give, so the app leaves the whole question to you. {ctx.leaves()}"
+        )
+        return entry
     # A checkbox is matched on its own statement, a follow-up on its parent's question too: neither on the bare heading.
     checkbox = entry.control == "checkbox"
     # A Yes/No agreement question is matched like a box: on the question and its description, never on the question alone.
@@ -802,18 +867,18 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
     entry.company_only = (
         category in STATEMENT_CATEGORIES
         or (category in TICKABLE and (entry.control != "select" or "agreement" in net_topics(" ".join((item.label, plain_text(item.description), *item.options)))))
-        or (item.section != "compliance" and (context_dependent(key) or (not checkbox and entry.context_dependent)))
+        or (not eeo_field(item) and (context_dependent(key) or (not checkbox and entry.context_dependent)))
     )
     if category in STATEMENT_CATEGORIES and not statement_control(entry.control, entry.options):
         # A statement is stored only as ticked: a text field, a list or a choice that is not Yes/No has nothing it could be typed as.
         entry.problem_kind = "sensitive_never"
-        entry.problem = f"This asks for {words} in a way the app can't answer for you. Finish in browser leaves it for you"
+        entry.problem = f"This asks for {words} in a way the app can't answer for you. {ctx.leaves()}"
         return entry
     if category == "uncategorized" or category not in sources.sensitive_allowed:
         entry.problem_kind = "sensitive_never" if category == "uncategorized" else "sensitive_not_allowed"
         entry.problem = (
-            f"This follows a question the app doesn't answer for you ({words}), so it is left for you too. Finish in browser leaves it for you"
-            if follows else f"The app doesn't answer this kind of question for you ({words}). Finish in browser leaves it for you"
+            f"This follows a question the app doesn't answer for you ({words}), so it is left for you too. {ctx.leaves()}"
+            if follows else f"The app doesn't answer this kind of question for you ({words}). {ctx.leaves()}"
         )
         return entry
     if item.label_from_page or entry.text_cut:
@@ -821,16 +886,16 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
         # compare: nothing stored is matched to either, so the student reads it and ticks it (5.4, D9 B).
         entry.problem_kind = "sensitive_never"
         entry.problem = (
-            "The statement for this box is only on the form, so the app can't match it to one you stored. Finish in browser leaves it for you"
+            f"The statement for this box is only on the form, so the app can't match it to one you stored. {ctx.leaves()}"
             if item.label_from_page else
-            "The text around this box is too long for the app to check word for word, so it is left for you. Finish in browser leaves it for you"
+            f"The text around this box is too long for the app to check word for word, so it is left for you. {ctx.leaves()}"
         )
         return entry
     if boxlike and category in STATEMENT_CATEGORIES and len(normalized_text(entry.statement).split()) < 3:
         # A statement of one or two words ("Acknowledgment") says nothing the student could be shown as agreed to, and the store
         # refuses to hold one: it is left for the student rather than offered a form that cannot be saved.
         entry.problem_kind = "sensitive_never"
-        entry.problem = "The statement for this box is too short for the app to match to one you stored. Finish in browser leaves it for you"
+        entry.problem = f"The statement for this box is too short for the app to match to one you stored. {ctx.leaves()}"
         return entry
     stored = sources.sensitive_lookup(
         category=category, question_key=key, company_key=employer_key(ctx.company), mode=ctx.mode, company_only=entry.company_only,
@@ -853,10 +918,76 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
     return entry
 
 
+_LEVER_LINKS = {"linkedin": "LinkedIn address", "github": "GitHub address", "portfolio": "website address"}
+# Fixed Lever fields with no source in the app: empty unless the student types them themselves. The words say what the student does, and where.
+_LEVER_WINDOW = {
+    "org": "The app has no source for your current company. Type it {there}",
+    "comments": "The app has nothing saved for additional information. Type it {there} if you want to add something",
+    "opportunityLocationId": "The app can't tell which office you mean. Choose it {there}",
+}
+
+
+def _lever_not_read(item: SchemaField, entry: PlanField, ctx: _Context) -> bool:
+    """True, with the window problem set, when ``item`` is a Lever question the app does not read (an unreadable one or a control it has no family for)."""
+    if item.type not in (lever.UNREADABLE_TYPE, lever.UNKNOWN_TYPE):
+        return False
+    entry.problem_kind = "window"
+    entry.problem = f"Lever's form has a question the app doesn't read: {item.label} ({item.description}). Answer it {ctx.there}"
+    return True
+
+
+def _plan_lever(item: SchemaField, entry: PlanField, ctx: _Context) -> bool:
+    """Lever's fixed fields (docs/phase5-lever-handoff-spec.md 6.6). True when the field was settled here; False to go on with the ordinary rules.
+
+    Every value is a confirmed fact or the option the student confirmed: nothing is read from the résumé, and nothing is guessed. A field
+    the app has no source for is the student's to type (``window``), required or not, in the window or, while there is none, on Lever's own page.
+    """
+    facts, name = ctx.sources.facts, item.name
+    if _lever_not_read(item, entry, ctx):
+        return True
+    if name == "name":
+        full = profile_value_for(facts, "name_parts.full")
+        if not full:
+            entry.problem_kind, entry.problem = "name", _NAME_PROBLEM
+            return True
+        entry.source, entry.value = Source("profile", "name_parts.full", label="Profile"), full
+        return True
+    if name == "location":
+        label = ctx.sources.ats_labels.get("location", "")
+        if not label:
+            entry.problem_kind, entry.label_field = "label_needed", "location"
+            # "here" is a box under a required question; an optional one has none, so only the settings are named.
+            entry.problem = f"Choose your current location: type its exact name as Lever's list spells it, in Apply for me settings{' or here' if entry.required else ''}"
+            return True
+        entry.source, entry.value = Source("ats_label", "location", label="Option you confirmed"), label
+        return True
+    if name in _LEVER_WINDOW:
+        entry.problem_kind, entry.problem = "window", _LEVER_WINDOW[name].format(there=ctx.there)
+        return True
+    if name.startswith("residentialLocation["):
+        entry.problem_kind, entry.problem = "window", f"The app never fills a home address on Lever. Type it {ctx.there}"
+        return True
+    if name.startswith("urls["):
+        kind = _PROFILE_KEYS.get(question_key(item.label), "")
+        if not kind:
+            entry.problem_kind, entry.problem = "window", f'The app has no source for "{item.label}". Type it {ctx.there}'
+            return True
+        ref = f"contact.{kind}"
+        value = profile_value_for(facts, ref)
+        if not value:
+            entry.problem_kind, entry.problem = "profile_fact", f"Add your {_LEVER_LINKS[kind]} to your profile"
+            return True
+        entry.source, entry.value = Source("profile", ref, label="Profile"), value
+        return True
+    return False
+
+
 def _plan_value(item: SchemaField, entry: PlanField, text: str, ctx: _Context) -> PlanField:
     facts, key = ctx.sources.facts, question_key(item.label)
     control, name = entry.control, item.name
     profile_value, profile_ref = "", ""
+    if ctx.ats == ATS_LEVER and _plan_lever(item, entry, ctx):
+        return entry
     if name in ("first_name", "last_name"):
         profile_ref = f"name_parts.{'first' if name == 'first_name' else 'last'}"
         profile_value = profile_value_for(facts, profile_ref)
@@ -903,9 +1034,9 @@ def _plan_value(item: SchemaField, entry: PlanField, text: str, ctx: _Context) -
         words = ", ".join(NET_WORDS[topic] for topic in entry.net_never if topic in NET_WORDS)
         entry.problem_kind = "sensitive_never"
         entry.problem = (
-            f"This looks like a question about {words}, so the app never saves an answer to it or fills one in from your saved answers. Finish in browser leaves it for you"
+            f"This looks like a question about {words}, so the app never saves an answer to it or fills one in from your saved answers. {ctx.leaves()}"
             if words else
-            "The app never ticks a box for you from your saved answers, so this is left for you. Finish in browser leaves it for you"
+            f"The app never ticks a box for you from your saved answers, so this is left for you. {ctx.leaves()}"
         )
         return entry
     row, kind, problem = _saved_answer(item, text, ctx)
@@ -923,7 +1054,7 @@ def _plan_value(item: SchemaField, entry: PlanField, text: str, ctx: _Context) -
 
 
 # Fields the app leaves blank on purpose, so an optional one is not a problem for the student: the reason is a note.
-_BLANK_KINDS = frozenset({"missing_answer", "sensitive_never", "sensitive_not_allowed", "sensitive_missing", "label_needed", "unsupported", "profile_fact"})
+_BLANK_KINDS = frozenset({"missing_answer", "sensitive_never", "sensitive_not_allowed", "sensitive_missing", "label_needed", "unsupported", "profile_fact", "window"})
 
 
 def _settle(entry: PlanField, ctx: _Context) -> PlanField:
@@ -958,7 +1089,8 @@ def _page_never(scan: Iterable[Any] | None) -> frozenset[str]:
 
 def build_plan(
     schema: Iterable[SchemaField], scan: Iterable[Any] | None, sources: Sources, company: str, mode: str, *,
-    ats_name: str, canonical_url: str = "", adapter_version: str = "", uploads_on_attach: bool = False,
+    ats_name: str, canonical_url: str = "", adapter_version: str = "", uploads_on_attach: bool = False, ats: str = ATS_GREENHOUSE,
+    window: bool = True,
 ) -> Plan:
     """Apply section 7 to every field of the form.
 
@@ -981,7 +1113,7 @@ def build_plan(
     for item in fields:
         if item.section == "custom":
             filed[question_key(texts[item.name][0])] = filed.get(question_key(texts[item.name][0]), 0) + 1
-    ctx = _Context(sources, company, mode, repeated, uploads_on_attach)
+    ctx = _Context(sources, company, mode, repeated, uploads_on_attach, ats, window)
     entries: list[PlanField] = []
     problems: list[Problem] = []
     # What each question is, by label, for the follow-ups filed under it. A follow-up's own entry is what it
@@ -1228,7 +1360,10 @@ def preview_values(
     row = conn.execute("SELECT company FROM opportunities WHERE id=?", (run.get("opportunity_id"),)).fetchone()
     if row is not None:
         company = str(row["company"] or "")
-    sources = sources_for(conn, user_id, str(run.get("opportunity_id") or ""), company=company, storage_root=storage_root, key=key)
+    sources = sources_for(
+        conn, user_id, str(run.get("opportunity_id") or ""), company=company, storage_root=storage_root, key=key,
+        ats=str(run.get("ats") or ATS_GREENHOUSE),
+    )
     wanted = ("fill",) if handoff else ("fill", "deferred")
     result: dict[str, dict[str, Any]] = {}
     for entry in json_as(run.get("plan_json"), []):

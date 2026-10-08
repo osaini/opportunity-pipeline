@@ -3,8 +3,8 @@
 The Lever twin of ``greenhouse.py`` (docs/phase5-lever-handoff-spec.md, section 5.3): its hosts, the adapter's version, the
 address of a posting's application page, and how a saved role is recognised as a Lever posting (``identify``).
 
-Only the pure, read-only half exists so far. The ATS registry entry and the request rules for Lever come with the seam that
-lets a second ATS in (spec 5.2), and nothing in the app calls this module yet.
+This is the pure, read-only half: the registry entry for Lever is in ``ats.py`` and its request policy in ``checks.py``. The
+browser side (the adapter that fills a Lever form) comes later (spec 12, LV3).
 
 Standard library only, and no import of any other first-party module, like ``greenhouse.py``.
 """
@@ -17,8 +17,21 @@ from typing import NamedTuple
 from urllib.parse import urlsplit
 
 ATS_LEVER = "lever"
+# How a sentence names it (the ATS spec's ``display_name`` and the request policy's are this).
+DISPLAY_NAME = "Lever"
 # The adapter's version (spec 11, R1). Any change to its selectors or rules means a new value.
 ADAPTER_VERSION = "lever-1"
+
+# What the plan calls a field the Lever page has and the app cannot read, or a control the parser has no family for (``ats.lever_parse_schema``
+# makes them; ``policy`` leaves them to the student, with the reason in ``description``).
+UNREADABLE_TYPE = "lever_unreadable"
+UNKNOWN_TYPE = "lever_unknown"
+# Typed on the page by the student, a name and a date, and required once the disability question is answered at all (spec 3.6). Never filled.
+EEO_SIGNATURE_FIELDS = ("eeo[disabilitySignature]", "eeo[disabilitySignatureDate]")
+# The schema names ``lever_form`` gives the four EEO questions. Disability is never answered, whatever is stored (spec 6.6).
+EEO_DISABILITY = "disability_status"
+# Fixed fields the plan never fills and never lets a stored answer fill: an identity disclosure, and a marketing consent no exact statement covers.
+NEVER_PLANNED = ("pronouns", "consent[marketing]")
 
 # --- Hosts --------------------------------------------------------------------------------------
 

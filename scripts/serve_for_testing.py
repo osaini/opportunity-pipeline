@@ -15,7 +15,8 @@ and printed on startup.
 
 PIPELINE_SANDBOX_FAKE_APPLY=1 also turns Apply for me on for the seeded student, with a fake Greenhouse
 listing and a fake agent: Acme Robotics (saved) becomes a Greenhouse role, so the "what's missing" view has
-something to show. A rehearsal or an option lookup returns a canned result after a few seconds, with a canned
+something to show. It seeds one fictional Lever role too (Harbor Demo Labs, saved), served by a fake page client, with Apply for
+me on Lever switched on, so the Lever "what's missing" view has something to show; there is no window action for it yet. A rehearsal or an option lookup returns a canned result after a few seconds, with a canned
 picture. Finish in browser returns a canned handoff the same way, with no window: the fictional student's turn lasts
 ``apply_fake_ats.CANNED["handoff"]["wait"]`` seconds (1.5 by default), then the canned form answers by
 ``CANNED["handoff"]["outcome"]`` (submitted, unconfirmed, security_code, refused, failed_4xx or hang_after_hand_over).
@@ -45,7 +46,7 @@ sys.path.insert(0, str(REPO_ROOT / "tests" / "ui"))
 import uvicorn  # noqa: E402
 
 from helpers_platform import build_and_migrate_fresh  # noqa: E402
-from apply_fake_ats import JOB_URL  # noqa: E402
+from apply_fake_ats import JOB_URL, seed_lever_role  # noqa: E402
 from sandbox_app import build_sandbox_app  # noqa: E402
 
 # Fixed so tooling and documentation can rely on them. They only ever guard a
@@ -64,8 +65,9 @@ def seed_fake_apply(platform_path: Path, resume_root: Path) -> None:
     """Make the sandbox student ready for Apply for me: a Greenhouse role, a name for applications, an email, a résumé.
 
     All fictional, and only under PIPELINE_SANDBOX_FAKE_APPLY. The role is Acme Robotics, which the sandbox
-    already has saved; its posting address becomes a Greenhouse job the fake listing describes. Turning the
-    switch on happens after the app is built (its requirement asks the app's agent factory).
+    already has saved; its posting address becomes a Greenhouse job the fake listing describes. A second, fictional role, Harbor Demo
+    Labs, is saved as a Lever posting that the fake page client serves (nothing is read from Lever). Turning the switches on happens
+    after the app is built (the first one's requirement asks the app's agent factory).
     """
     from opportunity_app.student.profile import update_profile
     from opportunity_app.core.schema import LOCAL_USER_ID
@@ -76,6 +78,8 @@ def seed_fake_apply(platform_path: Path, resume_root: Path) -> None:
     try:
         with conn:
             conn.execute("UPDATE opportunities SET url=? WHERE company='Acme Robotics'", (JOB_URL,))
+        with conn:
+            seed_lever_role(conn, LOCAL_USER_ID)
         update_profile(
             conn,
             {"name_parts": {"first": "Sam", "last": "Rivera", "preferred": ""}, "contact": {"email": "sam.rivera@example.test"}},
@@ -140,6 +144,8 @@ def main() -> int:
         conn.row_factory = sqlite3.Row
         try:
             automation.set_mode(conn, LOCAL_USER_ID, "apply_agent", "on")
+            # The Lever role needs its own switch. The résumé choice stays off, as it is for every student until they turn it on.
+            automation.set_mode(conn, LOCAL_USER_ID, "apply_agent_lever", "on")
         finally:
             conn.close()
 

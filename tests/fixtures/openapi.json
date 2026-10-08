@@ -238,6 +238,13 @@
       },
       "ApplyLabelRequest": {
         "properties": {
+          "ats": {
+            "default": "greenhouse",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Ats",
+            "type": "string"
+          },
           "label": {
             "maxLength": 200,
             "minLength": 1,
@@ -5691,6 +5698,18 @@
             "required": true,
             "schema": {
               "title": "Field",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ats",
+            "required": false,
+            "schema": {
+              "default": "greenhouse",
+              "maxLength": 40,
+              "minLength": 1,
+              "title": "Ats",
               "type": "string"
             }
           },

@@ -473,13 +473,86 @@ class FakeSchemaClient:
         return self.fetch(match.group(1), match.group(2)) if match else None
 
 
+# --- Lever: a fictional posting whose application page is a fixture, and the page client that serves it -------------------------------
+
+LEVER_FIXTURES = FIXTURES.parent / "lever"
+LEVER_SITE = "harbordemo"
+LEVER_JOB_ID = "6f1d2c3b-4a59-4687-8c7d-9e0f1a2b3c4d"
+LEVER_URL = f"https://jobs.lever.co/{LEVER_SITE}/{LEVER_JOB_ID}"
+# The page's own title is "Harbor Demo Labs - Customer Success Lead" (tests/fixtures/apply/lever/demo_eeo_survey.html).
+LEVER_COMPANY = "Harbor Demo Labs"
+LEVER_TITLE = "Customer Success Lead"
+LEVER_ROLE_ID = "lever-harbor-demo"
+
+
+def lever_fixture_text(name: str) -> str:
+    return (LEVER_FIXTURES / name).read_text(encoding="utf-8")
+
+
+class FakeLeverPageClient:
+    """Serves a Lever application page fixture, or a 404, or "did not answer", with no network.
+
+    Tests, the sandbox and the UI suite pass it as ``apply_page_client_factory``. ``fetch(site, job_id, host)`` is the real client's
+    call (apply.schema_client.LeverPageClient): it returns the page's HTML, or None for a 404. By default it answers the one fictional
+    posting; ``any_posting`` answers every site and posting with the page, which a sandbox that seeds its own roles uses.
+    ``pages`` maps a posting's ``site/job_id`` to a fixture name so a test can serve different pages. With no ``page``, the fixture named by
+    ``CANNED["lever_page"]`` is served (the in-process UI suite sets it), else the demo page.
+    """
+
+    def __init__(self, *, page: str | None = None, closed: bool = False, unavailable: bool = False, any_posting: bool = False,
+                 pages: dict[str, str] | None = None) -> None:
+        self.page = page
+        self.closed = closed
+        self.unavailable = unavailable
+        self.any_posting = any_posting
+        self.pages = dict(pages or {})
+        self.calls: list[tuple[str, str, str]] = []
+
+    def fetch(self, site: str, job_id: str, host: str) -> str | None:
+        from opportunity_app.apply.schema_client import SchemaUnavailable
+
+        self.calls.append((site, job_id, host))
+        if self.unavailable:
+            raise SchemaUnavailable("Lever did not answer (a fake that does not)")
+        if self.closed:
+            return None
+        key = f"{site}/{job_id}"
+        if key in self.pages:
+            return lever_fixture_text(self.pages[key])
+        if self.any_posting or (site, job_id) == (LEVER_SITE, LEVER_JOB_ID):
+            return lever_fixture_text(self.page or CANNED.get("lever_page") or "demo_eeo_survey.html")
+        return None
+
+    __call__ = fetch
+
+
+def seed_lever_role(conn: Any, user_id: str, *, saved: bool = True, role_id: str = LEVER_ROLE_ID) -> str:
+    """Insert the fictional Lever posting as a role (saved by default) and return its id. For the sandbox and the UI suite; the caller commits."""
+    from opportunity_app.core.timestamps import utc_now
+
+    stamp = utc_now()
+    conn.execute(
+        "INSERT INTO opportunities(id, company, title, url, first_seen_at, last_seen_at, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+        (role_id, LEVER_COMPANY, LEVER_TITLE, LEVER_URL, stamp, stamp, stamp, stamp),
+    )
+    # A role the pipeline synced has a source row, and the lists read it through one: this one is Lever's, by site and posting uuid.
+    conn.execute(
+        "INSERT INTO opportunity_sources(opportunity_id, source_key, source_name, external_id, source_url, first_seen_at, last_seen_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
+        (role_id, f"lever:{LEVER_SITE}", "Harbor Demo Lever", LEVER_JOB_ID, LEVER_URL, stamp, stamp),
+    )
+    if saved:
+        conn.execute("INSERT INTO opportunity_interactions(opportunity_id, user_id, action, created_at, source) VALUES(?, ?, 'saved', ?, 'user')", (role_id, user_id, stamp))
+    return role_id
+
+
 # Knobs the in-process UI suite may change between tests (a thread-isolated fake reads them when a run starts).
 # "handoff" is Finish in browser's canned run: "wait" is how long the fictional student takes before pressing Submit
 # application (seconds), and "outcome" is what the form then does: submitted, unconfirmed, security_code, refused (the
 # app says no to the hand-over), failed_4xx, or hang_after_hand_over. "after_front" (optional) ends the wait that many seconds
 # after the first request to bring the window forward, so a test of that request waits for it rather than racing a fixed wait.
 # "letter_required" makes the listing's cover letter a required question, so a test can see what the page does with and without an approved letter.
-CANNED: dict[str, Any] = {"hang": False, "outcome": "rehearsed", "step_delay": 0.3, "handoff": {"wait": 1.5, "outcome": "submitted"}, "letter_required": False}
+# "lever_page" is the Lever fixture a ``FakeLeverPageClient`` made without a ``page`` serves (empty: the demo page).
+CANNED: dict[str, Any] = {"lever_page": "", "hang": False, "outcome": "rehearsed", "step_delay": 0.3, "handoff": {"wait": 1.5, "outcome": "submitted"}, "letter_required": False}
 HANDOFF_OUTCOMES = ("submitted", "unconfirmed", "security_code", "refused", "failed_4xx", "hang_after_hand_over")
 STOPPED_TEXT = STOPPED
 NO_OPTIONS_TEXT = "No options came back for what you typed"

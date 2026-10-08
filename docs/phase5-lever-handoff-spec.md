@@ -355,6 +355,30 @@ behavior pinned (section 12, LV1). It does these things and nothing else:
   the name was kept is Greenhouse's, which the pages say. The sentences of `security_code.py` and `schema_client.py` are
   Greenhouse's own (its emailed code, its API) and are not generalised.
 
+**As built in LV2** (Lever, read only: what differs from the plan, and what was left for later):
+
+- `AtsSpec` gained the fields Lever needed: `listings` (which client reads the posting: Greenhouse's job board client, or Lever's page client through
+  `schema_client.LeverListings`), `posting_difference`, `claim_modes` (Lever: `handoff`), `switch` (`apply_agent_lever`) and `adapter_built` (Lever:
+  false until its driver lands in LV3). `identify` still returns `(token, job id)`; for Lever it is an `ats.Ident`, a two-item tuple that also carries
+  the host, so an EU posting stays on the EU host. The check and the start routes take a second client, `apply_page_client_factory`, beside the
+  Greenhouse one; an app given none answers "Lever did not answer".
+- The modes are refused twice. `ats.mode_refusal` (the runner, before anything is read) gives `ats_mode` for a rehearsal or a lookup, and
+  `ats_not_built` for Finish in browser while the driver does not exist. `runs.claim` refuses a `one_click` or `unattended` claim for Lever with
+  `ats_mode` inside its transaction. A Lever `handoff` claim is a claim like any other; the runner is what refuses it until LV3 and LV4.
+- The check answers `offers` (which window actions the page may show, with the sentence for one that is not there) and `notes` (on Lever, what
+  happens to the résumé, by the `apply_lever_resume_upload` choice). The settings answer an `ats_label_sets` list and a `lever` object, and the label
+  routes take an `ats` (default Greenhouse). These are the API changes of this milestone; the route and OpenAPI snapshots were regenerated for the
+  new parameters.
+- `RoutePolicy` for Lever carries the hosts, the one lookup (`/searchLocations`), the two hCaptcha hosts the list already had and the `/{site}/{job}/thanks`
+  rule. The résumé POST, the telemetry and Cloudflare paths and the hCaptcha hosts the page loads are LV3's, pinned from the recording (Q3).
+  `RESOLVABLE_HOSTS` is now the union with Lever's two hosts, so a Greenhouse run's browser can resolve them too; its request rules still refuse them.
+- A required `multiple-select` is left to the student. The shared broad net (Phase 5 7.1 "As built") has never ticked a box from the answer library, and
+  6.6's "ticks only the chosen boxes" would loosen it, so the stricter rule is kept here until the student decides otherwise.
+- `inbox._job_link` already kept a Lever or Ashby posting's uuid (it is in the path; only Greenhouse's `gh_jid` lives in the query), so it needed no
+  change; tests pin it, and the match of a `hire.lever.co` confirmation by the posting's uuid.
+- The parser's scanner took time in proportion to the controls times the label text when many controls shared one long `label[for]`; a label now works
+  out its words once.
+
 ### 5.3 The Lever modules
 
 | Module | Holds | Imports |

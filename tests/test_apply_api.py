@@ -5,12 +5,14 @@ test proves that no socket is opened while it runs, with the sandbox's own wirin
 """
 
 import gzip
+import http.client
 import importlib.util
 import io
 import json
 import sqlite3
 import sys
 import tempfile
+import tracemalloc
 import unittest
 import urllib.error
 from contextlib import closing
@@ -195,7 +197,7 @@ class CheckRouteTests(ApplyApiCase):
     def test_a_role_that_is_not_greenhouse_says_so_and_a_role_that_does_not_exist_is_404(self):
         self.turn_on()
         payload = self.check("job-b").json()
-        self.assertEqual((payload["status"], payload["message"]), ("unavailable", "Apply for me works with Greenhouse postings only, for now"))
+        self.assertEqual((payload["status"], payload["message"]), ("unavailable", "Apply for me works with Greenhouse and Lever postings only, for now"))
         self.assertEqual(self.check("no-such-role").status_code, 404)
 
     def test_a_closed_posting_and_greenhouse_being_down_are_told_apart(self):
@@ -282,6 +284,12 @@ class AnswerRouteTests(ApplyApiCase):
 
 
 class SettingsRouteTests(ApplyApiCase):
+    def test_the_settings_say_whether_lever_has_a_window_so_the_page_words_its_switches_for_now(self):
+        from opportunity_app.apply import ats as apply_ats
+        lever = self.get("/api/v1/apply-agent/settings").json()["lever"]
+        self.assertIs(lever["window"], apply_ats.LEVER.adapter_built)
+        self.assertIs(lever["window"], False, "Lever's Finish in browser is built later (LV4)")
+
     def test_the_settings_show_the_limits_in_force_and_which_are_the_students_own(self):
         settings = self.get("/api/v1/apply-agent/settings").json()
         limits = {item["key"]: item for item in settings["limits"]}
@@ -910,7 +918,7 @@ class StartRouteTests(RunApiCase):
 
     def test_a_role_that_is_not_greenhouse_is_a_409_with_the_checks_sentence(self):
         for response in (self.rehearse("job-b"), self.lookup(opportunity_id="job-b")):
-            self.assertEqual((response.status_code, response.json()["detail"]), (409, "Apply for me works with Greenhouse postings only, for now"))
+            self.assertEqual((response.status_code, response.json()["detail"]), (409, "Apply for me works with Greenhouse and Lever postings only, for now"))
         self.assertEqual(self.counts("apply_runs")["apply_runs"], 0)
 
     def test_a_closed_posting_is_a_409_and_greenhouse_being_down_is_told_apart(self):
@@ -1321,6 +1329,23 @@ class SchemaClientTests(unittest.TestCase):
                         self.Response(b"x" * (apply_schema_client.MAX_BYTES + 10))):
             with self.subTest(problem=type(problem).__name__):
                 self.assertIsInstance(self.fetch(problem)[0], SchemaUnavailable)
+
+    def test_an_answer_cut_short_is_unavailable_and_a_small_gzip_that_expands_past_the_cap_is_refused(self):
+        class CutShort(self.Response):
+            def read(self, limit=-1):
+                raise http.client.IncompleteRead(b"{", 100)
+
+        self.assertIsInstance(self.fetch(CutShort(b""))[0], SchemaUnavailable)
+        self.assertIsInstance(self.fetch(http.client.BadStatusLine("junk"))[0], SchemaUnavailable)
+        bomb = gzip.compress(b"\x00" * (64 * 1024 * 1024))
+        tracemalloc.start()
+        try:
+            found, _ = self.fetch(self.Response(bomb, {"Content-Encoding": "gzip"}))
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        self.assertIsInstance(found, SchemaUnavailable)
+        self.assertLess(peak, 4 * apply_schema_client.MAX_BYTES)
 
     def test_the_default_factory_gives_the_live_client_and_it_reaches_only_the_public_api_host(self):
         self.assertIsInstance(apply_schema_client.default_schema_client_factory(), GreenhouseSchemaClient)

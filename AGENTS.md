@@ -270,7 +270,9 @@ With `PIPELINE_SANDBOX_FAKE_APPLY=1` the sandbox also turns Apply for me on with
 Greenhouse listing and an agent that opens no browser: Acme Robotics (saved) becomes a Greenhouse role, and
 its page shows what is missing. A rehearsal or an option lookup there returns a canned result (and a canned picture) after a few
 seconds, with no browser. Nothing reaches Greenhouse. **Finish in browser** returns a canned handoff there (no window): the Your turn panel, the
-student's own press, and the result, with the knobs in `apply_fake_ats.CANNED`.
+student's own press, and the result, with the knobs in `apply_fake_ats.CANNED`. The flag also seeds Harbor Demo Labs, a saved
+fictional Lever role served by `FakeLeverPageClient`, with Apply for me on Lever switched on: its page shows the read-only check
+and no window action.
 
 It seeds a throwaway database from the same fixture the unittest suite uses,
 prints fixed tokens, and serves `http://127.0.0.1:8799`. Sign in by pasting

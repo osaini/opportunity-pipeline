@@ -390,6 +390,19 @@ class MatchTests(MailCase):
         found = self.match(raw)
         self.assertEqual((found.tier, found.application_id), ("job_id", self.acme))
 
+    def test_a_lever_confirmation_from_hire_lever_co_matches_its_application_by_the_posting_uuid(self):
+        # The saved role's address is the application page of a Lever posting; the email links to the posting itself, with tracking after it.
+        posting = "6f1d2c3b-4a59-4687-8c7d-9e0f1a2b3c4d"
+        with self.conn:
+            self.conn.execute("UPDATE opportunities SET url=? WHERE id='job-a'", (f"https://jobs.lever.co/acmerobotics/{posting}/apply",))
+        raw = job_mail(sender="Acme Robotics <no-reply@hire.lever.co>", subject="Your application",
+                       body=f"Thanks! The posting: https://jobs.lever.co/acmerobotics/{posting}?lever-source=abc")
+        found = self.match(raw)
+        self.assertEqual((found.tier, found.application_id), ("job_id", self.acme))
+        elsewhere = job_mail(sender="Acme Robotics <no-reply@hire.lever.co>", subject="Your application",
+                             body="Thanks! The posting: https://jobs.lever.co/acmerobotics/aaaaaaaa-4a59-4687-8c7d-9e0f1a2b3c4d?lever-source=abc")
+        self.assertNotEqual(self.match(elsewhere).tier, "job_id", "another posting's uuid is not this application")
+
     def test_company_and_role_match(self):
         found = self.match(acme_confirmation())
         self.assertEqual((found.tier, found.application_id), ("company_title", self.acme))
@@ -724,6 +737,16 @@ class LiveMailTests(MailCase):
         self.assertEqual(draft["source_url"], "https://jobs.ashbyhq.com/nimbus/2f1c3e4a-1111-4222-8333-944455556666")
         with self.assertRaisesRegex(ValueError, "can't be undone"):
             automation.undo(self.conn, proposal["id"], USER)
+
+    def test_a_lever_posting_link_is_kept_for_the_capture_form_without_its_tracking(self):
+        self.started()
+        posting = "6f1d2c3b-4a59-4687-8c7d-9e0f1a2b3c4d"
+        self.deliver("m-17l", job_mail(sender="Harbor Demo Labs <no-reply@hire.lever.co>", subject="Thank you for applying to Harbor Demo Labs",
+                                       body=f"Thanks for applying to Harbor Demo Labs for the Customer Success Lead position. https://jobs.lever.co/harbordemo/{posting}?lever-source=x"))
+        self.pass_once()
+        [proposal] = self.actions()
+        self.assertEqual(proposal["action_type"], "application.capture_proposal")
+        self.assertEqual(proposal["after"]["capture"]["url"], f"https://jobs.lever.co/harbordemo/{posting}")
 
     def test_a_hedged_rejection_only_proposes(self):
         self.started()

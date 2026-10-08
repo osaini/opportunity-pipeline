@@ -190,6 +190,7 @@ FORBIDDEN_DRIVER_ATTRS = frozenset({
 # Who may use a name from that list, by (module, name, receiver). Each has its reason.
 ALLOWED_DRIVER_ATTRS = {
     ("apply/preflight.py", "fetch", "client"): "the schema client's read of Greenhouse's public listing: Python's urllib, no browser",
+    ("apply/schema_client.py", "fetch", ""): "Lever's listing reader asks the page client for the posting's application page: Python's urllib, no browser",
 }
 # ``.request`` on a receiver that is not an APIRequestContext, by (module, receiver name): each sends from Python, never from the
 # browser, or (a Response) sends nothing at all.
@@ -562,12 +563,13 @@ SIDE_CHANNELS = (
 
 class LaunchIsPlain(unittest.TestCase):
     # The switches that remove features a page could carry a value out through, and nothing else: none changes how the browser presents itself.
-    # The resolver rule leaves the browser able to look up only these names (Greenhouse's boards, lookups, static files, fonts and CAPTCHA),
+    # The resolver rule leaves the browser able to look up only these names (Greenhouse's boards, lookups, static files, fonts and CAPTCHA, and the two
+    # hosts a Lever posting lives on, which every registered ATS adds to the one rule: the agent's request rules still refuse them on a Greenhouse run),
     # written out here so that adding a host is a decision someone reads. "s?-recruiting" stands for the numbered logo and banner shards.
     RESOLVABLE = [
         "api-geocode-earth-proxy.greenhouse.io", "boards.greenhouse.io", "fonts.googleapis.com", "fonts.gstatic.com", "job-boards.cdn.greenhouse.io",
-        "job-boards.greenhouse.io", "recruiting.cdn.greenhouse.io", "s?-recruiting.cdn.greenhouse.io", "s??-recruiting.cdn.greenhouse.io",
-        "s???-recruiting.cdn.greenhouse.io", "www.gstatic.com", "www.recaptcha.net",
+        "job-boards.greenhouse.io", "jobs.eu.lever.co", "jobs.lever.co", "recruiting.cdn.greenhouse.io", "s?-recruiting.cdn.greenhouse.io",
+        "s??-recruiting.cdn.greenhouse.io", "s???-recruiting.cdn.greenhouse.io", "www.gstatic.com", "www.recaptcha.net",
     ]
     # What a closing page can send without the route handler being asked is limited by this list alone, so it holds only what a rehearsal
     # needs before Submit: not Greenhouse's analytics collector or my.greenhouse.io, and no CAPTCHA service a Greenhouse form was not seen to use.

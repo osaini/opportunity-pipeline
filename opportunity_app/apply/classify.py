@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Iterable
 from pipeline_core.identity import normalized_text
 
 from ..applications.extension import SENSITIVE_FIELD
+from .lever import NEVER_PLANNED
 
 if TYPE_CHECKING:
     from .policy import SchemaField
@@ -32,6 +33,8 @@ STATEMENT_CATEGORIES = ("acknowledgment", "consent")
 # A single box that states the answer ("I confirm that I am at least 18 years of age") is stored as ticked too.
 TICKABLE = ("work_authorization", "sponsorship", "age_18")
 
+
+NEVER_PLANNED_FIELDS = frozenset(NEVER_PLANNED)
 
 _EEOC_NAMES = {
     "gender": "eeo_gender", "hispanic_ethnicity": "eeo_hispanic", "race": "eeo_race",
@@ -584,6 +587,12 @@ def statement_needs_company(item: SchemaField, control: str, category: str = "",
     return _statement_parts(item, control, category, answer_key)[1]
 
 
+def eeo_field(item: SchemaField) -> bool:
+    """Whether the field is an EEO question found by its own field name: Greenhouse's compliance block, or one of Lever's four ``eeo[...]``
+    selects (a demographic-section field with one of the EEOC names). One decline serves every company and every form."""
+    return item.section == "compliance" or (item.section == "demographic" and item.name in _EEOC_NAMES)
+
+
 def classify_item(item: SchemaField, control: str, parent: str | None = None, follows: bool = False) -> str | None:
     """The category of one form field: its question, and for what has no wording of its own, what it depends on.
 
@@ -592,6 +601,9 @@ def classify_item(item: SchemaField, control: str, parent: str | None = None, fo
     please explain"), which passes that question's own category on: ``parent`` is that question's category, and
     its label is read as well, for a parent the listing does not carry. The most restrictive result wins.
     """
+    if item.section == "standard" and item.name in NEVER_PLANNED_FIELDS:
+        # Lever's pronouns (an identity disclosure, like gender) and its marketing consent (no exact statement covers it): never planned.
+        return "uncategorized"
     found = [classify_sensitive(item.label, item.options, item.section, item.name)]
     if item.section == "custom":
         agreeing = control == "checkbox"

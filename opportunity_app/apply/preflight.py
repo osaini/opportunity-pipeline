@@ -1,8 +1,9 @@
-"""Apply for me: the read-only check a saved Greenhouse role gets when the student opens it (spec 6.0, 10.3).
+"""Apply for me: the read-only check a saved Greenhouse or Lever role gets when the student opens it (spec 6.0, 10.3).
 
 ``check`` answers "what would the app fill, and what does it still need from me?" without opening a browser.
-It reads the role, the student's data and Greenhouse's public listing, and it **writes nothing**: no
-application, no interaction, no event, no run. Opening the section changes nothing in the tracker (G9).
+It reads the role, the student's data and the ATS's public listing (Greenhouse's job board API; for Lever, the posting's own
+application page), and it **writes nothing**: no application, no interaction, no event, no run. Opening the section changes
+nothing in the tracker (G9).
 
 ``answer_missing`` is the one write that goes with it, and it is the student's own act: a question the check
 listed as missing is answered once and saved to the answer library, for this company, as a row with no field
@@ -26,16 +27,18 @@ from typing import Any
 from pipeline_core.identity import employer_key
 from pipeline_core.visibility import capture_visible_sql
 
-from . import ats as apply_ats, classify as apply_classify, greenhouse as apply_greenhouse, policy as apply_policy, runs as apply_runs, sensitive as apply_sensitive
+from . import ats as apply_ats, classify as apply_classify, lever as apply_lever, policy as apply_policy, runs as apply_runs, sensitive as apply_sensitive
+from ..automation import ledger as automation
 from ..student import preparation
 from ..applications.actions import OpportunityNotFoundError
-from .schema_client import SchemaClient, SchemaUnavailable
+from .schema_client import PageClient, SchemaClient, SchemaUnavailable
 from .checks import question_key
 
 # {ats} is the ATS's display name (apply.ats.name_of), filled where the sentence is said.
 NOT_FOUND = "The app couldn't find this posting on {ats}. It may be closed"
 NO_ANSWER = "{ats} did not answer. Try again later"
 DUPLICATE_TICK = "I know Apply for me handed an application to {company} to {ats} on {date} (it may not have gone through). Apply anyway."
+SWITCH_OFF = "Apply for me works with {ats} postings once you turn it on in Apply agent settings"
 LEFT_FOR_YOU = ". {count} more {is_are} left for you to answer on the {ats} form"
 YOURS_TO_ANSWER = "The app has everything it can fill. {count} question{s_are} yours to answer on the {ats} form"
 
@@ -116,14 +119,39 @@ def _listing(
     return listing, "", False
 
 
-def _asks(conn: sqlite3.Connection, user_id: str, opportunity_id: str, ident: tuple[str, str], company: str, now: datetime) -> tuple[Any, list[dict[str, str]]]:
+LEVER_RESUME_YOURS = "Your résumé: you attach it yourself {there}, because Lever reads it as soon as it is attached"
+LEVER_RESUME_ATTACHED = ("Your résumé: the app attaches it itself, because you let it in Apply for me settings. "
+                         "Lever reads it as soon as it is attached, so it is sent to Lever before you press Submit")
+# While Lever has no window (``adapter_built``), the switch changes nothing yet: the student still attaches the résumé on Lever's own page.
+LEVER_RESUME_ATTACHED_LATER = ("Your résumé: you attach it yourself on Lever's application page. You let the app attach it in Apply for me settings, "
+                               "but it cannot do that on Lever yet. Once it can, Lever reads it as soon as it is attached, "
+                               "so it is sent to Lever before you press Submit")
+
+
+def lever_resume_note(ats: apply_ats.AtsSpec, upload: bool) -> str:
+    """The sentence above a Lever role's list about the résumé: who attaches it, following the student's choice and whether Lever has a window."""
+    if not ats.adapter_built:
+        return LEVER_RESUME_ATTACHED_LATER if upload else LEVER_RESUME_YOURS.format(there="on Lever's application page")
+    return LEVER_RESUME_ATTACHED if upload else LEVER_RESUME_YOURS.format(there="in the window")
+
+
+def _offers(ats: apply_ats.AtsSpec) -> dict[str, Any]:
+    """Which window actions the page may offer for this ATS (rehearsal, Finish in browser), and the sentence for the one that is not there."""
+    refusals = {name: apply_ats.mode_refusal(ats, name) for name in ("rehearse", "handoff")}
+    missing = refusals["handoff"] or refusals["rehearse"]
+    return {"rehearse": refusals["rehearse"] is None, "handoff": refusals["handoff"] is None, "note": missing[1] if missing else ""}
+
+
+def _asks(
+    conn: sqlite3.Connection, user_id: str, opportunity_id: str, ats: str, ident: tuple[str, str], company: str, now: datetime,
+) -> tuple[Any, list[dict[str, str]]]:
     """(a block that stops the application outright, or None; the ticks the student would give to go on)."""
     token, job = ident
     acknowledged: list[str] = []
     asks: list[dict[str, str]] = []
     while True:
         block = apply_runs.duplicate_block(
-            conn, user_id, opportunity_id=opportunity_id, ats=apply_greenhouse.ATS_GREENHOUSE, job_ref=f"{token}/{job}",
+            conn, user_id, opportunity_id=opportunity_id, ats=ats, job_ref=f"{token}/{job}",
             company=employer_key(company), acknowledged=acknowledged, now=now, reading=True,
         )
         if block is None or block.kind != "ask":
@@ -132,8 +160,11 @@ def _asks(conn: sqlite3.Connection, user_id: str, opportunity_id: str, ident: tu
         acknowledged.append(block.code)
 
 
-def _action(entry: apply_policy.PlanField, facts: dict[str, Any], letter: dict[str, Any] | None = None) -> dict[str, Any]:
+def _action(entry: apply_policy.PlanField, facts: dict[str, Any], letter: dict[str, Any] | None = None, ats: str = "greenhouse") -> dict[str, Any]:
     kind = entry.problem_kind
+    if kind == "window":
+        # Nothing the app can fill and no control here: the student does it in the window. Counted with the questions left to the student.
+        return {"type": "manual", "category": "", "words": "", "allowable": False}
     if kind in ("missing_answer", "answer_mismatch"):
         # Apply for me saves an answer for this company only: there is no "use for any company" (spec 7.1 "As built").
         return {"type": "answer", "control": entry.control, "options": list(entry.options), "answer_key": entry.answer_key}
@@ -151,7 +182,9 @@ def _action(entry: apply_policy.PlanField, facts: dict[str, Any], letter: dict[s
         return {"type": "cover_letter", "state": "draft" if draft else "missing", "document_id": str((letter or {}).get("document_id") or "") if draft else ""}
     if kind == "label_needed":
         suggestion = facts.get(entry.label_field) if entry.label_field in ("school", "degree") else ""
-        return {"type": "ats_label", "field": entry.label_field, "suggestion": suggestion if isinstance(suggestion, str) else ""}
+        return {"type": "ats_label", "field": entry.label_field, "suggestion": suggestion if isinstance(suggestion, str) else "", "ats": ats,
+                # Look up options is a run in a window that reads the form's own list: Greenhouse has one, Lever's comes later (LV5).
+                "lookup": ats != apply_lever.ATS_LEVER}
     if kind in ("sensitive_missing", "sensitive_mismatch"):
         form = _sensitive_form(entry, kind)
         if form:
@@ -216,12 +249,14 @@ def _sensitive_form(entry: apply_policy.PlanField, kind: str) -> dict[str, Any] 
     }
 
 
-def _problem_view(entry: apply_policy.PlanField, facts: dict[str, Any], letter: dict[str, Any] | None = None) -> dict[str, Any]:
+def _problem_view(entry: apply_policy.PlanField, facts: dict[str, Any], letter: dict[str, Any] | None = None, ats: str = "greenhouse") -> dict[str, Any]:
     return {"key": entry.key, "question": entry.question, "required": bool(entry.required), "kind": entry.problem_kind,
-            "message": entry.problem, "action": _action(entry, facts, letter)}
+            "message": entry.problem, "action": _action(entry, facts, letter, ats)}
 
 
-def _view(plan: apply_policy.Plan, facts: dict[str, Any], letter: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], dict[str, int], list[dict[str, Any]]]:
+def _view(
+    plan: apply_policy.Plan, facts: dict[str, Any], letter: dict[str, Any] | None = None, ats: str = "greenhouse",
+) -> tuple[list[dict[str, Any]], dict[str, int], list[dict[str, Any]]]:
     problems: list[dict[str, Any]] = []
     named = False
     for entry in plan.fields:
@@ -235,7 +270,7 @@ def _view(plan: apply_policy.Plan, facts: dict[str, Any], letter: dict[str, Any]
             problems.append({"key": "name_parts", "question": "First and last name for applications", "required": True, "kind": "name",
                              "message": entry.problem, "action": {"type": "profile", "field": "name_parts"}})
             continue
-        problems.append(_problem_view(entry, facts, letter))
+        problems.append(_problem_view(entry, facts, letter, ats))
     fields = [
         {"key": entry.key, "question": entry.question, "required": bool(entry.required), "disposition": entry.disposition,
          "source": entry.source.label or entry.source.kind if entry.source.kind != "none" else "", "note": entry.note,
@@ -253,11 +288,12 @@ def _view(plan: apply_policy.Plan, facts: dict[str, Any], letter: dict[str, Any]
 
 def _prepare(
     conn: sqlite3.Connection, user_id: str, opportunity_id: str, *, client: SchemaClient, cache: SchemaCache | None,
-    resume_root: Path | None, moment: datetime, mode: str = "check", key: bytes | None = None,
+    resume_root: Path | None, moment: datetime, mode: str = "check", key: bytes | None = None, page_client: PageClient | None = None,
 ) -> tuple[dict[str, Any], apply_policy.Plan | None, apply_policy.Sources | None, list[apply_policy.SchemaField] | None]:
     """6.0 steps 2 to 6: the answer so far, the plan when there is one (None when the check ends earlier), and the parsed
     listing it was built from. Writes nothing. ``mode`` is the plan's ("check", or "rehearse" for a run); ``key`` is the
-    install's value-MAC key (None: a fresh one, which only the check can do with)."""
+    install's value-MAC key (None: a fresh one, which only the check can do with). ``client`` reads Greenhouse's listing and
+    ``page_client`` Lever's page; an ATS whose client was not given did not answer."""
     opportunity = _opportunity(conn, user_id, opportunity_id)
     company = str(opportunity["company"] or "")
     result: dict[str, Any] = {
@@ -265,36 +301,50 @@ def _prepare(
         "message": not_supported(), "problems": [], "asks": [], "fields": [], "optional_sensitive": [], "counts": {}, "eligibility": {}, "application": {"exists": False, "stage": ""},
         "checked_at": moment.isoformat(timespec="seconds"), "from_cache": False, "ats_name": "",
         "posting": {"title": "", "company": "", "url": "", "differs": False, "difference": ""},
+        # What the page may start for this ATS, and the sentence for what it cannot (Lever has no window action yet), and facts the student should know.
+        "offers": {"rehearse": False, "handoff": False, "note": ""}, "notes": [],
     }
     found = apply_ats.identify(conn, opportunity_id)
     if found is None:
         return result, None, None, None
     ats, ident = found
     token, job = ident
-    result.update(ats=ats.key, ats_name=ats.display_name, board_token=token, job_id=job, canonical_url=ats.canonical_url(token, job))
+    result.update(
+        ats=ats.key, ats_name=ats.display_name, board_token=token, job_id=job, canonical_url=apply_ats.canonical_url_of(ats, ident),
+        offers=_offers(ats),
+    )
+    if ats.switch and automation.mode(conn, user_id, ats.switch) != "on":
+        return {**result, "message": SWITCH_OFF.format(ats=ats.display_name)}, None, None, None
     application = conn.execute("SELECT stage FROM applications WHERE opportunity_id=? AND user_id=?", (opportunity_id, user_id)).fetchone()
     if application is not None:
         result["application"] = {"exists": True, "stage": str(application["stage"])}
-    block, asks = _asks(conn, user_id, opportunity_id, ident, company, moment)
+    block, asks = _asks(conn, user_id, opportunity_id, ats.key, ident, company, moment)
     result["asks"] = asks
     if block is not None:
         return {**result, "status": "failed", "message": block.message}, None, None, None
-    listing, sentence, cached = _listing(client, cache, ats.key, token, job)
+    reader = ats.listings(client, page_client, ident)
+    if reader is None:
+        return {**result, "status": "failed", "message": NO_ANSWER.format(ats=ats.display_name)}, None, None, None
+    listing, sentence, cached = _listing(reader, cache, ats.key, token, job)
     if listing is None:
         return {**result, "status": "failed", "message": sentence}, None, None, None
     result["from_cache"] = cached
     # Which posting was read, so the student can see it, and whether it looks like the role they saved (source integrity).
-    difference = apply_policy.posting_difference(company, str(opportunity["title"] or ""), listing, ats_name=ats.display_name)
+    difference = ats.posting_difference(company, str(opportunity["title"] or ""), listing, ats_name=ats.display_name)
     result["posting"] = {
         "title": str(listing.get("title") or ""), "company": str(listing.get("company_name") or ""), "url": result["canonical_url"],
         "differs": bool(difference), "difference": difference,
     }
-    sources = apply_policy.sources_for(conn, user_id, opportunity_id, company=company, storage_root=resume_root, key=key)
+    upload = ats.key == apply_lever.ATS_LEVER and automation.mode(conn, user_id, "apply_lever_resume_upload") == "on"
+    sources = apply_policy.sources_for(conn, user_id, opportunity_id, company=company, storage_root=resume_root, key=key, ats=ats.key, resume_upload=upload)
     schema = ats.parse_schema(listing)
     plan = apply_policy.build_plan(
         schema, None, sources, company, mode,
-        ats_name=ats.display_name, canonical_url=result["canonical_url"], adapter_version=ats.adapter_version,
+        ats_name=ats.display_name, canonical_url=result["canonical_url"], adapter_version=ats.adapter_version, ats=ats.key,
+        window=ats.adapter_built,
     )
+    if ats.key == apply_lever.ATS_LEVER:
+        result["notes"] = [lever_resume_note(ats, upload)]
     return result, plan, sources, schema
 
 
@@ -336,17 +386,27 @@ def _eligibility(
                     DUPLICATE_TICK.format(company=result["company"], ats=apply_ats.name_of(result["ats"]), date=block.date)
                 )})
             rows[name]["ticks"] = [] if blocked else ticks
-    met, count, needed = apply_runs.gate(conn, user_id, apply_greenhouse.ATS_GREENHOUSE)
+    met, count, needed = apply_runs.gate(conn, user_id, result["ats"])
     if result["status"] != "ready":
         rows["submit"].update(allowed=False, reason=result["message"])
     elif not met:
         rows["submit"].update(allowed=False, reason=f"{count} of {needed} clean rehearsals at different companies so far")
+    # What this ATS does not do (Lever supports Finish in browser only, and has no driver yet) is closed here with the reason, whatever the limits say.
+    spec = apply_ats.spec_for(result["ats"])
+    for name in ("rehearse", "handoff"):
+        refusal = apply_ats.mode_refusal(spec, name)
+        if refusal:
+            rows[name].update(allowed=False, needs_tick=False, reason=refusal[1])
+            if name == "handoff":
+                rows[name]["ticks"] = []
+    if "one_click" not in spec.claim_modes:
+        rows["submit"].update(allowed=False, needs_tick=False, reason=f"{spec.display_name} supports Finish in browser only, for now")
     return rows
 
 
 def check(
     conn: sqlite3.Connection, user_id: str, opportunity_id: str, *, client: SchemaClient, cache: SchemaCache | None = None,
-    resume_root: Path | None = None, now: datetime | None = None,
+    resume_root: Path | None = None, now: datetime | None = None, page_client: PageClient | None = None,
 ) -> dict[str, Any]:
     """The read-only preflight for one role (6.0 steps 2 to 7). Writes nothing and returns no value.
 
@@ -354,12 +414,14 @@ def check(
     has no such posting), needs_you (questions the app cannot answer yet, listed with an action each) or ready.
     """
     moment = _now(now)
-    result, plan, sources, _schema = _prepare(conn, user_id, opportunity_id, client=client, cache=cache, resume_root=resume_root, moment=moment)
+    result, plan, sources, _schema = _prepare(
+        conn, user_id, opportunity_id, client=client, cache=cache, resume_root=resume_root, moment=moment, page_client=page_client,
+    )
     if plan is None or sources is None:
         if result["ats"]:
             result["eligibility"] = _eligibility(conn, user_id, result, moment)
         return result
-    problems, counts, fields = _view(plan, sources.facts, sources.cover_letter)
+    problems, counts, fields = _view(plan, sources.facts, sources.cover_letter, result["ats"])
     required = [item for item in problems if item["required"]]
     # A question with no control in the app (a sensitive one) is the student's to answer on the form: it is counted apart,
     # so "need an answer first" only counts what the student can do something about here.
@@ -405,7 +467,7 @@ class RunInputs:
 
 def run_inputs(
     conn: sqlite3.Connection, user_id: str, opportunity_id: str, *, client: SchemaClient, mode: str = "rehearse",
-    resume_root: Path | None = None, apply_root: Path | None = None, now: datetime | None = None,
+    resume_root: Path | None = None, apply_root: Path | None = None, now: datetime | None = None, page_client: PageClient | None = None,
 ) -> RunInputs:
     """6.0 steps 2 to 6 for a run: always a fresh listing (no cache), the plan in ``mode``, the install's MAC key. Writes nothing.
 
@@ -415,7 +477,7 @@ def run_inputs(
     moment = _now(now)
     key = apply_policy.mac_key(apply_root) if apply_root is not None else None
     result, plan, _sources, schema = _prepare(
-        conn, user_id, opportunity_id, client=client, cache=None, resume_root=resume_root, moment=moment, mode=mode, key=key,
+        conn, user_id, opportunity_id, client=client, cache=None, resume_root=resume_root, moment=moment, mode=mode, key=key, page_client=page_client,
     )
     if plan is None or schema is None:
         return RunInputs(result, None, None)
@@ -460,7 +522,7 @@ def _stored_answer(entry: apply_policy.PlanField, answer: Any) -> str:
 def answer_missing(
     conn: sqlite3.Connection, user_id: str, opportunity_id: str, *, key: str, answer: Any, reusable: bool = False,
     client: SchemaClient, cache: SchemaCache | None = None, resume_root: Path | None = None, now: datetime | None = None,
-    posting_confirmed: bool = False,
+    posting_confirmed: bool = False, page_client: PageClient | None = None,
 ) -> dict[str, Any]:
     """Save the student's answer to one question the check listed as missing. The one write of the missing-answers view.
 
@@ -472,7 +534,9 @@ def answer_missing(
     role's company. Returns the fresh check.
     """
     moment = _now(now)
-    result, plan, _sources, _schema = _prepare(conn, user_id, opportunity_id, client=client, cache=cache, resume_root=resume_root, moment=moment)
+    result, plan, _sources, _schema = _prepare(
+        conn, user_id, opportunity_id, client=client, cache=cache, resume_root=resume_root, moment=moment, page_client=page_client,
+    )
     if plan is None:
         raise AnswerRefused(result["message"])
     if result["posting"]["differs"] and not posting_confirmed:
@@ -496,13 +560,13 @@ def answer_missing(
     saved = preparation.save_answer(
         conn, entry.answer_key, text, company, tags, answer_id=existing["id"] if existing else None, user_id=user_id,
     )
-    return {"answer_id": saved["id"], "check": check(conn, user_id, opportunity_id, client=client, cache=cache, resume_root=resume_root, now=moment)}
+    return {"answer_id": saved["id"], "check": check(conn, user_id, opportunity_id, client=client, cache=cache, resume_root=resume_root, now=moment, page_client=page_client)}
 
 
 def answer_sensitive(
     conn: sqlite3.Connection, user_id: str, opportunity_id: str, *, key: str, answer: Any, consent: bool, any_company: bool = False,
     client: SchemaClient, cache: SchemaCache | None = None, resume_root: Path | None = None, now: datetime | None = None,
-    posting_confirmed: bool = False,
+    posting_confirmed: bool = False, page_client: PageClient | None = None,
 ) -> dict[str, Any]:
     """Store the student's answer to one sensitive question the check listed, with the consent ticked (Needs you, 10.3).
 
@@ -515,7 +579,9 @@ def answer_sensitive(
     Returns the fresh check.
     """
     moment = _now(now)
-    result, plan, sources, _schema = _prepare(conn, user_id, opportunity_id, client=client, cache=cache, resume_root=resume_root, moment=moment)
+    result, plan, sources, _schema = _prepare(
+        conn, user_id, opportunity_id, client=client, cache=cache, resume_root=resume_root, moment=moment, page_client=page_client,
+    )
     if plan is None:
         raise AnswerRefused(result["message"])
     if result["posting"]["differs"] and not posting_confirmed:
@@ -552,4 +618,4 @@ def answer_sensitive(
         )
     except apply_sensitive.StoreRefused as exc:
         raise AnswerRefused(str(exc)) from exc
-    return {"entry_id": saved["id"], "check": check(conn, user_id, opportunity_id, client=client, cache=cache, resume_root=resume_root, now=moment)}
+    return {"entry_id": saved["id"], "check": check(conn, user_id, opportunity_id, client=client, cache=cache, resume_root=resume_root, now=moment, page_client=page_client)}

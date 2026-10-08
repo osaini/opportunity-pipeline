@@ -367,6 +367,27 @@ def apply_ready(live_server: LiveServer, base_url: str, pristine_database):
 
 
 @pytest.fixture
+def lever_ready(apply_ready, live_server: LiveServer, base_url: str):
+    """The fictional Lever posting (Harbor Demo Labs, saved) is a role, and Apply for me on Lever is switched on before the page loads.
+
+    The résumé choice stays off, as it is for every student until they turn it on.
+    """
+    import httpx
+
+    from apply_fake_ats import seed_lever_role
+    from ui_helpers import USER, db
+
+    with db(live_server) as conn, conn:
+        seed_lever_role(conn, USER)
+    response = httpx.put(
+        f"{base_url}/api/v1/automation/settings",
+        headers={"Authorization": f"Bearer {OWNER_TOKEN}"},
+        json={"modes": {"apply_agent_lever": "on"}},
+    )
+    assert response.status_code == 200, response.text
+
+
+@pytest.fixture
 def restored_environment():
     """The server runs in this process, so its settings are this process's environment: put them back afterwards."""
     with mock.patch.dict(os.environ, {}):

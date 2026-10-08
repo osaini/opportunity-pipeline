@@ -30,6 +30,8 @@
   // you gave, only the questions, where each answer would come from, and what is missing.
   // About a rehearsal only: a Finish in browser run does write to the tracker (an application and its events), so this never says nothing changed.
   const APPLY_NOTE = "A rehearsal changes nothing in your tracker. It fills the form in a window to check it, and never sends it.";
+  // For a form the app can only read so far (Lever): there is no rehearsal to speak of.
+  const READ_ONLY_NOTE = "This only reads the form. Opening it changes nothing in your tracker, and nothing is filled or sent.";
   const APPLY_API = "/api/v1/apply-agent";
   const REHEARSE_HELP = "Opens a Chromium window and fills this form to check it. Nothing is sent: the app never presses Submit, and it refuses every request it can see that could send the form.";
   const WINDOW_NOTE = "A Chromium window is open. You can watch, but please don't type in it.";
@@ -148,7 +150,8 @@
     save.type = "submit";
     const status = element("p", "form-status");
     status.setAttribute("role", "status");
-    form.append(label, element("p", "profile-help", "You typed this, so the app has not checked it against the form yet. It only uses an option the form really lists, word for word."), applyLookup(problem, input, onSaved), save, status);
+    // Look up options is a run in a window that reads the form's own list: Greenhouse has one, Lever's comes later, so its form has none.
+    form.append(label, element("p", "profile-help", "You typed this, so the app has not checked it against the form yet. It only uses an option the form really lists, word for word."), ...(action.lookup === false ? [] : [applyLookup(problem, input, onSaved)]), save, status);
     // Kept across a rebuild of the list, but only when the student changed it from the suggestion.
     form.applyDraft = {
       read: () => (input.value !== (action.suggestion || "") ? { answer: input.value } : null),
@@ -166,7 +169,7 @@
       save.setAttribute("aria-disabled", "true");
       status.textContent = "Saving…";
       try {
-        await api(`/api/v1/apply-agent/ats-labels/${encodeURIComponent(action.field)}`, { method: "PUT", body: JSON.stringify({ label: input.value }) });
+        await api(`/api/v1/apply-agent/ats-labels/${encodeURIComponent(action.field)}`, { method: "PUT", body: JSON.stringify({ label: input.value, ...(action.ats ? { ats: action.ats } : {}) }) });
         onSaved(null, "Saved.");
       } catch (error) {
         saving = false;
@@ -1361,9 +1364,17 @@
       return box;
     }
 
+    // The actions the server says this posting's ATS has. Greenhouse has both; Lever has none yet, and the block then says so in plain words.
     function startBlock() {
       const block = element("div", "apply-start-block");
-      block.append(startControls("Rehearse in a window"), handoffControls("Finish in browser"));
+      const offers = checked?.offers;
+      if (!offers || offers.rehearse) block.appendChild(startControls("Rehearse in a window"));
+      if (!offers || offers.handoff) block.appendChild(handoffControls("Finish in browser"));
+      if (offers && !offers.rehearse && !offers.handoff) {
+        const note = element("p", "apply-limit apply-not-offered", offers.note || `Nothing can be started on ${atsName(checked)} yet.`);
+        note.dataset.applyNotOffered = "";
+        block.appendChild(note);
+      }
       return block;
     }
 
@@ -1578,6 +1589,8 @@
       const stopped = result.eligibility?.handoff;
       if (stopped && !stopped.allowed && stopped.reason && !buttonShown) body.appendChild(element("p", "apply-limit", `Not right now: ${stopped.reason}`));
       applyPostingLine(body, result, (confirmed) => { postingConfirmed = confirmed; }, postingConfirmed);
+      // What the student should know about this posting's ATS before anything is filled (on Lever: what happens to the résumé).
+      (result.notes || []).forEach((note) => body.appendChild(element("p", "profile-help apply-ats-note", `${note}.`)));
       // Questions the app has a control for come first. The ones it never answers for the student are grouped apart as hers to do on the form.
       const problems = result.problems || [];
       const groups = [[problems.filter((problem) => problem.action?.type !== "manual"), ""], [problems.filter((problem) => problem.action?.type === "manual"), "Left for you"]];
@@ -1592,6 +1605,14 @@
           row.appendChild(element("p", "profile-help", problem.message));
           // A kind of question the student could let the app answer says where, so it is not mistaken for a never.
           if (problem.action?.allowable) row.appendChild(element("p", "profile-help", "You can let the app answer this kind of question, once you add the answer yourself, in Apply for me settings under Automation."));
+          // A Lever question the app leaves to the student, or a location to choose, points at the posting where Lever's own form is.
+          // The sensitive questions it leaves for the student are done on Lever's page too, while Finish in browser is not there for Lever.
+          const doneOnLever = ["window", "label_needed"].includes(problem.kind) || (problem.action?.type === "manual" && result.offers && !result.offers.handoff);
+          if (result.ats === "lever" && doneOnLever && result.posting?.url) {
+            const link = element("p", "profile-help");
+            link.appendChild(externalLink(result.posting.url, "Open the posting on Lever"));
+            row.appendChild(link);
+          }
           const control = applyProblemAction({ ...problem, atsName: result.ats_name, opportunityId: item.id, opportunityLabel: [result.company, result.title].filter(Boolean).join(" — "), postingConfirmed: () => postingConfirmed, lookups }, result.company, (fresh, message) => {
             if (fresh) paint(fresh, message);
             else load(message);
@@ -1642,7 +1663,7 @@
         details.appendChild(list);
         body.appendChild(details);
       }
-      body.appendChild(element("p", "apply-note", APPLY_NOTE));
+      body.appendChild(element("p", "apply-note", result.offers && !result.offers.rehearse ? READ_ONLY_NOTE : APPLY_NOTE));
     }
 
     async function load(saved = "") {
@@ -1931,8 +1952,6 @@
     heading.tabIndex = -1;
     const host = element("div", "apply-settings");
     wrap.append(heading, host, applySensitiveSettings());
-    const status = element("p", "form-status");
-    status.setAttribute("role", "status");
     const LIMIT_WORDS = {
       spacing_minutes: ["Minutes between two applications", "minutes"],
       daily_cap: ["Applications a day", ""],
@@ -1947,6 +1966,18 @@
       education_start_month: "Education start month", education_start_year: "Education start year",
       education_end_month: "Education end month", education_end_year: "Education end year",
     };
+
+    // One status line for each list, made once: paint() rebuilds the block after a save, and a message set before that repaint must be on
+    // the page after it. Each says "Saved." or "Removed." under its own form, never under another list's.
+    const statuses = new Map();
+    function statusFor(ats) {
+      if (!statuses.has(ats)) {
+        const status = element("p", "form-status");
+        status.setAttribute("role", "status");
+        statuses.set(ats, status);
+      }
+      return statuses.get(ats);
+    }
 
     function paint(settings) {
       host.replaceChildren();
@@ -1967,21 +1998,37 @@
         entry.lines.forEach((line) => stats.appendChild(element("li", "", line)));
         host.appendChild(stats);
       });
-      host.appendChild(element("h5", "", "Exact options for lists the form owns"));
-      host.appendChild(element("p", "profile-help", "Some fields, such as school and location, are lists whose wording only the form knows. Save the exact option once and the app uses it word for word."));
-      const labels = Object.entries(settings.ats_labels);
+      // One group of saved options for each ATS whose form has lists of its own (Greenhouse always, Lever once its switch is on).
+      const sets = settings.ats_label_sets || [{ ats: "greenhouse", name: atsName(null), fields: settings.label_fields, labels: settings.ats_labels }];
+      sets.forEach((set) => labelSet(set, sets.length > 1));
+      lever(settings.lever);
+    }
+
+    // The exact option labels the student confirmed for one ATS's lists, and a form to add one.
+    function labelSet(set, named) {
+      const status = statusFor(set.ats || "greenhouse");
+      const query = set.ats && set.ats !== "greenhouse" ? `?ats=${encodeURIComponent(set.ats)}` : "";
+      host.appendChild(element("h5", "", named ? `Exact options for lists the ${set.name} form owns` : "Exact options for lists the form owns"));
+      // Greenhouse's lists are school, location and more; another ATS names only the lists it has (Lever: location).
+      const own = (set.fields || []).map((field) => (FIELD_WORDS[field] || field).toLowerCase());
+      const wording = set.ats && set.ats !== "greenhouse" && own.length
+        ? `On the ${set.name} form, ${own.join(" and ")} ${own.length > 1 ? "are lists" : "is a list"} whose wording only the form knows.`
+        : "Some fields, such as school and location, are lists whose wording only the form knows.";
+      host.appendChild(element("p", "profile-help", `${wording} Save the exact option once and the app uses it word for word.`));
+      const labels = Object.entries(set.labels || {});
       if (!labels.length) host.appendChild(element("p", "empty-inline", "No options saved yet."));
       const list = element("ul", "reason-list apply-labels");
+      list.dataset.ats = set.ats || "greenhouse";
       labels.forEach(([field, entry]) => {
         const row = element("li", "apply-label");
         row.append(element("span", "", `${FIELD_WORDS[field] || field}: ${entry.label} `));
         const remove = element("button", "secondary-button", "Remove");
         remove.type = "button";
-        remove.setAttribute("aria-label", `Remove the saved ${FIELD_WORDS[field] || field} option`);
+        remove.setAttribute("aria-label", `Remove the saved ${named ? `${set.name} ` : ""}${FIELD_WORDS[field] || field} option`);
         remove.addEventListener("click", async () => {
           remove.disabled = true;
           try {
-            await api(`/api/v1/apply-agent/ats-labels/${encodeURIComponent(field)}`, { method: "DELETE" });
+            await api(`/api/v1/apply-agent/ats-labels/${encodeURIComponent(field)}${query}`, { method: "DELETE" });
             status.textContent = "Removed.";
             await load();
           } catch (error) {
@@ -1994,10 +2041,11 @@
       });
       host.appendChild(list);
       const form = element("form", "apply-answer-form");
+      form.dataset.ats = set.ats || "greenhouse";
       const pick = element("label", "profile-field");
       pick.appendChild(element("span", "", "List"));
       const select = document.createElement("select");
-      settings.label_fields.forEach((field) => {
+      (set.fields || []).forEach((field) => {
         select.appendChild(optionElement(field, FIELD_WORDS[field] || field));
       });
       pick.appendChild(select);
@@ -2018,7 +2066,9 @@
         }
         add.disabled = true;
         try {
-          await api(`/api/v1/apply-agent/ats-labels/${encodeURIComponent(select.value)}`, { method: "PUT", body: JSON.stringify({ label: input.value }) });
+          await api(`/api/v1/apply-agent/ats-labels/${encodeURIComponent(select.value)}`, {
+            method: "PUT", body: JSON.stringify({ label: input.value, ...(set.ats ? { ats: set.ats } : {}) }),
+          });
           status.textContent = "Saved.";
           await load();
         } catch (error) {
@@ -2027,6 +2077,34 @@
         }
       });
       host.append(form, status);
+    }
+
+    // Lever's two switches live in the list above; this says what each does, in the words the student agreed to (spec L1).
+    function lever(state) {
+      if (!state) return;
+      // The on/off word is its own element, bound to its switch: syncAutomationControls repaints it when the switch changes.
+      const word = (key, mode) => {
+        const span = element("span", "", mode === "on" ? "on" : "off");
+        span.dataset.automationWord = key;
+        return span;
+      };
+      const line = (...parts) => {
+        const item = element("li", "");
+        item.append(...parts);
+        return item;
+      };
+      // While Lever has no window (state.window false) the app attaches nothing on Lever, so the line says so, whichever way the switch is set.
+      const resumeWords = state.window
+        ? ". Lever reads a résumé as soon as it is attached, so it is sent to Lever before you press Submit. With this off, you attach it yourself in the window."
+        : ". The app cannot attach it on Lever yet, because Finish in browser is not available for Lever: you attach it yourself on Lever's application page. "
+          + "Once it can, Lever reads a résumé as soon as it is attached, so with this on it is sent to Lever before you press Submit.";
+      host.appendChild(element("h5", "", "Lever"));
+      const about = element("ul", "reason-list apply-lever-settings");
+      about.append(
+        line("Apply for me on Lever is ", word("apply_agent_lever", state.mode), ". With it on, a saved Lever role shows what the app would fill and what is missing. Filling a Lever form in a window is not available yet."),
+        line("Let the app attach my résumé on Lever is ", word("apply_lever_resume_upload", state.resume_upload), resumeWords),
+      );
+      host.append(about, element("p", "profile-help", "Both are switches under Applications, above. Each is off until you turn it on."));
     }
 
     async function load() {
