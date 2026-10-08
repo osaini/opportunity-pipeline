@@ -12,6 +12,7 @@ a profile, saved answers, a confirmed location label, the sensitive store's entr
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import os
@@ -53,6 +54,33 @@ CONSENT = "I consent to Example Robotics storing my application data for 365 day
 
 def resume_payload(data: bytes = RESUME_BYTES, name: str = RESUME_NAME) -> FilePayload:
     return FilePayload(name=name, mime_type="application/pdf", buffer=data, sha256=hashlib.sha256(RESUME_BYTES).hexdigest())
+
+
+LETTER_TEXT = "# Cover letter\n\nDear Hiring Team,\n\nI would like to work on your robot arms.\n\nSincerely,\nSam Rivera\n"
+LETTER_BYTES = b"%PDF-1.4\n% a fictional cover letter for the apply agent's tests\n"
+LETTER_NAME = "Example-Robotics-Controls-Intern-cover_letter-v2.pdf"
+
+
+def letter_source(text: str = LETTER_TEXT, *, version: int = 2, document_id: str = "doc-1") -> dict[str, Any]:
+    """What ``policy.cover_letter_for`` answers for a role whose latest cover letter is approved."""
+    return {"document_id": document_id, "version": version, "content_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(), "content": text,
+            "file_name": LETTER_NAME, "problem_kind": "", "problem": ""}
+
+
+def letter_payload(data: bytes = LETTER_BYTES, name: str = LETTER_NAME, text: str = LETTER_TEXT) -> FilePayload:
+    """The approved letter's PDF as the runner reads it: its own hash, and the hash of the text it was rendered from."""
+    return FilePayload(name=name, mime_type="application/pdf", buffer=data, sha256=hashlib.sha256(data).hexdigest(),
+                       content_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest())
+
+
+def with_letter(sources: apply_policy.Sources, **kwargs: Any) -> apply_policy.Sources:
+    return dataclasses.replace(sources, cover_letter=letter_source(**kwargs))
+
+
+def schema_with_required_letter() -> list[apply_policy.SchemaField]:
+    listing = fixture_json("schema_new.json")
+    next(block for block in listing["questions"] if block["label"] == "Cover Letter")["required"] = True
+    return apply_policy.parse_schema(listing)
 
 
 def fixture_schema() -> list[apply_policy.SchemaField]:
@@ -185,7 +213,7 @@ class BrowserAgentFactory:
 
     def __init__(
         self, scenario: str = "confirm", record_path: str = "", lookup_endpoints: tuple[Endpoint, ...] = FIXTURE_LOOKUP,
-        isolation: str = "process", mode: str = "", student: str = "",
+        isolation: str = "process", mode: str = "", student: str = "", letter_required: bool = False,
     ) -> None:
         self.scenario = scenario
         self.record_path = record_path
@@ -193,6 +221,7 @@ class BrowserAgentFactory:
         self.isolation = isolation
         self.mode = mode
         self.student = student
+        self.letter_required = letter_required   # the page marks its cover letter required, as the listing does
 
     def available(self) -> str:
         return ""
@@ -200,8 +229,10 @@ class BrowserAgentFactory:
     def __call__(self, *, mode: str, run_id: str, screenshot_dir: Path | None, timeouts: ApplyTimeouts,
                  on_progress: Callable[[str, str], None], heartbeat: Callable[[], None]) -> RecordingAgent:
         mode = self.mode or mode
+        fake = HandoffGreenhouse(self.scenario)
+        fake.letter_required = self.letter_required
         return RecordingAgent(
-            fake=HandoffGreenhouse(self.scenario), record_path=self.record_path, mode=mode, adapter=GreenhouseAdapter(),
+            fake=fake, record_path=self.record_path, mode=mode, adapter=GreenhouseAdapter(),
             run_id=run_id, screenshot_dir=screenshot_dir,
             timeouts=(HANDOFF_TIMEOUTS if mode == "handoff" else TEST_TIMEOUTS) if timeouts == ApplyTimeouts() else timeouts,
             lookup_endpoints=self.lookup_endpoints, on_progress=on_progress, heartbeat=heartbeat,

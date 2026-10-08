@@ -7,7 +7,7 @@ import re
 import sqlite3
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from uuid import uuid4
 
 from .preparation import document_record
@@ -198,6 +198,32 @@ def ensure_document_artifact(
         raise
     finally:
         temp_path.unlink(missing_ok=True)
+
+
+class AttachableFile(NamedTuple):
+    """An approved document's PDF read for attaching: the name the employer sees, its bytes, and the hashes that identify it."""
+
+    name: str
+    media_type: str
+    data: bytes
+    sha256: str            # of the bytes
+    content_sha256: str    # of the approved text the bytes were rendered from
+
+
+def attachable_file(conn: sqlite3.Connection, document_id: str, storage_root: Path, *, user_id: str) -> AttachableFile:
+    """The PDF of an approved document, current and read now. ValueError when the document is not approved or its file cannot be read.
+
+    Renders the PDF when there is none that matches the text (``ensure_document_artifact``), so the bytes returned always come from the
+    text the document has at this moment.
+    """
+    artifact = ensure_document_artifact(conn, document_id, storage_root, user_id=user_id)
+    path = _stored_file(storage_root, artifact)
+    if path is None:
+        raise ValueError("The approved document's file is unavailable")
+    data = path.read_bytes()
+    if hashlib.sha256(data).hexdigest() != str(artifact["sha256"]):
+        raise ValueError("The approved document's file no longer matches what was rendered")
+    return AttachableFile(str(artifact["filename"]), str(artifact["media_type"]), data, str(artifact["sha256"]), str(artifact["content_sha256"]))
 
 
 def delete_document_artifact(

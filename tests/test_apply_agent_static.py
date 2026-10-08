@@ -1538,7 +1538,7 @@ class HandoffSentencesAreTheSpecs(unittest.TestCase):
         self.assertEqual(agent_types.YOUR_TURN_NONE_LEFT, "The form is filled in the Chromium window. Check the form, then press Submit application there.")
         self.assertEqual(agent_types.LEFT_FIELD, 'The app could not fill "{question}". Fill it in yourself.')
         self.assertEqual(agent_types.LEFT_CAPTCHA, "Tick the CAPTCHA box in the window yourself before you press Submit application.")
-        self.assertEqual(agent_types.LEFT_COVER_LETTER, "The app doesn't attach cover letters yet. Attach yours in the window.")
+        self.assertEqual(agent_types.LEFT_COVER_LETTER_CHANGED, "Your cover letter for this role changed while the app was working, so it was not attached. Attach yours in the window.")
         self.assertEqual(agent_types.LEFT_UNPLANNED, 'The page put something in "{question}" that the app didn\'t. Check it before you press Submit application.')
 
     def test_the_progress_steps_of_the_turn_and_the_code(self):

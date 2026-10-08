@@ -40,8 +40,8 @@ from pathlib import Path
 from typing import Any
 
 from .agent_types import (
-    OP_CANCEL, OP_ERROR, OP_FRONT, OP_HAND_OVER, OP_HAND_OVER_REPLY, OP_HANDOFF_READY, OP_HEARTBEAT, OP_PROGRESS, OP_REPLAN,
-    OP_REPLAN_REPLY, OP_RESULT, OP_SECURITY_CODE, OP_SECURITY_CODE_REPLY, OP_SECURITY_CODE_RESULT,
+    OP_CANCEL, OP_ERROR, OP_FILE_CHECK, OP_FILE_CHECK_REPLY, OP_FRONT, OP_HAND_OVER, OP_HAND_OVER_REPLY, OP_HANDOFF_READY, OP_HEARTBEAT,
+    OP_PROGRESS, OP_REPLAN, OP_REPLAN_REPLY, OP_RESULT, OP_SECURITY_CODE, OP_SECURITY_CODE_REPLY, OP_SECURITY_CODE_RESULT,
     AgentJob, ApplyTimeouts, RunResult,
 )
 
@@ -135,7 +135,7 @@ class ChildChannel:
         op = message.get("op")
         if op == OP_CANCEL:
             self._cancel.set()
-        elif op in (OP_REPLAN_REPLY, OP_HAND_OVER_REPLY):
+        elif op in (OP_REPLAN_REPLY, OP_HAND_OVER_REPLY, OP_FILE_CHECK_REPLY):
             with self._arrived:
                 self._replies[int(message["id"])] = message
                 if op == OP_HAND_OVER_REPLY and message.get("ok") is True:
@@ -199,6 +199,17 @@ class ChildChannel:
         if accepted:
             self._handed_over = True
         return accepted
+
+    def check_file(self, key: str, ref: str, sha256: str) -> bool:
+        """Ask the runner whether the document the plan names for field ``key`` (its ``ref`` and the SHA-256 of its text) is still the one
+        to attach. Only an explicit ok=True is True; silence, an error and a closed pipe are False."""
+        ident = next(self._ids)
+        try:
+            self._send({"op": OP_FILE_CHECK, "id": ident, "key": str(key), "ref": str(ref), "sha256": str(sha256)})
+        except (OSError, ValueError):
+            return False
+        reply = self._wait_for(ident, self._timeouts.reply_s)
+        return bool(reply is not None and reply.get("ok") is True)
 
     # --- Finish in browser: the agent's HandoffLink ------------------------------------------
 
@@ -319,6 +330,9 @@ def child_main(factory: Any, job: AgentJob, inbox: Any, outbox: Any, new_session
         )
         # Only a Finish in browser run gets the link: an agent written before it (a lookup or rehearsal fake) never sees it.
         extra: dict[str, Any] = {"link": channel} if job.mode == "handoff" else {}
+        if "cover_letter" in job.files:
+            # Only a run with a letter to attach can ask the runner to check it again, so an agent written without that (a fake) never sees it.
+            extra["check_file"] = channel.check_file
         with agent:
             result = agent.run(
                 job.plan, page_url=job.page_url, schema=job.schema, files=job.files, lookup=job.lookup,

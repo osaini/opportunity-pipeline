@@ -2235,14 +2235,22 @@ class PreviewTests(HandoffCase):
         self.assertEqual(changed, {"text": "", "changed": True, "available": True, "shown": False}, "what was sent is not stored, so it is not claimed")
         self.assertEqual(self.values(row)["last_name"]["text"], "Rivera")
 
-    def test_a_cover_letter_entry_of_a_handoff_is_left_for_the_student_and_never_filled(self):
+    def test_a_cover_letter_entry_is_worded_like_any_other_file(self):
         entry = {"key": "cover_letter", "question": "Cover Letter", "control": "file", "required": True, "options": [], "sensitive": None,
                  "disposition": "left_for_you", "source": {"kind": "none", "ref": "", "company": "", "reusable": False, "links": []},
                  "value_mac": "", "file_sha256": "", "problem": "", "note": ""}
         self.assertEqual(apply_runner._disposition_text(entry, kind="handoff"), "Left for you")
         filled = {**entry, "disposition": "fill", "source": {"kind": "cover_letter", "ref": "d@1", "links": []}, "file_sha256": "x"}
-        self.assertEqual(apply_runner._disposition_text(filled, kind="handoff"), "Left for you", "an approved letter is never said to be filled")
+        self.assertEqual(apply_runner._disposition_text(filled, kind="handoff"), "Filled in the window", "the agent moves a letter it did not attach to left_for_you before it shows the plan")
         self.assertEqual(apply_runner._disposition_text(filled, kind="rehearsal"), "Not attached in this rehearsal")
+        self.assertEqual(apply_runner._disposition_text(filled, frozenset({"cover_letter"}), kind="rehearsal"), "Filled in the rehearsal")
+        deferred = {**filled, "disposition": "deferred"}
+        self.assertEqual(apply_runner._disposition_text(deferred, kind="rehearsal"), "Not attached: this board uploads files as soon as they are attached")
+
+    def test_the_source_of_a_cover_letter_names_its_version(self):
+        filled = {"key": "cover_letter", "source": {"kind": "cover_letter", "ref": "document-abc@3", "links": []}}
+        self.assertEqual(apply_runner._source_text(filled), "Approved cover letter, version 3")
+        self.assertEqual(apply_runner._source_text({"source": {"kind": "cover_letter", "ref": "", "links": []}}), "Your approved cover letter")
 
     def test_the_view_says_filled_in_the_window_where_the_old_wording_was_wrong_under_the_students_pressing_submit(self):
         row = self.rehearse()

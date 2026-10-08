@@ -52,7 +52,7 @@ from .agent_types import (
     HANDOFF_UNRECORDED,
     HANDOFF_UPLOAD,
     LEFT_CAPTCHA,
-    LEFT_COVER_LETTER,
+    LEFT_COVER_LETTER_CHANGED,
     LEFT_FIELD,
     LEFT_UNPLANNED,
     MAX_LOOKUP_OPTIONS,
@@ -124,7 +124,7 @@ KEPT_CHANGING = "The form kept changing as it was filled in"
 FILE_CHANGED = "The résumé file changed since it was confirmed. Upload it again"
 FILE_TYPE = 'The form does not accept this kind of file for "{question}"'
 NO_FILE = 'The app could not read the file for "{question}"'
-NO_COVER_LETTER = 'The app does not attach cover letters yet; attach the one for "{question}" yourself when you submit'
+LETTER_CHANGED = 'Your cover letter for this role changed while the rehearsal ran, so the app did not attach one for "{question}". Approve the one you want and run again'
 NO_CONTROL = 'The form has no field for "{question}"'
 NO_OPTIONS = "No options came back for what you typed"
 NO_ENDPOINT = "The app has not confirmed Greenhouse's lookup service for this list yet, so it did not ask it"
@@ -861,6 +861,7 @@ class ApplyAgent:
         self._lookup: LookupRequest | None = None
         self._cancelled: Callable[[], bool] = lambda: False
         self._hand_over: Callable[[], bool] | None = None
+        self._check_file: Callable[[str, str, str], bool] | None = None
         self._loaded = False
         self._step = "open"
         self._doing = ""
@@ -1406,9 +1407,15 @@ class ApplyAgent:
         self, plan: Any, *, page_url: str, schema: list[Any], files: dict[str, FilePayload], lookup: LookupRequest | None = None,
         replan: Callable[[list[dict[str, Any]], bool], Any] | None = None, hand_over: Callable[[], bool] | None = None,
         cancelled: Callable[[], bool] | None = None, link: HandoffLink | None = None, ends_at: float | None = None,
+        check_file: Callable[[str, str, str], bool] | None = None,
     ) -> RunResult:
-        """One run. Never raises. Before hand-over nothing could have left the page; after it the outcome says so."""
+        """One run. Never raises. Before hand-over nothing could have left the page; after it the outcome says so.
+
+        ``check_file(key, ref, sha256)`` asks the runner whether the cover letter the plan names is still the latest approved version
+        with the same text (D11); without it, or on anything but True, no letter is attached.
+        """
         self._plan, self._schema, self._files, self._lookup = plan, list(schema or []), dict(files or {}), lookup
+        self._check_file = check_file
         self._hand_over = hand_over
         self._cancelled = cancelled or (lambda: False)
         self._link = link
@@ -1765,9 +1772,6 @@ class ApplyAgent:
             disposition, source_kind = _attr(entry, "disposition"), _source_kind(entry)
             if disposition == "deferred":
                 self._leave(key, "left_for_you", str(_attr(entry, "problem") or _attr(entry, "note") or LEFT_FIELD.format(question=question)))
-            elif disposition == "fill" and source_kind == "cover_letter":
-                # The app attaches no cover letter in this version: an approved one is the student's to attach, never shown as filled.
-                self._leave(key, "left_for_you" if _attr(entry, "required") else "blank", LEFT_COVER_LETTER)
         for problem in self._join_problems:
             if problem["key"] not in raw and problem["kind"] != "hidden_control":
                 self._add_left(problem["key"], problem["question"] or problem["key"], LEFT_FIELD.format(question=problem["question"] or "a field"))
@@ -2092,27 +2096,33 @@ class ApplyAgent:
                 continue
             key = str(_attr(entry, "key"))
             question = str(_attr(entry, "question") or key)
+            letter = source_kind == "cover_letter"
             self._doing = question
-            payload = self._files.get("resume" if source_kind == "resume" else "cover_letter")
-            if source_kind == "cover_letter":
-                # Attached from M7 on. Until then the field stays empty, and the sentence says so: the app never tried to read the letter.
-                # A handoff has already left it for the student (_prepare_handoff, LEFT_COVER_LETTER).
-                if not handoff:
-                    self._check_problems.append(problem_dict(Problem("file", key, NO_COVER_LETTER.format(question=question), question, bool(_attr(entry, "required")))))
-                continue
+            payload = self._files.get("cover_letter" if letter else "resume")
             if payload is None:
-                # A missing résumé file is a gap, not a stop.
+                # A missing file is a gap, not a stop.
                 if handoff:
                     self._leave(key, "left_for_you", NO_FILE.format(question=question))
                     continue
                 self._check_problems.append(problem_dict(Problem("file", key, NO_FILE.format(question=question), question, bool(_attr(entry, "required")))))
                 continue
             self._between()
-            if hashlib.sha256(payload.buffer).hexdigest() != _attr(entry, "file_sha256"):
+            if not self._file_matches(entry, payload, letter):
+                # Nothing is attached; the student can attach their own.
                 if handoff:
-                    self._leave(key, "left_for_you", FILE_CHANGED)   # nothing is attached; the student can attach their own
+                    self._leave(key, "left_for_you", LEFT_COVER_LETTER_CHANGED if letter else FILE_CHANGED)
+                    continue
+                if letter:
+                    self._left_letter(key, question, entry)
                     continue
                 raise _Stop("needs_you", FILE_CHANGED)
+            if letter and not self._letter_current(key, entry):
+                # Asked again just before the file goes in: the letter was edited, replaced by a newer draft or unapproved since the run started.
+                if handoff:
+                    self._leave(key, "left_for_you", LEFT_COVER_LETTER_CHANGED)
+                else:
+                    self._left_letter(key, question, entry)
+                continue
             control = self.adapter.control(frame, key)
             if not control.count():
                 raise _Stop("needs_you", NO_CONTROL.format(question=question))
@@ -2132,6 +2142,29 @@ class ApplyAgent:
                 raise _Stop("needs_you", FIELD_TOOK.format(question=question))
             self._done.add(key)
             self._filled.add(key)
+
+    @staticmethod
+    def _file_matches(entry: Any, payload: FilePayload, letter: bool) -> bool:
+        """The bytes are the ones the plan was made from. A résumé: they hash to the plan's hash. A letter: they hash to what the runner
+        stored for them, and the text they were rendered from is the text the plan names."""
+        digest = hashlib.sha256(payload.buffer).hexdigest()
+        if letter:
+            return bool(payload.sha256) and digest == payload.sha256 and bool(payload.content_sha256) and payload.content_sha256 == _attr(entry, "file_sha256")
+        return digest == _attr(entry, "file_sha256")
+
+    def _letter_current(self, key: str, entry: Any) -> bool:
+        """Ask the runner, once more, whether the letter is still the latest approved version with this text. No answer is a no."""
+        if self._check_file is None:
+            return False
+        source = _attr(entry, "source")
+        try:
+            return self._check_file(key, str(_attr(source, "ref") or ""), str(_attr(entry, "file_sha256") or "")) is True
+        except Exception:  # noqa: BLE001 - never its message
+            return False
+
+    def _left_letter(self, key: str, question: str, entry: Any) -> None:
+        """A rehearsal could not attach the letter: a problem, said once, and the rehearsal goes on."""
+        self._check_problems.append(problem_dict(Problem("file", key, LETTER_CHANGED.format(question=question), question, bool(_attr(entry, "required")))))
 
     @staticmethod
     def _accepts(accept: str, payload: FilePayload) -> bool:
