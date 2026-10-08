@@ -82,6 +82,20 @@
     const lastForApplications = profileField(nameForApplications, "Last name", "name_parts_last", nameParts.last);
     const preferredForApplications = profileField(nameForApplications, "Preferred name (optional)", "name_parts_preferred", nameParts.preferred);
     about.appendChild(nameForApplications);
+    // A company's contact form can require an address box. The app types this into that form's address boxes and nowhere else,
+    // so leaving it blank leaves those boxes to you (profile.ADDRESS_FIELDS names the same keys).
+    const addressForForms = element("fieldset", "profile-fieldset");
+    addressForForms.appendChild(element("legend", "", "Mailing address (optional)"));
+    addressForForms.appendChild(element("p", "profile-help", "Some company contact forms require an address. The app types this in only then: when a form requires your street address, the rest goes into its other address boxes, and a form that requires only a country, state, city or ZIP gets only that. Leave it blank to fill those boxes yourself."));
+    const addressInputs = [
+      ["address_line1", "Address line 1", "address-line1"],
+      ["address_line2", "Address line 2 (optional)", "address-line2"],
+      ["city", "City", "address-level2"],
+      ["state", "State or province", "address-level1"],
+      ["postal_code", "ZIP or postal code", "postal-code"],
+      ["country", "Country", "country-name"],
+    ].map(([key, labelText, autocomplete]) => [key, profileField(addressForForms, labelText, `contact_${key}`, contactSaved[key], { autocomplete })]);
+    about.appendChild(addressForForms);
     const education = profileGroup(form, "Education");
     const school = profileField(education, "School", "school", profile.school);
     const degree = profileField(education, "Degree", "degree", profile.degree);
@@ -147,9 +161,9 @@
         places: [regionName.toLowerCase()],
       });
       const namePartsValue = { first: firstForApplications.value.trim(), last: lastForApplications.value.trim(), preferred: preferredForApplications.value.trim() };
-      // Anything else already saved under contact (from a résumé) is kept; only the email and phone are edited here.
+      // Anything else already saved under contact (from a résumé) is kept; only the email, phone and address are edited here.
       const contactValue = { ...contactSaved };
-      [["email", contactEmail], ["phone", contactPhone]].forEach(([key, input]) => {
+      [["email", contactEmail], ["phone", contactPhone], ...addressInputs].forEach(([key, input]) => {
         if (input.value.trim()) contactValue[key] = input.value.trim();
         else delete contactValue[key];
       });

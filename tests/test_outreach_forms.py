@@ -34,6 +34,7 @@ from opportunity_app.outreach.forms import (
 )
 from opportunity_app.core.database import connect_product
 from opportunity_app.core.timestamps import utc_now
+from opportunity_app.student.profile import update_profile
 
 from browser_support import requires_chromium
 from helpers_platform import build_and_migrate
@@ -43,6 +44,10 @@ from helpers_gmail import ACCOUNT, ReplyCaptureFixture, mail, now_ms
 AUTH = {"Authorization": "Bearer forms-owner"}
 USER = "local-user"
 IDENTITY = {"name": "Sam Rivera", "email": ACCOUNT, "phone": "512-555-0100", "school": "State University", "link": "", "title": "Student"}
+# A made-up mailing address, as identity_for would pass it on from a confirmed profile.
+ADDRESS = {"address_line1": "12 Example Lane", "address_line2": "Apt 4", "city": "Riverton", "state": "Oregon",
+           "postal_code": "97000", "country": "United States"}
+ADDRESS_POINTER = "Add your mailing address on the Profile page, under About you, and the app can fill in address boxes"
 CONTACT_PAGE = """
 <html><head><script src="https://www.google.com/recaptcha/api.js"></script></head><body>
 <form action="/search" role="search"><input type="text" name="q"><textarea name="notes"></textarea><input type="email" name="e"></form>
@@ -308,6 +313,25 @@ class FormSendTests(unittest.TestCase):
         again = self.send(target)
         self.assertEqual(again.status_code, 422)
         self.assertEqual(len(self.submitter.calls), 1, "a first message goes out once")
+
+    def test_only_a_confirmed_mailing_address_reaches_the_form(self):
+        keys = ("address_line1", "address_line2", "city", "state", "postal_code", "country")
+        self.submitter.outcomes = ["submitted", "submitted", "submitted"]
+        self.assertEqual(self.send(self.approved()).status_code, 200)
+        self.assertEqual({key: self.submitter.calls[0]["identity"][key] for key in keys}, dict.fromkeys(keys, ""), "no address on file, none sent")
+        address = {"address_line1": " 12  Example Lane ", "city": "Riverton", "state": "Oregon", "postal_code": "97000", "country": "United States"}
+        with closing(connect_product(self.platform_path)) as conn:
+            confirm_facts(conn, contact={"phone": "512-555-0100", **address})
+        self.assertEqual(self.send(self.approved(company="Orbit")).status_code, 200)
+        self.assertEqual({key: self.submitter.calls[1]["identity"][key] for key in keys}, {
+            "address_line1": "12 Example Lane", "address_line2": "", "city": "Riverton", "state": "Oregon", "postal_code": "97000",
+            "country": "United States",
+        }, "stray spaces are tidied, nothing else is changed")
+        # Edited but not confirmed again is not a confirmed answer.
+        with closing(connect_product(self.platform_path)) as conn:
+            update_profile(conn, {"contact": {"phone": "512-555-0100", **address}}, [], user_id=USER)
+        self.assertEqual(self.send(self.approved(company="Vega")).status_code, 200)
+        self.assertEqual({key: self.submitter.calls[2]["identity"][key] for key in keys}, dict.fromkeys(keys, ""))
 
     def test_the_history_names_a_resume_only_when_the_form_took_it(self):
         # Orbital Arc: a resume was set to attach, the form had no file field, and the history said it went.
@@ -978,7 +1002,8 @@ class RealWorldPlanTests(unittest.TestCase):
             field(2, tag="select", type_="select-one", label="Country/Region", name="country", required=True,
                   options=[{"value": "", "text": "Please Select"}, {"value": "us", "text": "United States"}, {"value": "o", "text": "Other"}]),
         ])
-        self.assertEqual(plan["problems"], ['The form requires "Country/Region", and your confirmed profile has no answer for it'])
+        self.assertEqual(plan["problems"], ['The form requires "Country/Region", and your confirmed profile has no answer for it', ADDRESS_POINTER])
+        self.assertEqual([fill for fill in plan["fills"] if fill["index"] == 2], [], "no country is chosen when the profile has none")
 
     def test_how_did_you_hear_is_answered_only_with_other(self):
         heard = lambda options: field(2, tag="select", type_="select-one", label="How Did You Hear About Us?*", name="heard",  # noqa: E731
@@ -1032,6 +1057,7 @@ class RealWorldPlanTests(unittest.TestCase):
             field(2, "tel", label="Phone*", name="phone", required=True), field(3, "tel", name="phone", required=True),
             field(4, label="Address Line 1(required)", name="a1", required=True),
         ], {**IDENTITY, "phone": ""}, subject="s", body="b")
+        # A lone street box: an address in the profile would not answer it either, so the profile is not pointed to.
         self.assertEqual(plan["problems"], [
             'The form requires "Phone", and your confirmed profile has no answer for it',
             'The form requires "Address Line 1", and your confirmed profile has no answer for it',
@@ -1051,6 +1077,441 @@ class RealWorldPlanTests(unittest.TestCase):
         plan = self.plan(self.base() + [field(2, label="Name", name="name", required=True), field(3, label="Last Name", name="last", required=True)])
         values = {fill["index"]: fill["value"] for fill in plan["fills"]}
         self.assertEqual((values[2], values[3]), ("Sam", "Rivera"))
+
+
+class AddressPlanTests(unittest.TestCase):
+    """A required address box is answered from the mailing address the student confirmed, and from nothing else."""
+
+    STATES = [{"value": "", "text": "Please select..."}, {"value": "AR", "text": "Arkansas"}, {"value": "KS", "text": "Kansas"},
+              {"value": "OR", "text": "Oregon"}]
+    COUNTRIES = [{"value": "", "text": "Select"}, {"value": "us", "text": "United States"}, {"value": "ca", "text": "Canada"}]
+
+    def base(self):
+        return [field(0, "email", label="Email", name="email", required=True),
+                field(1, "textarea", tag="textarea", label="Message", name="message", required=True)]
+
+    def plan(self, extra, identity=None):
+        return plan_fill(self.base() + extra, {**IDENTITY, **ADDRESS} if identity is None else identity,
+                         subject="Robotics internship question", body="Hi team,\n\nA note.\n\nSam")
+
+    def select(self, index, label, options, *, required=True, selected="", **values):
+        return {**field(index, tag="select", type_="select-one", label=label, name=label.lower(), required=required, options=options, **values),
+                "selected": selected}
+
+    def hinted(self, index, hint, **values):
+        return {**field(index, **values), "autocomplete": hint}
+
+    def full_form(self, required=True):
+        return [
+            field(2, label="Address Line 1", name="a1", required=required),
+            field(3, label="Address Line 2", name="a2", required=required),
+            field(4, label="City", name="city", required=required),
+            self.select(5, "State", self.STATES, required=required),
+            field(6, label="ZIP Code", name="zip", required=required),
+            self.select(7, "Country", self.COUNTRIES, required=required),
+        ]
+
+    def values(self, plan):
+        return {fill["role"]: fill["value"] for fill in plan["fills"]}
+
+    def test_every_required_address_box_is_answered_from_the_confirmed_address(self):
+        plan = self.plan(self.full_form())
+        self.assertEqual(plan["problems"], [])
+        self.assertEqual({role: value for role, value in self.values(plan).items() if role in outreach_forms.ADDRESS_ROLES}, {
+            "address_line1": "12 Example Lane", "address_line2": "Apt 4", "city": "Riverton", "state": "OR", "postal_code": "97000", "country": "us",
+        }, "the lists get the choice's own value, the text boxes the student's words")
+
+    def test_an_optional_address_is_left_blank_like_an_optional_phone(self):
+        plan = self.plan(self.full_form(required=False))
+        self.assertEqual(plan["problems"], [])
+        self.assertEqual(set(self.values(plan)), {"email", "message"}, "only the email and message go in")
+
+    def test_without_an_address_each_required_box_is_named_and_the_profile_is_pointed_to(self):
+        plan = self.plan(self.full_form(), identity=IDENTITY)
+        self.assertEqual(plan["problems"], [
+            f'The form requires "{label}", and your confirmed profile has no answer for it'
+            for label in ("Address Line 1", "Address Line 2", "City", "State", "ZIP Code", "Country")
+        ] + [ADDRESS_POINTER])
+        self.assertEqual(set(self.values(plan)), {"email", "message"})
+
+    def test_a_half_filled_address_names_only_what_is_missing(self):
+        plan = self.plan(self.full_form(), identity={**IDENTITY, **{**ADDRESS, "postal_code": "", "address_line2": ""}})
+        self.assertEqual(plan["problems"], [
+            'The form requires "Address Line 2", and your confirmed profile has no answer for it',
+            'The form requires "ZIP Code", and your confirmed profile has no answer for it',
+            ADDRESS_POINTER,
+        ])
+
+    def test_a_state_is_matched_whole_in_whichever_spelling_the_list_uses(self):
+        for spelling in ("Texas", "TX", "TX - Texas", "Texas (TX)"):
+            with self.subTest(spelling=spelling):
+                options = [{"value": "", "text": "Select"}, {"value": "v-ar", "text": "Arkansas"}, {"value": "v-tx", "text": spelling}]
+                for student in ("TX", "Texas"):
+                    plan = self.plan([self.select(2, "State", options)], {**IDENTITY, "state": student})
+                    self.assertEqual((plan["problems"], self.values(plan)["state"]), ([], "v-tx"))
+        kansas = self.plan([self.select(2, "State", self.STATES)], {**IDENTITY, "state": "Kansas"})
+        self.assertEqual(self.values(kansas)["state"], "KS", "Kansas is not Arkansas")
+
+    def test_a_list_with_no_choice_that_is_the_students_own_stops_the_send(self):
+        plan = self.plan([self.select(2, "State", self.STATES)], {**IDENTITY, "state": "Narnia"})
+        self.assertEqual(plan["problems"], ['The form requires a choice for "State", and none of its choices is the state in your profile'])
+        self.assertNotIn("state", self.values(plan))
+
+    def test_a_country_is_matched_by_any_of_its_usual_names(self):
+        for text in ("United States", "United States of America", "USA", "U.S.A."):
+            with self.subTest(text=text):
+                options = [{"value": "", "text": "Select"}, {"value": "x", "text": text}, {"value": "ca", "text": "Canada"}]
+                for student in ("United States", "USA"):
+                    plan = self.plan([self.select(2, "Country/Region", options)], {**IDENTITY, "country": student})
+                    self.assertEqual((plan["problems"], self.values(plan)["country"]), ([], "x"))
+
+    def test_a_list_already_showing_a_country_is_chosen_from_the_profile_or_stops(self):
+        shown = self.select(2, "Country", self.COUNTRIES, required=False, selected="us")
+        chosen = self.plan([shown], {**IDENTITY, "country": "Canada"})
+        self.assertEqual((chosen["problems"], self.values(chosen)["country"]), ([], "ca"))
+        stuck = self.plan([shown], identity=IDENTITY)
+        self.assertEqual(stuck["problems"], ['The form requires "Country", and your confirmed profile has no answer for it', ADDRESS_POINTER])
+
+    def test_a_box_that_takes_two_letters_gets_the_abbreviation(self):
+        plan = self.plan([field(2, label="State", name="st", required=True, maxlength=2),
+                          self.hinted(3, "country", label="Country", name="c", required=True, maxlength=2)])
+        self.assertEqual((plan["problems"], self.values(plan)["state"], self.values(plan)["country"]), ([], "OR", "US"))
+        short = self.plan([field(2, label="ZIP Code", name="zip", required=True, maxlength=3)])
+        self.assertEqual(short["problems"], ['The box "ZIP Code" takes 3 characters, and the ZIP code in your profile is longer'])
+
+    def test_the_browsers_own_hints_name_a_box_whatever_its_label_says(self):
+        plan = self.plan([
+            self.hinted(2, "address-line1", label="Where", name="f1", required=True),
+            self.hinted(3, "address-level2", label="Town or village", name="f2", required=True),
+            self.hinted(4, "postal-code", name="f3", required=True),
+            self.hinted(5, "section-x country-name", label="Land", name="f4", required=True),
+            self.hinted(6, "address-line2", label="More", name="f5", required=True),
+        ])
+        self.assertEqual((plan["problems"], {fill["index"]: fill["value"] for fill in plan["fills"] if fill["index"] > 1}),
+                         ([], {2: "12 Example Lane", 3: "Riverton", 4: "97000", 5: "United States", 6: "Apt 4"}))
+
+    def test_a_street_address_box_takes_both_lines_and_is_not_the_message(self):
+        plan = self.plan([self.hinted(2, "street-address", label="Address", name="street", required=True),
+                          field(3, label="City", name="city", required=True)])
+        values = {fill["index"]: fill["value"] for fill in plan["fills"]}
+        self.assertEqual((plan["problems"], values[2], values[1]), ([], "12 Example Lane, Apt 4", "Hi team,\n\nA note.\n\nSam"))
+        only = plan_fill([field(0, "email", label="Email", name="email", required=True),
+                          self.hinted(1, "street-address", tag="textarea", type_="textarea", label="Street address", name="street", required=True)],
+                         {**IDENTITY, **ADDRESS}, subject="s", body="b")
+        self.assertIn("The form has no message box the app could find", only["problems"], "an address box is not a message box")
+
+    def test_a_box_that_is_not_the_students_own_address_is_never_given_it(self):
+        plan = self.plan([
+            field(2, label="Please state your interest", name="interest", required=True),
+            field(3, label="City you want to work in", name="wcity", required=True),
+            self.hinted(5, "billing postal-code", label="Billing ZIP", name="bzip", required=True),
+            self.select(6, "Country code", [{"value": "", "text": "Code"}, {"value": "+1", "text": "+1"}, {"value": "+44", "text": "+44"}]),
+            field(7, label="Region", name="region", required=True),
+            field(8, label="City / State", name="cs", required=True),
+        ])
+        self.assertEqual([fill for fill in plan["fills"] if fill["index"] > 1], [], "none of these boxes is answered")
+        company = self.plan([field(2, label="Company address", name="coaddr", required=True)])
+        self.assertFalse(set(ADDRESS.values()) & {fill["value"] for fill in company["fills"]}, "a company's address is not the student's")
+        for label in ("Please state your interest", "City you want to work in", "Billing ZIP", "Country code", "Region", "City / State"):
+            self.assertIn(f'The form requires "{label}", and your confirmed profile has no answer for it', plan["problems"])
+        self.assertNotIn(ADDRESS_POINTER, plan["problems"], "none of these is an address box the profile could answer")
+
+    def address_values_sent(self, plan):
+        sent = {fill["value"] for fill in plan["fills"]}
+        return sent & (set(ADDRESS.values()) | {"12 Example Lane, Apt 4", "US", "OR", "us"})
+
+    def test_an_address_hint_for_a_billing_shipping_or_work_address_is_unanswerable(self):
+        # Each fell through to the label patterns: the school ("Company", "Business") or the student's name ("name").
+        boxes = [
+            self.hinted(2, "work street-address", label="Company address", name="f2", required=True),
+            self.hinted(3, "billing address-line1", label="Street name", name="f3", required=True),
+            self.hinted(4, "shipping address-level2", label="Business city", name="f4", required=True),
+            self.hinted(5, "section-a address-level3", label="Company district", name="f5", required=True),
+        ]
+        self.assertEqual([outreach_forms._role(box) for box in boxes], ["unknown"] * 4)
+        plan = self.plan(boxes)
+        self.assertEqual([fill for fill in plan["fills"] if fill["index"] > 1], [], "neither the school nor the name goes in")
+        for label in ("Company address", "Street name", "Business city", "Company district"):
+            self.assertIn(f'The form requires "{label}", and your confirmed profile has no answer for it', plan["problems"])
+        self.assertNotIn(ADDRESS_POINTER, plan["problems"])
+
+    def test_words_that_only_look_like_an_address_line_are_not_one(self):
+        territories = [{"value": "", "text": "Select"}, {"value": "w", "text": "West"}, {"value": "or", "text": "Oregon"}]
+        units = [{"value": "", "text": "Select"}, {"value": "r", "text": "Robotics"}, {"value": "a4", "text": "Apt 4"}]
+        boxes = [
+            field(2, label="Nation", name="f2", required=True),
+            field(3, label="PO Box", name="f3", required=True),
+            field(4, label="Street number", name="f4", required=True),
+            field(5, label="Street No.", name="f5", required=True),
+            self.select(6, "Territory", territories),
+            self.select(7, "Unit", units),
+        ]
+        self.assertFalse({outreach_forms._role(box) for box in boxes} & outreach_forms.ADDRESS_ROLES)
+        plan = self.plan(boxes + [field(8, label="City", name="city", required=True)])
+        self.assertEqual({fill["index"] for fill in plan["fills"]}, {0, 1, 8}, "only the email, message and city go in")
+        for label in ("Nation", "PO Box", "Street number", "Street No."):
+            self.assertIn(f'The form requires "{label}", and your confirmed profile has no answer for it', plan["problems"])
+        # With the word that makes them an address, they still are one.
+        self.assertEqual([outreach_forms._role(field(9, label=label, name="f9")) for label in ("State/Territory", "Apt / Unit", "Unit Address")],
+                         ["state", "address_line2", "address_line2"])
+
+    def test_any_other_real_hint_says_what_the_box_is_whatever_its_label(self):
+        dial = self.hinted(2, "tel-country-code", label="Country", name="f2", required=True)
+        dial_list = {**self.select(3, "Country", self.COUNTRIES), "autocomplete": "tel-country-code"}
+        named = self.hinted(4, "name", label="Address", name="f4", required=True)
+        organization = self.hinted(5, "organization", label="Street address", name="f5", required=True)
+        self.assertEqual([outreach_forms._role(box) for box in (dial, dial_list, named, organization)],
+                         ["unknown", "select", "full_name", "company"])
+        plan = self.plan([dial, dial_list, field(6, label="City", name="city")])
+        self.assertEqual(self.address_values_sent(plan), set(), "a phone's country code is not the student's country")
+        self.assertIn('The form requires "Country", and your confirmed profile has no answer for it', plan["problems"])
+        # A hint that turns autofill off says nothing about the box.
+        self.assertEqual(outreach_forms._role(self.hinted(7, "off", label="City", name="f7")), "city")
+
+    def test_a_box_whose_name_says_it_is_an_organizations_address_is_not_the_students(self):
+        boxes = [
+            field(2, label="Address", name="company_address", required=True),
+            field(3, label="City", name="office_city", required=True),
+            field(4, label="ZIP Code", name="billingZip", required=True),
+            {**self.select(5, "State", self.STATES), "name": "orgState", "id": "orgState"},
+            field(6, label="Country", name="employer-country", required=True),
+        ]
+        self.assertFalse({outreach_forms._role(box) for box in boxes} & outreach_forms.ADDRESS_ROLES)
+        self.assertEqual(self.address_values_sent(self.plan(boxes)), set())
+        # A name that only contains such a word is not one ("network_city").
+        self.assertEqual(outreach_forms._role(field(7, label="City", name="network_city")), "city")
+
+    def test_with_no_second_line_box_the_street_box_takes_both_lines(self):
+        form = [field(2, label="Street Address", name="street", required=True), field(3, label="City", name="city", required=True),
+                self.select(4, "State", self.STATES), field(5, label="ZIP Code", name="zip", required=True)]
+        plan = self.plan(form)
+        self.assertEqual((plan["problems"], {fill["index"]: fill["value"] for fill in plan["fills"]}[2]), ([], "12 Example Lane, Apt 4"))
+        no_apartment = self.plan(form, {**IDENTITY, **ADDRESS, "address_line2": ""})
+        self.assertEqual({fill["index"]: fill["value"] for fill in no_apartment["fills"]}[2], "12 Example Lane")
+
+    def test_a_lone_address_box_is_never_given_an_address_in_a_made_up_format(self):
+        plan = self.plan([field(2, label="Address", name="addr", required=True), self.select(3, "Country", self.COUNTRIES)])
+        self.assertEqual(plan["problems"], ['The form requires "Address", and your confirmed profile has no answer for it'],
+                         "the profile has an address, so it is not pointed to")
+        self.assertEqual({fill["index"]: fill["value"] for fill in plan["fills"] if fill["index"] > 1}, {3: "us"})
+        optional = self.plan([field(2, label="Address", name="addr")])
+        self.assertEqual((optional["problems"], [fill for fill in optional["fills"] if fill["index"] > 1]), ([], []))
+
+    def test_a_box_hinted_country_gets_the_iso_code(self):
+        for student in ("United Kingdom", "UK", "Great Britain", "GB"):
+            for maxlength in (2, None):
+                with self.subTest(student=student, maxlength=maxlength):
+                    plan = self.plan([self.hinted(2, "country", label="Country", name="c", required=True, maxlength=maxlength)],
+                                     {**IDENTITY, **ADDRESS, "country": student})
+                    self.assertEqual((plan["problems"], self.values(plan)["country"]), ([], "GB"))
+        united_states = self.plan([self.hinted(2, "country", label="Country", name="c", required=True)], {**IDENTITY, **ADDRESS})
+        self.assertEqual(self.values(united_states)["country"], "US")
+
+    def test_an_address_textarea_does_not_make_a_one_line_message_box_a_question(self):
+        def plan(body):
+            return plan_fill([
+                field(0, "email", label="Email", name="email", required=True),
+                field(1, "textarea", tag="textarea", label="Address", name="address", required=True),
+                field(2, label="Message", name="message", required=True),
+                field(3, label="City", name="city", required=True),
+            ], {**IDENTITY, **ADDRESS}, subject="s", body=body)
+
+        long = plan("Hi team,\n\nA note.\n\nSam")
+        self.assertNotIn("Hi team,\n\nA note.\n\nSam", [fill["value"] for fill in long["fills"]])
+        self.assertEqual({fill["index"]: fill["value"] for fill in long["fills"]}[1], "12 Example Lane, Apt 4")
+        self.assertEqual(long["problems"], ["The form's message box is a single line, so the draft's paragraphs would run together"],
+                         "the honest reason, not a missing message box")
+        short = plan("Hi team, a note. Sam")
+        self.assertEqual((short["problems"], {fill["index"]: fill["value"] for fill in short["fills"]}[2]), ([], "Hi team, a note. Sam"))
+
+    def by_index(self, plan):
+        return {fill["index"]: fill["value"] for fill in plan["fills"] if fill["index"] > 1}
+
+    def test_a_country_of_nationality_citizenship_or_birth_is_not_the_mailing_address(self):
+        boxes = [
+            {**self.select(2, "Country", self.COUNTRIES), "name": "nationality", "id": "nationality"},
+            {**self.select(3, "Country", self.COUNTRIES), "name": "citizenshipCountry", "id": "citizenshipCountry"},
+            field(4, label="Country", name="birth_country", required=True),
+            self.hinted(5, "country", label="Country of origin", name="f5", required=True),
+            self.hinted(6, "country-name", label="Passport issuing country", name="f6", required=True),
+            field(7, label="Country of birth", name="f7", required=True),
+        ]
+        self.assertFalse({outreach_forms._role(box) for box in boxes} & outreach_forms.ADDRESS_ROLES)
+        plan = self.plan(boxes + [field(8, label="City", name="city", required=True)])
+        self.assertEqual(self.by_index(plan), {8: "Riverton"}, "only the city is the mailing address")
+        for label in ("Country", "Country of origin", "Passport issuing country", "Country of birth"):
+            self.assertIn(f'The form requires "{label}", and your confirmed profile has no answer for it', plan["problems"])
+        self.assertNotIn(ADDRESS_POINTER, plan["problems"])
+
+    def test_a_home_or_permanent_address_box_is_not_answered_from_the_mailing_address(self):
+        # A student's mailing address can be a dorm, and a home country can mean a nationality.
+        boxes = [
+            self.select(2, "Home country", self.COUNTRIES),
+            field(3, label="Home state", name="f3", required=True),
+            field(4, label="Permanent address", name="f4", required=True),
+            field(5, label="Residential address", name="f5", required=True),
+            field(6, label="Residence city", name="f6", required=True),
+        ]
+        self.assertFalse({outreach_forms._role(box) for box in boxes} & outreach_forms.ADDRESS_ROLES)
+        plan = self.plan(boxes + [field(7, label="City", name="city", required=True)])
+        self.assertEqual(self.by_index(plan), {7: "Riverton"})
+        for label in ("Home country", "Home state", "Permanent address", "Residential address", "Residence city"):
+            self.assertIn(f'The form requires "{label}", and your confirmed profile has no answer for it', plan["problems"])
+
+    def test_once_part_of_the_address_is_required_the_rest_goes_into_the_optional_boxes(self):
+        optional_rest = self.full_form(required=False)
+        optional_rest[0] = field(2, label="Address Line 1", name="a1", required=True)
+        plan = self.plan(optional_rest)
+        self.assertEqual((plan["problems"], self.by_index(plan)), ([], {
+            2: "12 Example Lane", 3: "Apt 4", 4: "Riverton", 5: "OR", 6: "97000", 7: "us"}), "the apartment and the city go in too")
+        street_only = self.plan([field(2, label="Address", name="addr", required=True), field(3, label="City", name="city"),
+                                 field(4, label="ZIP Code", name="zip")])
+        self.assertEqual((street_only["problems"], self.by_index(street_only)), ([], {2: "12 Example Lane, Apt 4", 3: "Riverton", 4: "97000"}))
+        # An optional list without the student's state, or a box too short for the ZIP, is left alone, not a problem.
+        no_match = self.plan([field(2, label="Street Address", name="street", required=True), field(6, label="City", name="city"),
+                              self.select(3, "State", [{"value": "", "text": "Select"}, {"value": "KS", "text": "Kansas"}], required=False),
+                              field(4, label="ZIP Code", name="zip", maxlength=3), field(5, label="Company", name="company")])
+        self.assertEqual((no_match["problems"], self.by_index(no_match)), ([], {2: "12 Example Lane, Apt 4", 6: "Riverton"}),
+                         "nor is any other optional box filled")
+        # A required street the profile cannot answer types nothing, so nothing else goes in either.
+        missing = self.plan([field(2, label="Street Address", name="street", required=True), field(3, label="City", name="city")],
+                            {**IDENTITY, **ADDRESS, "address_line1": "", "address_line2": ""})
+        self.assertEqual(self.by_index(missing), {})
+
+    def test_a_required_country_state_city_or_zip_alone_brings_nothing_else(self):
+        # The owner's choice: the least the student discloses. Only a required street brings the rest of the address.
+        rest = [field(3, label="Street Address", name="street"), field(4, label="Address Line 2", name="a2"),
+                field(5, label="City", name="city"), self.select(6, "State", self.STATES, required=False),
+                field(7, label="ZIP Code", name="zip"), self.select(8, "Country", self.COUNTRIES, required=False)]
+        required_alone = {
+            "country": (self.select(2, "Country", self.COUNTRIES), "us"),
+            "state": (self.select(2, "State", self.STATES), "OR"),
+            "city": (field(2, label="City", name="city", required=True), "Riverton"),
+            "postal_code": (field(2, label="ZIP Code", name="zip", required=True), "97000"),
+        }
+        for role, (box, value) in required_alone.items():
+            with self.subTest(role=role):
+                plan = self.plan([box] + [other for other in rest if outreach_forms._role(other) != role])
+                self.assertEqual((plan["problems"], self.by_index(plan)), ([], {2: value}))
+        line2 = self.plan([field(2, label="Address Line 2", name="a2", required=True)] + rest[2:])
+        self.assertEqual(self.by_index(line2), {2: "Apt 4"}, "the apartment alone is not the street")
+
+    def notes(self, *labels):
+        return [f'The form requires "{label}", and your confirmed profile has no answer for it' for label in labels]
+
+    def test_a_form_that_asks_for_an_address_twice_gets_no_address(self):
+        # Required addr_1/city_1/zip_1, then the same boxes again, optional: nothing says which block is the student's.
+        repro = self.plan([
+            field(2, label="Address", name="addr_1", required=True), field(3, label="City", name="city_1", required=True),
+            field(4, label="ZIP Code", name="zip_1", required=True),
+            field(5, label="Address", name="addr_2"), field(6, label="City", name="city_2"), field(7, label="ZIP Code", name="zip_2"),
+        ])
+        self.assertEqual((repro["problems"], self.by_index(repro)), (self.notes("Address", "City", "ZIP Code"), {}),
+                         "every required address box waits, and the profile is not pointed to")
+        # The second block first, or required too: the same.
+        reference_first = self.plan([
+            field(2, label="Address", name="ref_a"), field(3, label="City", name="ref_c"),
+            field(4, label="Address", name="a1", required=True), field(5, label="City", name="c1", required=True),
+        ])
+        self.assertEqual((reference_first["problems"], self.by_index(reference_first)), (self.notes("Address", "City"), {}))
+        required_twice = self.plan([
+            field(2, label="Street", name="s1", required=True), field(3, label="City", name="c1", required=True),
+            field(4, label="Street", name="s2", required=True), field(5, label="City", name="city2", required=True),
+        ])
+        self.assertEqual((required_twice["problems"], self.by_index(required_twice)), (self.notes("Street", "City"), {}))
+        # A street box covers both lines, so a later "Line 2" box is a second address too; an optional list showing a
+        # country would send it as the student's, so it waits as well.
+        both = self.plan([self.hinted(2, "street-address", label="Street Address", name="s", required=True),
+                          field(3, label="City", name="c", required=True), self.hinted(4, "address-line2", label="Line 2", name="l2"),
+                          self.select(5, "Country", self.COUNTRIES, required=False, selected="us")])
+        self.assertEqual((both["problems"], self.by_index(both)), (self.notes("Street Address", "City", "Country"), {}))
+        # One box for each part: the address goes in as usual.
+        once = self.plan([field(2, label="Address", name="addr_1", required=True), field(3, label="City", name="city_1", required=True)])
+        self.assertEqual((once["problems"], self.by_index(once)), ([], {2: "12 Example Lane, Apt 4", 3: "Riverton"}))
+
+    def test_a_box_named_for_a_school_a_headquarters_or_a_relative_is_unanswerable(self):
+        boxes = [
+            field(2, label="Address", name="school_address", required=True),
+            field(3, label="City", name="hq_city", required=True),
+            field(4, label="ZIP Code", name="kin_zip", required=True),
+            field(5, label="State", name="supervisorState", required=True),
+        ]
+        self.assertEqual([outreach_forms._role(box) for box in boxes], ["unknown"] * 4, "not the student's address, nor the school's name")
+        plan = self.plan(boxes)
+        self.assertEqual((plan["problems"], self.by_index(plan)), (self.notes("Address", "City", "ZIP Code", "State"), {}))
+        for word in ("campus", "headquarters", "relative", "manager", "landlord", "recipient", "delivery", "venue", "event", "property", "alt"):
+            with self.subTest(word=word):
+                self.assertEqual(outreach_forms._role(field(7, label="City", name=f"{word}_city")), "unknown")
+        # Whole words only: "altitude" and "hqx" are not one of them.
+        self.assertEqual([outreach_forms._role(field(8, label="City", name=name)) for name in ("altitude_city", "hqx_city")], ["city", "city"])
+
+    def test_a_box_named_for_someone_else_is_never_given_the_students_address(self):
+        boxes = [
+            field(2, label="Address", name="emergency_address", required=True),
+            field(3, label="City", name="referenceCity", required=True),
+            field(4, label="ZIP Code", name="contact_person_zip", required=True),
+            field(5, label="Parent/guardian address", name="f5", required=True),
+            field(6, label="Previous city", name="f6", required=True),
+            field(7, label="Contact person ZIP", name="f7", required=True),
+            field(8, label="Alternate address", name="f8", required=True),
+            self.select(9, "State", self.STATES, required=True) | {"name": "spouse_state", "id": "spouse_state"},
+            # The browser's hint says address; the words the student sees say whose.
+            self.hinted(10, "address-line1", label="Emergency contact address", name="f10", required=True),
+            self.hinted(11, "postal-code", label="Reference ZIP", name="f11", required=True),
+        ]
+        self.assertEqual([outreach_forms._role(box) for box in boxes if outreach_forms._role(box) in outreach_forms.ADDRESS_ROLES], [])
+        self.assertEqual(self.address_values_sent(self.plan(boxes)), set())
+        # A whole word only: "another" and "contactCity" are not someone else's.
+        self.assertEqual([outreach_forms._role(field(12, label="City", name=name)) for name in ("another_city", "contactCity")], ["city", "city"])
+
+    def test_street_lines_with_no_city_state_or_zip_box_are_unanswerable(self):
+        plan = self.plan([field(2, label="Address Line 1", name="a1", required=True), field(3, label="Address Line 2", name="a2", required=True),
+                          self.select(4, "Country", self.COUNTRIES)])
+        self.assertEqual(plan["problems"], [f'The form requires "{label}", and your confirmed profile has no answer for it'
+                                            for label in ("Address Line 1", "Address Line 2")])
+        self.assertEqual(self.by_index(plan), {4: "us"})
+        optional_line2 = self.plan([field(2, label="Address Line 1", name="a1", required=True), field(3, label="Address Line 2", name="a2"),
+                                    self.select(4, "Country", self.COUNTRIES)])
+        self.assertEqual(self.by_index(optional_line2), {4: "us"}, "the country going in does not bring the street with it")
+
+    def test_a_country_box_of_two_or_three_letters_gets_the_iso_code(self):
+        for maxlength in (2, 3):
+            with self.subTest(maxlength=maxlength):
+                box = [field(2, label="Country", name="c", required=True, maxlength=maxlength)]
+                self.assertEqual(self.values(self.plan(box, {**IDENTITY, **ADDRESS, "country": "United Kingdom"}))["country"], "GB")
+                self.assertEqual(self.values(self.plan(box))["country"], "US")
+        roomy = self.plan([field(2, label="Country", name="c", required=True)], {**IDENTITY, **ADDRESS, "country": "United Kingdom"})
+        self.assertEqual(self.values(roomy)["country"], "United Kingdom", "a box with room gets the student's own words")
+
+
+ADDRESS_FORM = """<html><head><meta charset="utf-8"></head><body><form action="/send" method="post">
+  <label>Name <input name="name" required></label><label>Email <input type="email" name="email" required></label>
+  <label>Address Line 1 <input name="a1" required></label><label>City <input name="city" required></label>
+  <label>State <select name="state" required><option value="">Please select...</option><option>Alabama</option><option>Oregon</option></select></label>
+  <label>ZIP Code <input name="zip" required></label>
+  <label>Country <select name="country" required><option value="">Select</option><option value="US">United States</option><option value="CA">Canada</option></select></label>
+  <label>Message <textarea name="message" required></textarea></label><button type="submit">Send</button></form></body></html>"""
+
+
+@requires_chromium
+class AddressBrowserTests(unittest.TestCase):
+    def rehearse(self, identity):
+        site = Site({"/contact": ADDRESS_FORM})
+        with tempfile.TemporaryDirectory() as shots, FormSubmitter(route_hook=site.route, screenshot_dir=Path(shots), rehearse=True) as submitter:
+            result = submitter.submit("https://bovi.test/contact", identity=identity, subject="s", body="Hi team,\n\nA note.\n\nSam", name="bovi")
+        self.assertEqual(site.posts, [])
+        return result
+
+    def test_a_form_that_requires_an_address_is_filled_from_the_confirmed_one(self):
+        result = self.rehearse({**IDENTITY, **ADDRESS})
+        self.assertEqual(result["outcome"], "rehearsed", result)
+        self.assertEqual(result["filled"], ["Name", "Email", "Address Line 1", "City", "State: Oregon", "ZIP Code", "Country: United States", "Message"])
+
+    def test_the_same_form_waits_for_the_student_when_the_profile_has_no_address(self):
+        result = self.rehearse(IDENTITY)
+        self.assertEqual(result["outcome"], "needs_you", result)
+        self.assertIn('The form requires "Address Line 1", and your confirmed profile has no answer for it', result["note"])
+        self.assertIn(ADDRESS_POINTER, result["note"])
 
 
 LABEL_GRID_FORM = """<html><head><meta charset="utf-8"></head><body>

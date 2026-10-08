@@ -52,6 +52,10 @@ ALLOWED_PROFILE_FIELDS = {
     "activities",
 }
 
+# The student's mailing address, kept under ``contact`` beside the email and phone. Optional: contact forms
+# type it only into a box that requires it, and only what the student confirmed here.
+ADDRESS_FIELDS = ("address_line1", "address_line2", "city", "state", "postal_code", "country")
+
 COMPLETENESS_FIELDS = (
     "name",
     "school",
@@ -407,6 +411,8 @@ def validate_profile_types(profile: dict[str, Any]) -> None:
         elif field == "contact":
             if not isinstance(value, dict):
                 errors.append("contact must be an object")
+            else:
+                errors.extend(f"contact.{key} must be text" for key in ADDRESS_FIELDS if value.get(key) is not None and not isinstance(value[key], str))
         elif field in _STRUCTURED_FIELDS:
             if not isinstance(value, (list, dict)):
                 errors.append(f"{field} must be a list or an object")

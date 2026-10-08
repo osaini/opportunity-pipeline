@@ -168,6 +168,7 @@ class ProfileSaveTests(unittest.TestCase):
             ({"remote_ok": "yes"}, "remote_ok must be true, false, or not answered"),
             ({"regions": [{"name": "Austin", "state_markers": None}]}, "regions[0].state_markers"),
             ({"regions": ["Austin"]}, "regions[0] must be an object"),
+            ({"contact": {"postal_code": 97000}}, "contact.postal_code must be text"),
         )
         for updates, message in cases:
             with self.subTest(updates=updates):

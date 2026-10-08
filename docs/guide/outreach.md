@@ -10,7 +10,20 @@ press Send, or, with Gmail connected, goes out when you press **Send** in the ap
 and then confirm the recipient. Three opt-in automations send that approved text
 later without another click from you: scheduled sends, the resend after a bounce,
 and contact-form submission (your approved first email, once per company; a field
-the app cannot answer truthfully, or a picture CAPTCHA, leaves it for you). One
+the app cannot answer truthfully, or a picture CAPTCHA, leaves it for you). A form
+box that requires a street, city, state, ZIP or country is answered only from the
+**Mailing address** you confirmed on the Profile page (About you), never any other
+address. When a form requires your street address, the rest of your confirmed
+address goes into its other address boxes; a form that requires only a country,
+state, city or ZIP gets only that, and a form that requires none gets none. A form
+that asks for an address twice (a second block for a reference or an emergency
+contact) gets no address at all and waits for you, since the app cannot tell
+which block is yours.
+With no address saved, such a form waits for you and says so. A street box with
+no city, state or ZIP box beside it waits for you too: the app does not guess
+how that form wants the whole address written on one line. A box that asks for
+a home or permanent address, a nationality or a country of birth is never
+answered from the mailing address. One
 writes its own: the short thank-you after a plain decline is the only email the
 app composes and sends without your approval, and only when the keyword rules and
 Jev both read the reply as a decline and it passes the sender checks (R1–R7 in
