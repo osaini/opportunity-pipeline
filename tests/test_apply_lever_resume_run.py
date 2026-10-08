@@ -21,7 +21,7 @@ import realdata_guard
 
 realdata_guard.install()
 
-from opportunity_app.apply import ats as apply_ats, runner as apply_runner, runs as apply_runs
+from opportunity_app.apply import ats as apply_ats, policy as apply_policy, runner as apply_runner, runs as apply_runs
 from opportunity_app.apply.agent_types import RESUME_PLANNED_KEY
 
 import test_apply_runner as runner_tests
@@ -94,6 +94,33 @@ class LeverRunCase(runner_tests.RunnerCase):
 
     def view(self, run_id):
         return apply_runner.run_view(self.conn, self.row(run_id), local=self.runner.busy())
+
+
+class ReplanSourcesTests(LeverRunCase):
+    """The plan the window is filled from is built again by the runner once the page has been read; it must carry the student's L1 choice."""
+
+    def run_and_note_sources(self, setting):
+        with self.conn:
+            self.conn.execute("UPDATE user_settings SET value=? WHERE user_id=? AND key='apply_lever_resume_upload'", (setting, USER))
+        seen = []
+        real = apply_policy.sources_for
+
+        def spy(*args, **kwargs):
+            found = real(*args, **kwargs)
+            seen.append((kwargs.get("ats"), found.resume_upload))
+            return found
+
+        with mock.patch.object(apply_policy, "sources_for", spy):
+            self.finish(self.lever(FakeApplyAgentFactory(step_delay=0.0, handoff={"wait": 0.1, "outcome": "submitted"})))
+        return seen
+
+    def test_the_runner_builds_the_plan_for_the_window_with_the_resume_setting_on(self):
+        seen = self.run_and_note_sources("on")
+        self.assertIn(("lever", True), seen, "the plan the window is filled from did not know the student let the app attach the résumé")
+        self.assertNotIn(("lever", False), seen)
+
+    def test_the_runner_builds_it_with_the_setting_off_too(self):
+        self.assertNotIn(("lever", True), self.run_and_note_sources("off"))
 
 
 class PlannedAttachTests(LeverRunCase):

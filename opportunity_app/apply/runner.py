@@ -919,6 +919,9 @@ class _Job:
     # The plan has the app attach the student's résumé on Lever, so from the moment the agent starts the file may be with Lever, whether or not the
     # window ever said so. Written to the run row at the start, so a crash before the window is ready cannot lose it.
     resume_planned: bool = False
+    # Lever's L1 choice as the start read it (``apply_lever_resume_upload``): the plan the window is filled from is built again once the page has been
+    # read, and it must be built from the same choice as the plan the claim was taken on, not from a second look at the setting.
+    resume_upload: bool = False
     timeouts: ApplyTimeouts = field(default_factory=ApplyTimeouts)
 
 
@@ -1195,7 +1198,7 @@ class ApplyRunner:
                 run_id=run_id, kind=kind, user_id=user_id, opportunity_id=opportunity_id, company=str(result["company"]), page_url=page_url,
                 database_target=database_target, apply_root=Path(apply_root), resume_root=Path(resume_root), factory=agent_factory,
                 schema=list(inputs.schema), job=job, deadline_s=deadline, lookup=lookup, token=token, timeouts=self._timeouts,
-                resume_planned=resume_planned,
+                resume_planned=resume_planned, resume_upload=bool(result.get("resume_upload")),
                 posting={
                     "title": str(posting.get("title") or ""), "company": str(posting.get("company") or ""),
                     "differs": bool(posting.get("differs")), "confirmed": bool(posting.get("differs") and posting_confirmed),
@@ -1313,7 +1316,7 @@ class ApplyRunner:
             _guard(lambda: note("start", progress_text("start", apply_ats.name_of(work.job.ats))))
             sources = apply_policy.sources_for(
                 conn, user_id, work.opportunity_id, company=work.company, storage_root=work.resume_root, key=apply_policy.mac_key(work.apply_root),
-                ats=work.job.ats,
+                ats=work.job.ats, resume_upload=work.resume_upload,
             )
 
             spec = apply_ats.spec_for(work.job.ats)
