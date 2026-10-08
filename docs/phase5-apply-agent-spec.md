@@ -2391,9 +2391,11 @@ only tightens what may be done with a question the classifier called ordinary:
   page shows the same blocks, and a custom question can sit under one, under a heading or an id that says demographic, voluntary
   self-identification, equal employment opportunity, compliance, background check, criminal or diversity (`NET_SECTION`,
   repeated as `SECTION_NEVER` and pinned by the `sections` rows of `broad_net.json`). The engine reads the section, fieldset or
-  group around each control and marks it `never_storable`; `build_plan` takes that mark from the scan, for a custom question that
-  is not a profile link, and leaves the question for the student. Over-blocking costs a Save button; a title like "Apply for
-  Compliance Analyst" over the whole form is read the same way.
+  group around each control (not a heading that is only a sibling of the fields) and marks it `never_storable`; `build_plan` takes
+  that mark from the scan, for a custom question that is not a profile link, and leaves the question for the student. That
+  holds only in a run that has read the page: the check that drives the Needs you view reads none, so it still offers to
+  save such a question. Over-blocking costs a Save button; a title like "Apply for Compliance Analyst" over the whole form
+  is read the same way.
 - **No checkbox or agreement control is filled from the answer library** (D9 B). A checkbox, single or a group, never is;
   nor is a select or multiselect whose option labels, heading or description agree to, accept, acknowledge, consent to,
   certify, attest or confirm something (an agreement word in the heading alone is enough: "Do you certify that your
@@ -2428,7 +2430,9 @@ only tightens what may be done with a question the classifier called ordinary:
   question is marked `never_storable`, so the panel offers no Save for it; an independent question after one is still
   offered. `build_plan` keeps the same chain for the never-storable topics (`follow_up_shaped`, the engine's `followUpShaped`):
   a child that is short or opens with a question word passes them on even when its own wording does not read as a follow-up,
-  so its own child is never storable too (`tests/fixtures/apply/net_chains.json`, run by both suites). A checkbox is never
+  so its own child is never storable too (`tests/fixtures/apply/net_chains.json`, run by both suites). A child that is long and
+  does not open as a follow-up does not pass them on, because the plan cannot tell it from an independent question filed under
+  the same parent; its own follow-up is then ordinary (known-defects). A checkbox is never
   pre-ticked from a row saved at another company (an option row never travels).
 
 The net over-reads on purpose ("Would you like to opt in to updates?" is immigration wording to it, and a question that
