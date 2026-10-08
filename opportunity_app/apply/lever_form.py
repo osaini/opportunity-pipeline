@@ -780,7 +780,7 @@ def parse_lever_form(html: str) -> LeverForm | None:
     # A form whose questions carry more words than the budget is not read at all: one question the student answers in the window.
     if sum(_text_spent(item) for _, _, item in entries) > MAX_FORM_TEXT_CHARS:
         return LeverForm((), LeverPosting(_collapse("".join(scanner.title))), (UnreadableField(
-            "form", "", True, "the page has too much text in its questions and answers for the app to read, so every question is left for you",
+            "form", "Every question on the form", True, "the page has too much text in its questions and answers for the app to read",
         ),), ())
     entries = [(seq, sub, _left_to_the_student(item)) for seq, sub, item in entries]
     entries.sort(key=lambda entry: (entry[0], entry[1]))
