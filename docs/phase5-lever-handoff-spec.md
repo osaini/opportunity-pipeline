@@ -385,7 +385,9 @@ reason a Lever role can get the read-only check with no browser.
    optional it is left empty and listed as "left for you".
 7. **Page-managed hidden fields** are listed in a constant and never become schema fields: `accountId`, `linkedInData`,
    `origin`, `referer`, `timezone`, `socialReferralKey`, `socialSource`, `resumeStorageId`, `h-captcha-response`,
-   `source`, and every `[baseTemplate]`, `surveyId` and `candidateSelectedLocation`.
+   `source`, and every `[baseTemplate]`, `surveyId` and `candidateSelectedLocation`. This holds when every control under
+   the name is hidden (hCaptcha's answer textarea is the one other exception). A visible control that shares one of these
+   names is a question the page asks, so it is recorded as an unknown control (item 6).
 8. **Posting facts for the "differs from the saved role" tick** come from `<title>`, which was
    `"{Company} - {Role}"` on all six boards read **[live]**. A role can contain " - ", so the check does not split:
    it requires the saved company and the saved title each to appear in the page title after normalization, and

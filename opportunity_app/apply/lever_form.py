@@ -48,11 +48,13 @@ _SCHEMA_TYPE = {
 
 # --- Names the page owns or the app knows ----------------------------------------------------------------------------
 
-# 5.4 item 7. The app writes none of these, and none becomes a schema field. (Every ``[baseTemplate]``, ``[surveyId]`` and
-# ``[candidateSelectedLocation]`` is page-managed too; those are matched by shape below.)
+# 5.4 item 7. The app writes none of these, and none becomes a schema field, when every control under the name is hidden
+# (a visible control with one of these names is a question, listed as unknown). hCaptcha's textarea is the one exception.
+# (Every ``[baseTemplate]``, ``[surveyId]`` and ``[candidateSelectedLocation]`` is page-managed too; those are matched by shape below.)
+_CAPTCHA = "h-captcha-response"  # hCaptcha writes its answer into a textarea; it is the page's whatever the control is
 PAGE_MANAGED_FIELDS = frozenset({
     "accountId", "linkedInData", "origin", "referer", "timezone", "socialReferralKey", "socialSource", "resumeStorageId",
-    "h-captcha-response", "source",
+    _CAPTCHA, "source",
 })
 # 6.6: the four EEO questions, under the names Phase 5's classifier knows them by (classify._EEOC_NAMES).
 EEO_FIELDS = {"eeo[gender]": "gender", "eeo[race]": "race", "eeo[veteran]": "veteran_status", "eeo[disability]": "disability_status"}
@@ -565,8 +567,8 @@ def parse_lever_form(html: str) -> LeverForm | None:
         seq = controls[0].seq
         template = _TEMPLATE_NAME.fullmatch(name)
         card, survey = _CARD_FIELD.fullmatch(name), _SURVEY_FIELD.fullmatch(name)
-        if name in PAGE_MANAGED_FIELDS or _PAGE_SUFFIX.fullmatch(name):
-            continue
+        if (name in PAGE_MANAGED_FIELDS or _PAGE_SUFFIX.fullmatch(name)) and (name == _CAPTCHA or all(c.kind == "hidden" for c in controls)):
+            continue  # the page's own hidden field; a visible control that shares its name is a question and is listed below
         if template:
             question_set(template.group(1), template.group(2), seq)["templates"].extend(control.value or "" for control in controls)
         elif card or survey:

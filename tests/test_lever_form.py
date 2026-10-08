@@ -772,9 +772,23 @@ class PageManagedFieldTests(unittest.TestCase):
             '<input type="hidden" name="h-captcha-response"><input type="hidden" name="source" value="x"><input type="hidden" name="resumeStorageId">'))
         self.assertEqual((form.fields, form.unknown, form.unreadable), ((), (), ()))
 
-    def test_a_page_managed_name_on_another_kind_of_control_is_still_page_managed(self):
-        form = parse_lever_form(page('<textarea name="h-captcha-response"></textarea><input type="text" name="timezone">'))
-        self.assertEqual((form.fields, form.unknown), ((), ()))
+    def test_the_captcha_answer_is_page_managed_even_in_the_textarea_hcaptcha_makes(self):
+        form = parse_lever_form(page('<textarea name="h-captcha-response"></textarea><input type="hidden" name="timezone">'))
+        self.assertEqual((form.fields, form.unknown, form.unreadable), ((), (), ()))
+
+    def test_a_visible_control_with_a_page_managed_name_is_a_question_and_is_listed_as_unknown(self):
+        # Item 7 is about hidden fields. A visible, required question must not vanish because it shares a name with one.
+        form = parse_lever_form(page(
+            '<li class="application-question"><label><div class="application-label">How did you hear about us?<span class="required">&#10033;</span></div>'
+            '<input type="text" name="source" required></label></li>',
+            '<select name="timezone" required><option value="">Select</option><option value="UTC">UTC</option></select>',
+            '<input type="hidden" name="origin" value="x">'))
+        self.assertEqual(form.fields, ())
+        self.assertEqual([(item.name, item.type, item.required) for item in form.unknown], [("source", "text", True), ("timezone", "select", True)])
+
+    def test_a_page_managed_name_shared_by_a_hidden_and_a_visible_control_is_listed(self):
+        form = parse_lever_form(page('<input type="hidden" name="source" value="x"><input type="text" name="source">'))
+        self.assertEqual([(item.name, item.type) for item in form.unknown], [("source", "mixed")])
 
     def test_selected_location_is_not_page_managed_it_is_the_location_pair(self):
         self.assertNotIn("selectedLocation", PAGE_MANAGED_FIELDS)
