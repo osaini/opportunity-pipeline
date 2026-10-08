@@ -7,8 +7,10 @@ address is fictional.
 
 import fnmatch
 import hashlib
+import json
 import sys
 import unittest
+import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -123,13 +125,19 @@ class PolicyValuesTests(Cases):
         self.assertIs(POLICY.captcha_endpoints, checks.LEVER_CAPTCHA_ENDPOINTS)
         self.assertEqual(set(checks.LEVER_CAPTCHA_RESOLVABLE_HOSTS), {e.host for e in checks.LEVER_CAPTCHA_ENDPOINTS})
 
+    def test_each_captcha_endpoint_is_written_by_the_methods_the_recording_saw_and_no_others(self):
+        recorded = json.loads((Path(__file__).resolve().parent / "fixtures" / "apply" / "lever" / "endpoints.json").read_text(encoding="utf-8"))["captcha_endpoints"]
+        self.assertEqual({e.host: set(e.methods) for e in POLICY.captcha_endpoints}, {e["host"]: set(e["methods"]) for e in recorded})
+
     def test_the_hcaptcha_widgets_posts_at_load_are_allowed_to_the_hosts_it_posts_to_and_to_no_other_path_of_its_frame_host(self):
         for phase in (FILL, STUDENT):
             for host in ("api.hcaptcha.com", "api2.hcaptcha.com", "hcaptcha.com"):
                 with self.subTest(phase=phase, host=host):
                     self.assertAllowed(decide(phase, request("POST", host, "/checksiteconfig", query="v=1&host=jobs.lever.co", body=b"{}")), "captcha")
             with self.subTest(phase=phase, host="newassets.hcaptcha.com"):
-                self.assertAllowed(decide(phase, request("POST", "newassets.hcaptcha.com", "/captcha/v1/log", body=b"{}")), "captcha")
+                # The recording saw only GETs to the frame host and to the script host (spec 11, Q3): neither is written to.
+                self.assertAborted(decide(phase, request("POST", "newassets.hcaptcha.com", "/captcha/v1/log", body=b"{}")), "non_get_before_hand_over")
+                self.assertAborted(decide(phase, request("POST", "js.hcaptcha.com", "/1/log", body=b"{}")), "non_get_before_hand_over")
                 self.assertAborted(decide(phase, request("POST", "newassets.hcaptcha.com", "/elsewhere", body=b"{}")), "non_get_before_hand_over")
 
     def test_the_other_lists_and_flags(self):
@@ -274,10 +282,40 @@ class BeforeHandOverCellTests(Cases):
 
     def test_a_write_to_a_captcha_endpoint_is_allowed(self):
         for phase in self.PHASES:
-            for host, path in (("hcaptcha.com", "/checkcaptcha/x"), ("api.hcaptcha.com", "/getcaptcha/y"), ("js.hcaptcha.com", "/1/z")):
-                for method in ("POST", "PUT"):
-                    with self.subTest(phase=phase, host=host, method=method):
-                        self.assertAllowed(decide(phase, request(method, host, path, body=b"{}")), "captcha")
+            for host, path in (("hcaptcha.com", "/checkcaptcha/x"), ("api.hcaptcha.com", "/getcaptcha/y"), ("api2.hcaptcha.com", "/checksiteconfig")):
+                with self.subTest(phase=phase, host=host):
+                    self.assertAllowed(decide(phase, request("POST", host, path, body=b"{}")), "captcha")
+                with self.subTest(phase=phase, host=host, method="PUT"):
+                    self.assertAborted(decide(phase, request("PUT", host, path, body=b"{}")), "non_get_before_hand_over")
+            for host, path in (("js.hcaptcha.com", "/1/z"), ("newassets.hcaptcha.com", "/captcha/v1/z")):
+                with self.subTest(phase=phase, host=host, where="a host that was only read from"):
+                    self.assertAborted(decide(phase, request("POST", host, path, body=b"{}")), "non_get_before_hand_over")
+
+    def test_a_file_sent_to_a_captcha_endpoint_or_cloudflares_path_during_the_fill_is_refused_as_an_upload_and_the_students_turn_is_left_as_it_was(self):
+        """The attached résumé is in the input, and a script can post it anywhere a write is allowed. A compressed file holds none of the student's words, so
+        the value guard cannot see it; the kind of request does (spec 6.9, 7)."""
+        compressed = zlib.compress(b"a fictional resume with nothing in it the guard could find " * 8)
+        file_body = multipart(("file", "a.pdf", "application/pdf", compressed))
+        sends = (
+            {"headers": form_headers(), "body": file_body},
+            {"headers": {"Content-Type": "application/octet-stream"}, "body": compressed},
+            {"headers": form_headers()},   # a multipart body nobody can read is treated as holding a file
+        )
+        targets = [(host, path) for host, path in (("hcaptcha.com", "/x"), ("api.hcaptcha.com", "/x"), ("api2.hcaptcha.com", "/x"))]
+        targets += [(host, "/cdn-cgi/challenge-platform/h/g/jsd/oneshot/x") for host in (HOST, EU)]
+        for host, path in targets:
+            for send in sends:
+                for resume_allowed in (True, False):
+                    with self.subTest(host=host, content_type=send["headers"]["Content-Type"][:20], resume_upload_allowed=resume_allowed):
+                        facts = request("POST", host, path, **send)
+                        self.assertTrue(checks.is_upload(facts))
+                        self.assertAborted(decide(FILL, facts, state(resume_upload_allowed=resume_allowed)), "upload_elsewhere")
+            with self.subTest(host=host, phase="the student's turn"):
+                self.assertAllowed(decide(STUDENT, request("POST", host, path, **sends[0])))
+
+    def test_a_write_that_is_not_a_file_still_reaches_those_places_in_the_fill(self):
+        self.assertAllowed(decide(FILL, request("POST", "api.hcaptcha.com", "/checksiteconfig", body=b"{}", headers={"Content-Type": "application/json"})), "captcha")
+        self.assertAllowed(decide(FILL, request("POST", HOST, "/cdn-cgi/challenge-platform/h/g/jsd/oneshot/x", body=b"\x00\x01")), "challenge")
 
     def test_a_write_to_cloudflares_challenge_path_is_allowed_on_either_lever_host(self):
         for phase in self.PHASES:

@@ -71,11 +71,13 @@ S3_UPLOAD_ENABLED = False
 
 
 class Endpoint(NamedTuple):
-    """An exact host and a path prefix. ``kind`` names the field a lookup serves."""
+    """An exact host and a path prefix. ``kind`` names the field a lookup serves. ``methods`` are the methods the request rules let through to it
+    when it is a write (a CAPTCHA endpoint); empty for any."""
 
     host: str
     path_prefix: str
     kind: str = ""
+    methods: tuple[str, ...] = ()
 
 
 class DomainSet(frozenset):
@@ -349,9 +351,11 @@ class Abort:
         return entry
 
 
-def _endpoint_matches(endpoints: Iterable[Endpoint], host: str, path: str, kind: str | None = None) -> bool:
+def _endpoint_matches(endpoints: Iterable[Endpoint], host: str, path: str, kind: str | None = None, method: str | None = None) -> bool:
+    """Whether the request is to one of ``endpoints``; with ``method``, one whose ``methods`` (when it names any) include it."""
     return any(
         host == endpoint.host.lower() and path.startswith(endpoint.path_prefix) and (kind is None or endpoint.kind == kind)
+        and (method is None or not endpoint.methods or method.upper() in endpoint.methods)
         for endpoint in endpoints
     )
 
@@ -581,7 +585,11 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
                 return abort("code_post_before_press", "A request that would send the security code was refused because you had not pressed Submit")
             return Allow("security_code", code_post=True)
         return abort("second_submit_post", "A second submit request was refused")
-    if _endpoint_matches(captcha_endpoints, host, path):
+    if phase == PHASE_FILL and is_upload(request) and (_endpoint_matches(captcha_endpoints, host, path) or policy.is_challenge_request(host, path)):
+        # The attached file is in the input, and a page's script can read it and send it anywhere a write is let through. A compressed file holds none of
+        # the student's words, so the value guard cannot tell. Nothing the fill lets through to these addresses is a file.
+        return abort("upload_elsewhere", "The page tried to send a file to an address that is not the file read the app allowed")
+    if _endpoint_matches(captcha_endpoints, host, path, method=method):
         return Allow("captcha")
     if policy.is_challenge_request(host, path):
         return Allow("challenge")
@@ -1052,13 +1060,14 @@ LEVER_LOOKUP_ENDPOINTS: tuple[Endpoint, ...] = tuple(Endpoint(host, lever.SEARCH
 
 # The hCaptcha hosts a Lever apply page was seen to use at load (spec 11, Q3; tests/fixtures/apply/lever/endpoints.json): its script (js), the
 # three hosts its widget posts to by itself before anyone presses anything (api, api2 and hcaptcha.com), and the host its frames load from, under the
-# one path prefix they were seen at. Each is an exact host: a name under w.hcaptcha.com (the logo shards) is not here, because a wildcard there would
+# one path prefix they were seen at. Each is written only by the method it was seen with (``Endpoint.methods``): js and the frame host were only read
+# (a write to either is refused like any other), the other three only posted to. Each is an exact host: a name under w.hcaptcha.com (the logo shards) is not here, because a wildcard there would
 # let a name carry a planned value. What the widget posts to once Submit is pressed (getcaptcha, checkcaptcha and the like) was not seen, and until the
 # first real handoff shows it, a request to any host not listed is refused: the student is told ("the form tried to send to an address the app doesn't
 # recognize") and nothing has left. THIS TUPLE IS WHAT A RECORDING EXTENDS, and nothing else.
 LEVER_CAPTCHA_ENDPOINTS: tuple[Endpoint, ...] = (
-    Endpoint("js.hcaptcha.com", "/"), Endpoint("hcaptcha.com", "/"), Endpoint("api.hcaptcha.com", "/"), Endpoint("api2.hcaptcha.com", "/"),
-    Endpoint("newassets.hcaptcha.com", "/captcha/v1/"),
+    Endpoint("js.hcaptcha.com", "/", methods=("GET",)), Endpoint("hcaptcha.com", "/", methods=("POST",)), Endpoint("api.hcaptcha.com", "/", methods=("POST",)),
+    Endpoint("api2.hcaptcha.com", "/", methods=("POST",)), Endpoint("newassets.hcaptcha.com", "/captcha/v1/", methods=("GET",)),
 )
 # The names the browser must be able to look up for those endpoints to be reachable at all (``js.hcaptcha.com`` by GET: without it Submit does nothing,
 # spec 3.10). They are in ``LEVER_ROUTE_POLICY.resolvable_hosts``, so the resolver rule (one list for every ATS) names them; a Greenhouse run's own

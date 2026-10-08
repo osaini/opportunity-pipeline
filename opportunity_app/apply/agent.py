@@ -468,7 +468,7 @@ def bind_endpoints(endpoints: Sequence[Endpoint], token: str) -> tuple[Endpoint,
         if "{token}" in endpoint.path_prefix:
             if not token:
                 continue
-            endpoint = Endpoint(endpoint.host, endpoint.path_prefix.replace("{token}", token), endpoint.kind)
+            endpoint = endpoint._replace(path_prefix=endpoint.path_prefix.replace("{token}", token))
         bound.append(endpoint)
     return tuple(bound)
 
@@ -1193,8 +1193,8 @@ class ApplyAgent:
                 if decision.rule == "before_hand_over":
                     self._early = True
                 elif (
-                    _host_of(request.url) not in self._policy.telemetry_hosts and not self._policy.is_challenge_request(_host_of(request.url), urlsplit(request.url).path)
-                    and (is_upload(facts) or _host_of(request.url) in self._policy.form_post_hosts)
+                    _host_of(request.url) not in self._policy.telemetry_hosts
+                    and (is_upload(facts) or (_host_of(request.url) in self._policy.form_post_hosts and not self._policy.is_challenge_request(_host_of(request.url), urlsplit(request.url).path)))
                 ):
                     # During the fill either one is fatal: a page that uploads or posts as it is filled is not one the app can leave alone.
                     # (The page's own usage reporting is neither: it is refused, recorded a few times, and the fill goes on.)
