@@ -4,6 +4,7 @@ tests/fixtures/apply/lever/. No browser, no network, no database; every company,
 
 import dataclasses
 import json
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -203,7 +204,7 @@ class LeverPlanTests(unittest.TestCase):
     def test_the_resume_is_the_students_to_attach_unless_they_let_the_app(self):
         off = row(lever_plan("cards_files_consent.html", "Quillfeather Pets"), "resume")
         self.assertEqual((off.required, off.problem_kind, off.source.kind, off.disposition), (True, "window", "none", "left_for_you"))
-        self.assertIn("Lever reads it as soon as it is attached", off.problem)
+        self.assertEqual(off.problem, "Attach your résumé in the window", "why the app does not is said once, in the note above the list")
         src = sources(facts=FACTS, labels={"location": LOCATION})
         src.resume_upload = True
         on = row(lever_plan("cards_files_consent.html", "Quillfeather Pets", src=src), "resume")
@@ -245,6 +246,33 @@ class LeverPlanTests(unittest.TestCase):
                 self.assertNotIn("window", text, name)
         with_window = build_plan(schema_of("many_cards.html"), None, src, "Orbital Ledger", "handoff", ats_name="Lever", ats="lever")
         self.assertIn("in the window", " ".join(item.problem + " " + item.note for item in with_window.fields))
+
+    def test_without_a_window_no_left_for_you_sentence_sends_the_student_to_finish_in_browser(self):
+        # Finish in browser is not there for Lever yet, so "Finish in browser leaves it for you" would point at a button that does not exist.
+        # One flag (window) switches the wording: the same sentences, with only their closing words changed.
+        src = sources(facts=FACTS, labels={"location": LOCATION}, allowed=("work_authorization",))
+        seen = 0
+        for name, company in (("many_cards.html", "Orbital Ledger"), ("cards_files_consent.html", "Quillfeather Pets"), ("demo_eeo_survey.html", LEVER_COMPANY), ("variants.html", "Fixture Co")):
+            with self.subTest(page=name):
+                plans = {window: build_plan(schema_of(name), None, src, company, "handoff", ats_name="Lever", ats="lever", window=window) for window in (True, False)}
+                for with_window, without in zip(plans[True].fields, plans[False].fields):
+                    open_said, shut_said = with_window.problem + with_window.note, without.problem + without.note
+                    self.assertNotIn("Finish in browser", shut_said)
+                    if "Finish in browser leaves" in open_said:
+                        seen += 1
+                        stem = open_said.rsplit(". Finish in browser leaves", 1)[0]
+                        self.assertRegex(shut_said, rf"^{re.escape(stem)}\. Do (it|them) on Lever's application page$")
+        self.assertGreater(seen, 15, "the pages exercise every sentence: signature, disability, statement, follow-up, not allowed, text cut, net, tick")
+
+    def test_an_optional_location_does_not_point_at_a_box_that_is_not_drawn(self):
+        # A required location gets a box under the question; an optional one is a note with none, so only the settings are named.
+        src = sources(facts=FACTS)
+        required = row(lever_plan("many_cards.html", "Orbital Ledger", src=src), "location")
+        self.assertTrue(required.problem.endswith("in Apply for me settings or here"), required.problem)
+        schema = [dataclasses.replace(item, required=False) if item.name == "location" else item for item in schema_of("many_cards.html")]
+        optional = row(build_plan(schema, None, src, "Orbital Ledger", "handoff", ats_name="Lever", ats="lever"), "location")
+        self.assertFalse(optional.required)
+        self.assertTrue(optional.note.endswith("in Apply for me settings"), optional.note)
 
     def test_the_plan_hash_is_stable_and_holds_no_value(self):
         first, second = lever_plan("demo_eeo_survey.html", LEVER_COMPANY), lever_plan("demo_eeo_survey.html", LEVER_COMPANY)

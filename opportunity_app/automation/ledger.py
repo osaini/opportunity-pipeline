@@ -201,7 +201,7 @@ FEATURES: dict[str, Feature] = {
                 "applications", "external"),
         Feature("apply_lever_resume_upload", f"Let the app attach my résumé on {LEVER_NAME}",
                 f"Let the app attach my résumé on {LEVER_NAME}. {LEVER_NAME} reads it as soon as it is attached, so it is sent to {LEVER_NAME} "
-                "before you press Submit. While this is off, you attach it yourself in the window",
+                "before you press Submit. While this is off, you attach it yourself",
                 "applications", "external"),
         # Phase 2: changes that stay inside the app, each with an Undo (student/resume_variants.py,
         # automation/internal.py, automation/triage.py).

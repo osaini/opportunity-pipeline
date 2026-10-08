@@ -119,8 +119,7 @@ def _listing(
     return listing, "", False
 
 
-LEVER_RESUME_YOURS = ("Your résumé: you attach it yourself {there}, and the app does not attach it on Lever. "
-                      "Lever reads it as soon as it is attached")
+LEVER_RESUME_YOURS = "Your résumé: you attach it yourself {there}, because Lever reads it as soon as it is attached"
 LEVER_RESUME_ATTACHED = ("Your résumé: the app attaches it itself, because you let it in Apply agent settings. "
                          "Lever reads it as soon as it is attached, so it is sent to Lever before you press Submit")
 
