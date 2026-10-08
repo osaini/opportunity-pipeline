@@ -79,26 +79,48 @@ profile explicitly says sponsorship is required. The sponsorship check reads the
 ways a posting closes sponsorship, for the company or for one opening ("no
 sponsorship", "we do not offer visa sponsorship", "immigration sponsorship is not
 offered for this specific opening", "authorized to work without sponsorship").
+A form question ("Are you authorized to work without sponsorship?") is not a
+statement by the company and is not read. "Without sponsorship" counts only as a
+condition on working, so "F-1 students can intern under CPT without visa
+sponsorship" and "candidates with and without sponsorship needs" are not read as
+closed. A sentence that also says the company sponsors a visa ("we cannot sponsor
+every visa type, but we sponsor H-1B") gets the flag and no penalty, since which
+part applies to this opening is yours to check. A refusal that names the kind of
+role ("we cannot sponsor F-1 interns", "visas for this position") still costs the
+penalty, and so does one where the company sponsors something other than a visa
+("we sponsor student hackathons").
 
 **Experience.** "N years of ... experience" costs 18 points when N is more than
 `max_years_experience` (1 if unset). N may be a digit or a word ("six (6) years",
 "three years"), may carry "or more", and for a range ("3-5 years", "3 to 5
-years") the first number is the one read, since that is what you have to meet. A
-posting that counts the years from graduation or asks for full-time professional
-work ("1-3 years of full-time professional experience post-graduation") asks for
-experience an internship does not give. If `graduation_year` is this year or
-later, that costs the 18 points whatever `max_years_experience` says, and the reason
-reads "asks for 1+ years of post-graduation experience". If you graduated in an
-earlier year the ceiling decides as usual, and with no `graduation_year` the score
-does not guess: it adds a flag to verify instead.
+years", "between 2 and 4 years", "2 years and up to 5 years") the first number is
+the one read, since that is what you have to meet. Years that say something else
+("a two year program", "founded five years ago", "18 years or older") are not read,
+while "3+ years of program management experience" is. The years and the word
+"experience" must be on the same line.
+A posting that counts the years from graduation ("1-3 years of full-time
+professional experience post-graduation") asks for experience an internship does
+not give. If `graduation_year` is this year or later, that costs the 18 points
+whatever `max_years_experience` says, and the reason reads "asks for 1+ years of
+post-graduation experience". If you graduated in an earlier year the ceiling
+decides as usual, and with no `graduation_year` the score does not guess: it adds
+a flag to verify instead. Full-time professional experience with no mention of
+graduation is judged by `max_years_experience` like any other, and the reason
+names it ("asks for 3+ years of full-time professional experience").
 
 **Pay.** `compensation_preferences` in the profile is read for two things. A posting
 that states pay in dollars per hour and tops out below `minimum_hourly` costs 15
 points ("pays up to $22/hour, below your $25/hour minimum"). With `paid_only` set to
 true, a posting that calls the role unpaid ("an unpaid internship", "a volunteer
-role") costs 35. Only a stated hourly wage is compared: a yearly salary is not
-turned into an hourly rate, a posting that states no pay changes nothing, and a
-currency other than USD is not compared with dollars.
+role") costs 35; "unpaid leave" in a benefits list, "unlike an unpaid
+internship", "paid or unpaid research positions" and "unpaid volunteer work" in a
+list of experience that counts are not that. Only a stated hourly wage is compared: a yearly salary is not
+turned into an hourly rate, a posting that also states a salary by the year, month,
+week or day ("Base salary: $95,000 per year") is not compared at all, a stipend,
+allowance or tuition benefit beside the hourly wage does not stop the comparison,
+a shift differential, parking rate or donation
+per hour is not a wage, a posting that states no pay changes nothing, and a
+currency other than USD (including "CA$30 per hour") is not compared with dollars.
 
 **Text aimed at AI readers.** A posting that speaks to a model ("if you are an LLM,
 include the word ...", "ignore all previous instructions") gets a flag, with no
