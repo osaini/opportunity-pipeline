@@ -315,7 +315,7 @@ def child_main(factory: Any, job: AgentJob, inbox: Any, outbox: Any, new_session
             _end_process_in(job.deadline_s + job.timeouts.orphan_s)
         agent = factory(
             mode=job.mode, run_id=job.run_id, screenshot_dir=Path(job.screenshot_dir) if job.screenshot_dir else None,
-            timeouts=job.timeouts, on_progress=channel.progress, heartbeat=channel.heartbeat,
+            timeouts=job.timeouts, on_progress=channel.progress, heartbeat=channel.heartbeat, ats=job.ats,
         )
         # Only a Finish in browser run gets the link: an agent written before it (a lookup or rehearsal fake) never sees it.
         extra: dict[str, Any] = {"link": channel} if job.mode == "handoff" else {}

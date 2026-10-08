@@ -249,5 +249,111 @@ class PreflightUsesTheRegistryTests(runner_tests.RunnerCase):
         self.assertIsNone(inputs.plan)
 
 
+# --- The adapter Protocol and the agent ---------------------------------------------------------------------------
+
+OPTIONAL = {"fill_react_select", "react_values"}
+
+
+def protocol_methods():
+    return {name for name, value in vars(apply_ats.AtsAdapter).items() if callable(value) and not name.startswith("_")}
+
+
+class AdapterProtocolTests(unittest.TestCase):
+    def test_the_protocol_lists_the_methods_the_agent_calls_and_no_submit(self):
+        self.assertEqual(protocol_methods(), {
+            "form_frame", "detect_page", "loader_paths", "uploads_on_attach", "security_code_prompt", "security_code_inputs", "captcha_widget",
+            "control", "control_kind", "is_react_select", "field_container", "choices", "fill_location", "read_options",
+        })
+
+    def test_the_agent_calls_nothing_on_its_adapter_that_the_protocol_does_not_name(self):
+        called = set()
+        for text in helpers_source.apply_modules().values():
+            called |= set(re.findall(r"\badapter\.(\w+)\(", text))
+        self.assertTrue(called, "the scan found the agent's calls")
+        self.assertEqual(called - protocol_methods() - OPTIONAL, set())
+        self.assertNotIn("submit_control", called, "nothing presses Submit through the adapter, which is why the Protocol drops it")
+        self.assertEqual(protocol_methods() - called, set(), "no method is in the Protocol that the agent never calls")
+
+    def test_the_greenhouse_adapter_has_every_method_with_the_same_parameters(self):
+        def names(signature):
+            return [name for name in signature.parameters if name != "self"]
+
+        for name in sorted(protocol_methods()):
+            with self.subTest(method=name):
+                self.assertEqual(names(inspect.signature(getattr(apply_agent.GreenhouseAdapter, name))), names(inspect.signature(getattr(apply_ats.AtsAdapter, name))))
+        for name in sorted(OPTIONAL):
+            self.assertTrue(callable(getattr(apply_agent.GreenhouseAdapter, name)))
+
+    def test_the_agent_is_typed_to_the_protocol_not_to_greenhouse(self):
+        self.assertEqual(inspect.signature(apply_agent.ApplyAgent.__init__).parameters["adapter"].annotation, "AtsAdapter")
+
+
+# --- The factory and the job ---------------------------------------------------------------------------------------
+
+def build(factory, **more):
+    return factory(mode="rehearse", run_id="run-1", screenshot_dir=None, timeouts=ApplyTimeouts(), on_progress=lambda *_: None, heartbeat=lambda: None, **more)
+
+
+class FactoryTests(unittest.TestCase):
+    def test_every_registered_ats_has_an_adapter_and_the_reverse(self):
+        self.assertEqual(set(apply_agent.ADAPTERS), set(apply_ats.keys()))
+
+    def test_greenhouse_gets_the_greenhouse_adapter_with_or_without_the_argument(self):
+        factory = apply_agent.DefaultApplyAgentFactory()
+        for agent in (build(factory), build(factory, ats="greenhouse")):
+            self.assertIs(type(agent.adapter), apply_agent.GreenhouseAdapter)
+
+    def test_an_ats_that_is_not_registered_builds_no_agent(self):
+        with self.assertRaises(apply_ats.UnknownAts):
+            build(apply_agent.DefaultApplyAgentFactory(), ats="lever")
+
+    def test_the_adapter_is_chosen_through_the_registry(self):
+        gone = dataclasses.replace(GREENHOUSE, key="elsewhere")
+        with mock.patch.object(apply_ats, "REGISTRY", (gone,)), self.assertRaises(apply_ats.UnknownAts):
+            build(apply_agent.DefaultApplyAgentFactory(), ats="greenhouse")
+
+    def test_a_patch_on_the_adapter_class_still_reaches_the_agent_the_factory_builds(self):
+        agent = build(apply_agent.DefaultApplyAgentFactory(), ats="greenhouse")
+        with mock.patch.object(apply_agent.GreenhouseAdapter, "detect_page", return_value="patched"):
+            self.assertEqual(agent.adapter.detect_page(object()), "patched")
+
+    def test_the_ats_picks_the_adapter_and_is_not_an_agent_argument(self):
+        self.assertNotIn("ats", inspect.signature(apply_agent.ApplyAgent.__init__).parameters)
+
+
+class AgentJobTests(unittest.TestCase):
+    def test_a_job_built_without_an_ats_is_a_greenhouse_job(self):
+        self.assertEqual(runner_tests.job().ats, apply_greenhouse.ATS_GREENHOUSE)
+        self.assertEqual(AgentJob.__dataclass_fields__["ats"].default, apply_greenhouse.ATS_GREENHOUSE)
+
+    def test_the_job_carries_the_ats_it_is_given(self):
+        self.assertEqual(runner_tests.job(ats="other").ats, "other")
+
+
+class Recording(FakeApplyAgentFactory):
+    def __init__(self):
+        super().__init__(step_delay=0)
+        self.calls = []
+
+    def __call__(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        return super().__call__(**kwargs)
+
+
+class RunnerPassesTheAtsTests(runner_tests.RunnerCase):
+    def test_a_rehearsal_builds_its_agent_for_the_preflight_ats(self):
+        factory = Recording()
+        self.assertEqual(self.finish(self.start(factory))["ats"], "greenhouse")
+        self.assertEqual([call["ats"] for call in factory.calls], ["greenhouse"])
+
+    def test_the_ats_comes_from_the_preflight_and_not_from_a_constant(self):
+        factory = Recording()
+        renamed = dataclasses.replace(GREENHOUSE, key="greenhouse-renamed")
+        with mock.patch.object(apply_ats, "REGISTRY", (renamed,)):
+            row = self.finish(self.start(factory))
+        self.assertEqual(row["ats"], "greenhouse-renamed")
+        self.assertEqual([call["ats"] for call in factory.calls], ["greenhouse-renamed"])
+
+
 if __name__ == "__main__":
     unittest.main()

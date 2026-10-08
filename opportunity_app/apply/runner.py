@@ -1127,6 +1127,7 @@ class ApplyRunner:
                 if target is None or label_field not in apply_policy.ALLOWED_ATS_LABEL_FIELDS:
                     raise RunRefused(422, NO_LOOKUP_FIELD)
                 lookup = LookupRequest(key=target.name, field=label_field, question=target.label, text=lookup_text)
+            ats = str(result["ats"])
             page_url = str(result["canonical_url"])
             deadline = self.deadline_s(kind)
             screenshot_dir = ""
@@ -1140,7 +1141,7 @@ class ApplyRunner:
                 run_id = f"run-{uuid4().hex}"
                 try:
                     taken = apply_runs.claim(
-                        conn, user_id=user_id, opportunity_id=opportunity_id, mode="handoff", ats=apply_greenhouse.ATS_GREENHOUSE,
+                        conn, user_id=user_id, opportunity_id=opportunity_id, mode="handoff", ats=ats,
                         board_token=str(result["board_token"]), job_ref=f"{result['board_token']}/{result['job_id']}",
                         company=employer_key(str(result["company"])), plan_hash=inputs.plan.plan_hash, run_id=run_id,
                         stage_policy=apply_runs.stage_policy_for("handoff"), acknowledged=tuple(acknowledged), now=now,
@@ -1150,7 +1151,7 @@ class ApplyRunner:
                 token = str(taken["token"])
             files = {} if kind == "lookup" else self._files(conn, user_id, inputs.plan, resume_root)
             run_id = apply_runs.create_run(
-                conn, user_id=user_id, opportunity_id=opportunity_id, kind=kind, started_by="student", ats=apply_greenhouse.ATS_GREENHOUSE,
+                conn, user_id=user_id, opportunity_id=opportunity_id, kind=kind, started_by="student", ats=ats,
                 board_token=str(result["board_token"]), page_url=page_url, company=employer_key(str(result["company"])),
                 deadline_seconds=int(deadline), run_id=run_id or None, application_id=taken["application_id"] if handoff else None,
                 claim_token=token, now=now,
@@ -1161,7 +1162,7 @@ class ApplyRunner:
                 ends_at = time.monotonic() + max(deadline - ENDS_AT_MARGIN_S, deadline / 2)
             job = AgentJob(
                 run_id=run_id, mode=MODE_FOR_KIND[kind], page_url=page_url, plan=inputs.plan, schema=list(inputs.schema), files=files,
-                lookup=lookup, screenshot_dir=screenshot_dir, timeouts=self._timeouts, ends_at=ends_at,
+                lookup=lookup, screenshot_dir=screenshot_dir, timeouts=self._timeouts, ends_at=ends_at, ats=ats,
             )
             work = _Job(
                 run_id=run_id, kind=kind, user_id=user_id, opportunity_id=opportunity_id, company=str(result["company"]), page_url=page_url,
