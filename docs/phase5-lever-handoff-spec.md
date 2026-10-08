@@ -1138,7 +1138,7 @@ Where the build differs from, or adds to, the text above:
   they held at the last look before the read (`parser_values`) and says, by question, which changed: progress steps `resume_attached` (the file went; the
   parent records `student_attached_resume` at once, so a stop or a restart afterwards reads "Lever received your résumé") and `resume_changed` (the
   sentence, a student's-turn phase). The same fields join the "left for you" list in the final evidence. A field the student typed in the same quarter
-  second as the read is named too (the sentence says "check"). `resume_sent_to_lever` stays the app's own attach only.
+  second as the read is named too (the sentence says "check"; listed in `docs/known-defects.md`). `resume_sent_to_lever` stays the app's own attach only.
 - **The ready message** carries `resume_sent_to_lever`, so a run that ends with no result after the window is ready still says Lever holds the file.
 - **The second plan** the runner builds once the page is read now carries the student's L1 choice (it did not: a run with the setting on would have left the
   résumé for the student). Fixed in a commit of its own, with the test that failed first.
@@ -1148,7 +1148,7 @@ Where the build differs from, or adds to, the text above:
   it into `unconfirmed`, as it does for Greenhouse. The row is reachable only as the pure table (`tests/test_apply_lever_outcome.py`).
 - **No "the form tried to send somewhere" notice on Lever** for a refused request after the press: the press listener recognises Greenhouse's Submit
   control only, and Lever's visible button is the one the adapter never names outside its denylist. The turn still ends on a refused send to an unknown
-  address (`student_submit_elsewhere`); only the mid-turn sentence is missing.
+  address (`student_submit_elsewhere`); only the mid-turn sentence is missing (listed in `docs/known-defects.md`).
 - **Tests.** 10.2 outcome rows (`test_apply_lever_outcome.py`, wired by `test_apply_lever_handoff_browser.py`); 10.4 items 6, 7, 11, 13, 14 and 15 in
   `test_apply_lever_handoff_browser.py` (items 12 and 16 were already in `test_apply_lever_browser.py`); the e2e through the real runner and a spawned
   child in `test_apply_lever_handoff_e2e.py`; the runner's side of the student's attach in `test_apply_lever_student_attach.py`; the sandbox's canned

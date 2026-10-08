@@ -18,7 +18,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Apply for me | 0 | 3 | 9 | 12 |
+| Apply for me | 0 | 3 | 11 | 14 |
 | Mail, Gmail and inboxes | 0 | 4 | 8 | 12 |
 | Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
@@ -26,7 +26,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Scoring, scheduling and configuration | 1 | 2 | 8 | 11 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **28** | **36** | **65** |
+| **Total** | **1** | **28** | **38** | **67** |
 
 ## Start here: the high-severity entries
 
@@ -198,6 +198,20 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** The exemption says a card question's words are its own and the template's size limits them. That limit covers one template; a page can carry any number of them. Only the page cap of `LeverPageClient` (4 MB) bounds the total, so the text a plan reads is linear in the page and never multiplied by controls the way a shared label is. No test times a page of many large templates, and a page just under the cap is not counted against the budget at all.
 - **Suggested fix:** Count a card question's label and options in `_text_spent()` against a budget of its own, sized from the largest real template (a university dropdown of about 3,300 options), and read the form as unreadable above it. Time a page of many templates first.
 - **Regression suite:** tests/test_lever_form.py (many large card templates under the page cap are read in under three seconds, or the form is left to the student)
+
+### Lever's Submit press is not reported, so a request refused after it does not tell the student
+- **Severity:** low (found 2026-10-08, build of Lever LV4)
+- **Where:** `opportunity_app/apply/agent.py` `PRESS_LISTENER` (the `submit` selector) and `_on_binding`; `looks_like_a_send()` in `opportunity_app/apply/checks.py`
+- **What happens:** The press listener reports a trusted click on Greenhouse's Submit control only. Lever's visible button is not among the selectors, so `RouteState.last_press_at` stays 0 on a Lever run. A request the page makes after the student's press and the rules refuse (a send to an address that is not a CAPTCHA or telemetry host) is still refused and still ends the turn when it is a form post or a document request, but the mid-turn sentence "The form tried to send a request to {host}, which the app doesn't recognize" is never shown, because `looks_like_a_send()` needs a press.
+- **Suggested fix:** Have the adapter hand the agent a selector built from its denylist (never written out as a literal outside it, `tests/test_apply_lever_adapter.py` scans for that) and have `_watch_presses` add it to the listener, then update the pinned CDP call in `tests/test_apply_agent_static.py`.
+- **Regression suite:** tests/test_apply_lever_handoff_browser.py (a Lever page that posts to an unknown address after the press; the student is told)
+
+### A field the student types in the same moments as the page reads their file is named as filled by Lever
+- **Severity:** low (found 2026-10-08, build of Lever LV4)
+- **Where:** `opportunity_app/apply/agent.py` `_watch_student_read()`
+- **What happens:** After the student attaches a file in the window, the agent names the fields Lever's reader changed by comparing what they held at the last look (every 250 ms) with what they hold once the page has applied its answer. A parser field the student types into between those two looks, and that the reader leaves alone because the student made it theirs, is named too: "Lever filled Current company ... Check it". It says check, and nothing is changed, but the sentence is not true of that field.
+- **Suggested fix:** Have the press listener's world also report a trusted `input` on the form's named controls (their names, never their values) and leave those out of the comparison.
+- **Regression suite:** tests/test_apply_lever_handoff_browser.py (the student types into the company box while the page reads their file; only the fields the reader changed are named)
 
 ## Mail, Gmail and inboxes
 
