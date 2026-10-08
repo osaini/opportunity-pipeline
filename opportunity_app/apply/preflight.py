@@ -293,6 +293,8 @@ def _prepare(
         "posting": {"title": "", "company": "", "url": "", "differs": False, "difference": ""},
         # What the page may start for this ATS, and the sentence for what it cannot (Lever has no window action yet), and facts the student should know.
         "offers": {"rehearse": False, "handoff": False, "note": ""}, "notes": [],
+        # Whether the student let the app attach their résumé on Lever (apply_lever_resume_upload): Finish in browser's start says what that does.
+        "resume_upload": False,
     }
     found = apply_ats.identify(conn, opportunity_id)
     if found is None:
@@ -336,6 +338,7 @@ def _prepare(
     if ats.key == apply_lever.ATS_LEVER:
         there = "in the window" if ats.adapter_built else "on Lever's application page"
         result["notes"] = [LEVER_RESUME_ATTACHED if upload else LEVER_RESUME_YOURS.format(there=there)]
+        result["resume_upload"] = upload
     return result, plan, sources, schema
 
 

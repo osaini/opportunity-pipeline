@@ -60,6 +60,7 @@ from ..core.profile_store import read_stored_profile
 from ..core.settings_store import get_setting, put_setting, setting_updated_at
 from ..core.timestamps import parse_app_instant, utc_now
 from ..core.user_time import UserTimezone, user_timezone
+from .agent_types import resume_with_ats, with_resume_note
 from .ats import CODE_MODE, claim_refusal, name_of
 from .greenhouse import ADAPTER_VERSION, ATS_GREENHOUSE, is_greenhouse_sender
 from .claims import HELD_HEARTBEAT, RUNNING, claim_held, forget, peek_unconfirmed, take_unconfirmed
@@ -1316,6 +1317,8 @@ def recover_stale(conn: sqlite3.Connection, now: datetime | None = None, *, user
             decided = None
         stopped = row["state"] == "claimed" and decided is None
         note = STOPPED_BEFORE.format(ats=name_of(row["ats"])) if stopped else (decided or _STOPPED_DURING)
+        if stopped and _run_resume_sent(conn, row["run_id"]):
+            note = with_resume_note(note, name_of(row["ats"]))   # Lever holds the file once it is attached: "Nothing was sent" would not be the whole truth
         with conn:
             lock_user(conn, row["user_id"])
             fresh = conn.execute("SELECT detail_json FROM application_submit_claims WHERE token=?", (row["token"],)).fetchone()
@@ -1361,6 +1364,8 @@ def recover_stale(conn: sqlite3.Connection, now: datetime | None = None, *, user
         if any(item["state"] in ("claimed", "clicking") and claim_held(item, now=moment) for item in claims):
             continue  # its attempt is still being worked: only the run's own heartbeat went quiet
         outcome, body = _stopped_run(run["kind"], claims)
+        if outcome == "failed" and resume_with_ats(json_as(run["evidence_json"], {})):
+            body = with_resume_note(body, name_of(run["ats"]))
         with conn:
             done = _finish_run_tx(conn, run["id"], outcome=outcome, clean=False, plan_hash=None, stamp=stamp_now(now),
                                   reasons=["The app stopped during this run"])
@@ -1371,6 +1376,14 @@ def recover_stale(conn: sqlite3.Connection, now: datetime | None = None, *, user
                 title="The app stopped during an Apply for me run", body=body,
             )
     return counts
+
+
+def _run_resume_sent(conn: sqlite3.Connection, run_id: str | None) -> bool:
+    """Whether the run's evidence says the ATS already holds the student's résumé (the window said so when it was ready)."""
+    if not run_id:
+        return False
+    found = conn.execute("SELECT evidence_json FROM apply_runs WHERE id=?", (run_id,)).fetchone()
+    return found is not None and resume_with_ats(json_as(found["evidence_json"], {}))
 
 
 def _stopped_run(kind: str, claims: list[Any]) -> tuple[str, str]:

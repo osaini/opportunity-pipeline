@@ -66,7 +66,7 @@ from .agent_types import (
     HANDOFF_NOT_SUBMITTED, ISOLATIONS, MODE_FOR_KIND, OP_CANCEL, OP_ERROR, OP_FILE_CHECK, OP_FILE_CHECK_REPLY, OP_FRONT, OP_HAND_OVER, OP_HAND_OVER_REPLY, OP_HANDOFF_READY,
     OP_HEARTBEAT, OP_PROGRESS, OP_REPLAN, OP_REPLAN_REPLY, OP_RESULT, OP_SECURITY_CODE, OP_SECURITY_CODE_REPLY, OP_SECURITY_CODE_RESULT,
     OUTCOMES, STOPPED, WINDOW_CLOSED, WINDOW_UNCONFIRMED, YOUR_TURN, YOUR_TURN_NONE_LEFT, AgentJob, ApplyTimeouts,
-    FilePayload, LookupRequest, RunResult, progress_text,
+    FilePayload, LookupRequest, RunResult, progress_text, resume_with_ats, with_resume_note,
 )
 from .checks import UNCONFIRMED_NOTE
 from .claims import HELD_HEARTBEAT
@@ -913,6 +913,9 @@ class _Job:
     # The parent's own record that it handed the claim over (or tried to and cannot say), set by the hand-over callback on the supervisor
     # thread. Read at settle when the claim itself cannot be read and no result came back.
     handed_over_seen: bool = False
+    # The agent said, when the window was ready, that the ATS already holds the student's résumé (Lever reads it as soon as it is attached).
+    # Kept so a run that ends with no result still says so.
+    resume_sent_seen: bool = False
     timeouts: ApplyTimeouts = field(default_factory=ApplyTimeouts)
 
 
@@ -1344,6 +1347,8 @@ class ApplyRunner:
                         return False
 
                 def ready(message: dict[str, Any]) -> None:
+                    resume_sent = bool(message.get("resume_sent_to_lever"))
+                    work.resume_sent_seen = work.resume_sent_seen or resume_sent
                     shots = _relative_screenshots(work.apply_root, [message["screenshot"]] if isinstance(message.get("screenshot"), dict) else [])
                     # The window closes when the agent says it will (its turn is shortened by a slow fill), never later than handoff_s.
                     kept = message.get("handoff_in_s")
@@ -1358,6 +1363,7 @@ class ApplyRunner:
                             "left_for_you": _left_items(message.get("left")), "captcha_widget": bool(message.get("captcha_widget")),
                             "page_defaults": [str(key) for key in message.get("page_defaults") or []],
                             "handoff_until": apply_runs.iso_utc(until),
+                            "resume_sent_to_lever": resume_sent,
                         },
                     )
                     if not stored:
@@ -1478,6 +1484,7 @@ class ApplyRunner:
                         result, stop=outcome.stop, shutting_down=shutting_down, claim_state="claimed", cancel_requested=False,
                         handed_over=False, closed_confirmed=outcome.closed_confirmed,
                         minutes=round(work.deadline_s / 60), not_started=outcome.error == "NotStarted", ats_name=apply_ats.name_of(work.job.ats),
+                        resume_sent=work.resume_sent_seen,
                     )
                 else:
                     unconfirmed = UNCONFIRMED_NOTE.format(ats=apply_ats.name_of(work.job.ats))
@@ -1492,6 +1499,7 @@ class ApplyRunner:
                 cancel_requested=bool(row["cancel_requested"]) if row is not None else False,
                 handed_over=bool(row is not None and row["handed_over_at"]), closed_confirmed=outcome.closed_confirmed,
                 minutes=round(work.deadline_s / 60), not_started=outcome.error == "NotStarted", ats_name=apply_ats.name_of(work.job.ats),
+                resume_sent=work.resume_sent_seen,
             )
             if settlement.integrity_error:
                 LOGGER.error("A Finish in browser run came back handed over while its claim was not (run %s)", work.run_id)
@@ -1644,11 +1652,29 @@ class Settlement:
 
 def handoff_settlement(
     result: RunResult | None, *, stop: str, shutting_down: bool, claim_state: str, cancel_requested: bool, handed_over: bool,
-    closed_confirmed: bool, minutes: int, ats_name: str, not_started: bool = False,
+    closed_confirmed: bool, minutes: int, ats_name: str, not_started: bool = False, resume_sent: bool = False,
 ) -> Settlement:
     """The 5.3 table, first row that matches wins. Pure: every input is a fact read after the child (and its browser) ended.
 
-    ``ats_name`` is how the notes it writes itself name the ATS.
+    ``ats_name`` is how the notes it writes itself name the ATS. ``resume_sent`` is the parent's own record that the ATS already holds the
+    student's résumé (Lever reads it as soon as it is attached); the result's evidence says it too. When it is true, an ending that never
+    handed over says "Your application was not sent. Lever received your résumé." wherever it would have said nothing was sent.
+    """
+    settlement = _handoff_rows(
+        result, stop=stop, shutting_down=shutting_down, claim_state=claim_state, cancel_requested=cancel_requested, handed_over=handed_over,
+        closed_confirmed=closed_confirmed, minutes=minutes, ats_name=ats_name, not_started=not_started,
+    )
+    evidence = result.evidence if result is not None else None
+    if settlement.after_click or not (resume_sent or resume_with_ats(evidence)):
+        return settlement
+    return replace(settlement, note=with_resume_note(settlement.note, ats_name), reasons=[with_resume_note(item, ats_name) for item in settlement.reasons])
+
+
+def _handoff_rows(
+    result: RunResult | None, *, stop: str, shutting_down: bool, claim_state: str, cancel_requested: bool, handed_over: bool,
+    closed_confirmed: bool, minutes: int, ats_name: str, not_started: bool = False,
+) -> Settlement:
+    """The rows of ``handoff_settlement``, before the résumé is said.
 
     After the hand-over nothing is called "not sent" except row 5, from the route's own record that the POST was aborted;
     before it, "not sent" is only said once the window is confirmed closed (row 7 first).
@@ -1856,7 +1882,7 @@ def _sentence(reason: str) -> str:
 def _summary(
     row: Mapping[str, Any], reasons: list[str], options: Mapping[str, Any], company: str, title: str, progress: list[dict[str, Any]], stalled: bool,
     posting: Mapping[str, Any] | None = None,
-    *, phase: str = "", nothing_left: bool = False, claim: Mapping[str, Any] | None = None, after_click: bool = False,
+    *, phase: str = "", nothing_left: bool = False, claim: Mapping[str, Any] | None = None, after_click: bool = False, resume_sent: bool = False,
 ) -> str:
     name = apply_ats.name_of(str(row["ats"]))
     if row["status"] == "running":
@@ -1877,8 +1903,10 @@ def _summary(
             return f"{name} showed its confirmation page. Mark as applied?" if ask else f"{name} showed its confirmation page."
         if outcome == "unconfirmed":
             return first
-        # A stopped or failed handoff says "not sent" only when it was never handed over, and not twice.
-        return first if after_click or _SAYS_NOT_SENT.search(first) else f"{_sentence(first)} {NO_SENT}"
+        # A stopped or failed handoff says "not sent" only when it was never handed over, and not twice. Once the ATS holds the résumé
+        # (Lever reads it when it is attached), it says that beside it.
+        said = first if after_click or _SAYS_NOT_SENT.search(first) else f"{_sentence(first)} {NO_SENT}"
+        return with_resume_note(said, name) if resume_sent and not after_click else said
     if outcome == "looked_up":
         count = sum(len(items) for items in options.values() if isinstance(items, list))
         if not count:
@@ -1998,6 +2026,8 @@ def run_view(
     running = row["status"] == "running"
     stalled = running and (beat is None or datetime.now(timezone.utc) - beat > HELD_HEARTBEAT or orphaned(row, live))
     handoff = row["kind"] == "handoff"
+    # Lever reads the résumé as soon as it is attached, so the file is with Lever before any Submit: the page says so (spec 9, L1).
+    resume_sent = handoff and resume_with_ats(evidence)
     card, claim_state, after_click, _asked = _claim_facts(conn, row) if handoff else (None, "", False, False)
     phase = _handoff_phase(progress, card, claim_state) if handoff and running else ""
     host = (evidence.get("elsewhere_seen") or {}).get("host") if isinstance(evidence.get("elsewhere_seen"), dict) else None
@@ -2049,13 +2079,14 @@ def run_view(
     can_front = bool(handoff and running and claim_state in ("claimed", "clicking") and local is not None and local == row["id"])
     return {
         "id": row["id"], "opportunity_id": row["opportunity_id"], "kind": row["kind"], "status": row["status"],
+        "resume_sent_to_lever": resume_sent,
         "outcome": row["outcome"] or "", "clean": bool(row["clean"]),
         "started_at": row["started_at"], "finished_at": row["finished_at"], "heartbeat_at": row["heartbeat_at"], "deadline_at": row["deadline_at"],
         "stalled": bool(stalled),
         "summary": _summary(
             row, reasons, options if isinstance(options, dict) else {}, company, title, progress, bool(stalled),
             evidence.get("posting") if isinstance(evidence.get("posting"), dict) else None,
-            phase=phase, nothing_left=not left, claim=card, after_click=after_click,
+            phase=phase, nothing_left=not left, claim=card, after_click=after_click, resume_sent=resume_sent,
         ),
         "measured": _measured(row, evidence, refused if isinstance(refused, list) else []),
         "progress": progress, "reasons": said, "problems": problems, "fields": fields,

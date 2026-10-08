@@ -10,6 +10,7 @@ a run row. Everything a RunResult carries is value-free: sentences, public page 
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -109,6 +110,35 @@ LEFT_FIELD = 'The app could not fill "{question}". Fill it in yourself.'
 LEFT_CAPTCHA = "Tick the CAPTCHA box in the window yourself before you press Submit application."
 LEFT_COVER_LETTER_CHANGED = "Your cover letter for this role changed while the app was working, so it was not attached. Attach yours in the window."
 LEFT_UNPLANNED = "The page put something in \"{question}\" that the app didn't. Check it before you press Submit application."
+
+
+# Lever reads a résumé as soon as it is attached (docs/phase5-lever-handoff-spec.md, L1), so the file is with Lever before the student presses
+# Submit: from then on, a run that ends without a submission does not say "Nothing was sent". ``resume_with_ats`` is whether the run's evidence
+# says the file got there, by the app's attach ("resume_sent_to_lever": true) or by the student's own in the window ("student_attached_resume").
+RESUME_RECEIVED = "{ats} received your résumé."
+RESUME_EVIDENCE_KEYS = ("resume_sent_to_lever", "student_attached_resume")
+_NOT_SENT_CLAUSE = re.compile(r"(?:Your application was not sent|Nothing was sent|No application was sent)\.?", re.IGNORECASE)
+_RESUME_SAID = re.compile(r"received your résumé", re.IGNORECASE)
+
+
+def resume_with_ats(evidence: Any) -> bool:
+    """Whether a run's evidence says the student's résumé reached the ATS before any Submit (Lever: when it was attached)."""
+    return isinstance(evidence, dict) and any(bool(evidence.get(key)) for key in RESUME_EVIDENCE_KEYS)
+
+
+def with_resume_note(sentence: str, ats_name: str) -> str:
+    """A "not sent" sentence of a run that never handed over, said the way it is true once the ATS holds the résumé.
+
+    "Nothing was sent", "No application was sent" and "Your application was not sent" become "Your application was not sent. Lever received
+    your résumé."; a sentence with none of them gets the second sentence added. A sentence that already says it is left as it is. Only for a
+    run that never handed over: after a hand-over the sentences say "may have been sent", which this never touches.
+    """
+    if not sentence or _RESUME_SAID.search(sentence):
+        return sentence
+    said = f"Your application was not sent. {RESUME_RECEIVED.format(ats=ats_name)}"
+    if _NOT_SENT_CLAUSE.search(sentence):
+        return _NOT_SENT_CLAUSE.sub(said, sentence, count=1)
+    return f"{sentence.rstrip()} {RESUME_RECEIVED.format(ats=ats_name)}"
 
 
 @dataclass(frozen=True)
