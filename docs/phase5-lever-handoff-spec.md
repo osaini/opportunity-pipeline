@@ -379,6 +379,24 @@ behavior pinned (section 12, LV1). It does these things and nothing else:
 - The parser's scanner took time in proportion to the controls times the label text when many controls shared one long `label[for]`; a label now works
   out its words once.
 
+**As built in LV3, the request policy** (`checks.LEVER_ROUTE_POLICY`, `checks.lever_outcome`; pure rules, no browser; the adapter and the hand-over are built on top):
+
+- `RoutePolicy` gained five fields Greenhouse leaves at their defaults: `challenge_path_prefixes` (Cloudflare's bot check), `resume_post_path` (`/parseResume`),
+  `submit_content_types` (the apply POST must be multipart), `bind_submit_host` (the apply POST must go to the posting's own host, `RouteState.board_host`; with none bound
+  nothing is one) and `outcome_table` (`decide_outcome` hands over to `lever_outcome`). Its telemetry list is a `DomainSet`, so `googletagmanager.com`, `google-analytics.com`
+  and `bugsnag.com` cover every subdomain. `RouteState` gained `board_host`, `resume_upload_allowed`, `resume_sha256`, `page_account_id` and `resume_posts_passed`; `Allow` gained
+  `resume_post` and `digest`; `Observation` gained `board_host` and `main_host`.
+- The resume POST is `checks.resume_post_decision`, reached from `route_decision` for a handoff POST to `/parseResume` on the posting's own host, in the fill or the student's
+  turn. Each condition of section 7 is its own rule: `resume_post_off`, `resume_post_second`, `resume_post_content_type`, `resume_post_parts` (not exactly the two parts, in a
+  clean multipart body), `resume_post_file` (the fill only), `resume_post_account`, and `value_guard` for a planned value in the URL, a header, or anywhere outside the `resume` part.
+  Anything else to that path or host is refused by the general rules.
+- Two places where the build is narrower than the text above, until the recording of Q3 shows otherwise: Cloudflare's allowed writes are under `/cdn-cgi/challenge-platform/`
+  and not all of `/cdn-cgi/` (`LEVER_CLOUDFLARE_PATH_PREFIXES`), and the hCaptcha hosts are the three section 7 names (`LEVER_CAPTCHA_ENDPOINTS`, the one tuple the recording extends).
+  Those three hosts are not yet in `resolvable_hosts` (`LEVER_CAPTCHA_RESOLVABLE_HOSTS`): the resolver rule is one list for every ATS, so joining them lets a Greenhouse run's browser
+  look up hCaptcha, which `tests/test_apply_agent_static.py` rules out today. That goes with the driver.
+- The outcome table has the four rows of 6.13 and the challenge rule; a challenge with no POST sent answers `waiting` with detail `{"waiting": "challenge"}` until the waiting is over,
+  and a caller must read the detail (it is not the security-code wait).
+
 ### 5.3 The Lever modules
 
 | Module | Holds | Imports |
