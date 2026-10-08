@@ -14,7 +14,7 @@ from typing import Any, Iterable
 
 from .http import _http_json, request_json, request_json_post
 from .identity import normalized
-from .text import strip_html
+from .text import ASHBY_PAY_SENTENCE_START, strip_html
 
 
 class Listing(list):
@@ -161,7 +161,7 @@ def ashby_jobs(source: dict[str, Any], discovery_terms: list[str]) -> Listing:
                 "title": title,
                 "location": item.get("location", ""),
                 "url": item.get("jobUrl") or item.get("applyUrl", ""),
-                "description": f"{description} {pay}".strip() if pay else description,
+                "description": f"{description}\n{pay}".strip() if pay else description,
                 "posted_at": item.get("publishedAt"),
             }
         )
@@ -177,7 +177,8 @@ def _ashby_pay_sentence(compensation: Any) -> str:
     Ashby gives the amount, the period and the currency as fields, which the description often lacks (the pay
     reader needs "per year" or "per hour" beside the figure). Only a USD salary paid by the year or the hour is
     written out: the reader names any pay it finds dollars, and a period it does not know would be a guess.
-    Equity, bonus and commission are not pay.
+    Equity, bonus and commission are not pay. When Ashby's own summary says the posting has several ranges (by level
+    or place), its words are kept, so the one range written out is not read as the only one.
     """
     if not isinstance(compensation, dict):
         return ""
@@ -195,7 +196,18 @@ def _ashby_pay_sentence(compensation: Any) -> str:
         low, high = sorted((low, high))
         amount = _pay_amount if period == "hour" else _pay_dollars
         text = amount(low) if low == high else f"{amount(low)} - {amount(high)}"
-        return f"Pay listed on the Ashby posting: {text} per {period}."
+        qualifier = _ashby_range_qualifier(compensation.get("compensationTierSummary"))
+        return f"{ASHBY_PAY_SENTENCE_START} {text} per {period}{f' ({qualifier})' if qualifier else ''}."
+    return ""
+
+
+def _ashby_range_qualifier(summary: Any) -> str:
+    """Ashby's own "Multiple Ranges" part of its pay summary ("$90K – $160K • Offers Equity • Multiple Ranges"), or ""."""
+    if not isinstance(summary, str):
+        return ""
+    for part in summary.split("•"):
+        if re.search(r"\bmultiple\s+ranges\b", part, re.IGNORECASE):
+            return " ".join(part.split())
     return ""
 
 

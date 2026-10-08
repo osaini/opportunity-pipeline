@@ -125,6 +125,31 @@ class AshbyPayTests(unittest.TestCase):
                 period, _, _, description = self.pay(compensation)
                 self.assertEqual((period, description), ("", "Build things."))
 
+    def test_a_posting_with_pay_but_no_description_still_reads_as_no_description(self):
+        # Found in review: the pay sentence alone made the description non-empty, so "-3 description unavailable"
+        # no longer fired for an Ashby posting with no text.
+        from pipeline_core import scoring
+
+        for html in ("", None):
+            with self.subTest(html=html):
+                (job,) = _ashby_jobs(_ashby(descriptionHtml=html, compensation=_salary(90000, 120000)))
+                self.assertIn("Pay listed on the Ashby posting", job["description"])
+                _, reasons = scoring.score_job({**job, "role_type": "internship"}, {"max_years_experience": 1})
+                self.assertIn("-3 description unavailable", reasons)
+        (job,) = _ashby_jobs(_ashby(compensation=_salary(90000, 120000)))
+        _, reasons = scoring.score_job({**job, "role_type": "internship"}, {"max_years_experience": 1})
+        self.assertNotIn("-3 description unavailable", reasons)
+
+    def test_ashby_multiple_ranges_wording_is_kept(self):
+        # Found in review: a posting with several pay ranges (by level or place) read as one plain range.
+        compensation = _salary(90000, 160000)
+        compensation["compensationTierSummary"] = "$90K – $160K • Offers Equity • Multiple Ranges"
+        period, low, high, description = self.pay(compensation)
+        self.assertEqual((period, low, high), ("year", 90000.0, 160000.0))
+        self.assertIn("Pay listed on the Ashby posting: $90,000 - $160,000 per year (Multiple Ranges).", description)
+        _, _, _, plain = self.pay(_salary(90000, 160000))
+        self.assertNotIn("Multiple Ranges", plain)
+
     def test_a_malformed_component_does_not_break_the_fetch(self):
         compensation = {"summaryComponents": [
             None, "x", {"compensationType": "Salary", "minValue": "a", "maxValue": []},
@@ -183,6 +208,18 @@ class LeverTests(unittest.TestCase):
             with self.subTest(lists=lists):
                 (job,) = _lever_jobs(_lever(lists=lists))
                 self.assertEqual(job["description"], "Join our team. We are an equal opportunity employer.")
+
+    def test_plain_text_lines_stay_apart(self):
+        # Found in review: descriptionPlain puts each requirement on its own line with a bare newline, which was collapsed,
+        # so one line read as the tail of the one before.
+        from pipeline_core import scoring
+
+        plain = "What you'll need\n1+ years of hands-on experience\nFollowing graduation you may join our rotational program"
+        (job,) = _lever_jobs(_lever(descriptionPlain=plain, lists=[]))
+        self.assertIn("1+ years of hands-on experience\nFollowing graduation", job["description"])
+        profile = {"max_years_experience": 1, "graduation_year": 2027}
+        _, reasons = scoring.score_job({**job, "role_type": "internship"}, profile)
+        self.assertFalse([reason for reason in reasons if "years" in reason])
 
     def test_the_posting_date_is_the_creation_time(self):
         (job,) = _lever_jobs(_lever())

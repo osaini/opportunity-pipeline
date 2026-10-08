@@ -147,7 +147,7 @@ def _decode_list(value: str | None) -> list[Any]:
 
 def _evidence_for_reason(reason: str) -> dict[str, Any]:
     lowered = reason.lower()
-    if "post-graduation" in lowered or "full-time professional" in lowered:
+    if "post-graduation" in lowered:
         profile_field, opportunity_fields = "graduation_year", ["description"]
     elif "pays" in lowered or "unpaid" in lowered:
         profile_field, opportunity_fields = "compensation_preferences", ["description"]
