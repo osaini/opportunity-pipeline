@@ -45,6 +45,9 @@
   // A form with a Finish in browser window and no rehearsal (Lever): the section reads the form and starts nothing by itself.
   const HANDOFF_ONLY_NOTE = "Opening this only reads the form: it changes nothing in your tracker, and nothing is filled or sent. Finish in browser fills the form in a window, and you press Submit application yourself.";
   const STOP_HELP = "Closes the window. Nothing is sent.";
+  // Once the file is with Lever, "nothing is sent" would not be the whole truth: the application is not sent, and Lever already has the résumé.
+  const STOP_HELP_RESUME_SENT = "Closes the window. Your application is not sent.";
+  const LEVER_RESUME_CHANGED = "The setting for attaching your résumé changed since this page was loaded. Read the line above the button, then press Finish in browser again.";
   const FRONT_HELP = "If it doesn't appear, click Chromium in your taskbar.";
   const TURN_ERROR_HELP = "If the form shows an error, fix that field in the window and press Submit application again. Press Stop only if you want to give up; the app will tell you whether anything was sent.";
   const LEAVING_SOON_MS = 2 * 60 * 1000;
@@ -837,6 +840,7 @@
       setText(soon, left > 0 && left < LEAVING_SOON_MS ? "About 2 minutes left in the window" : "");
       setText(resume, fresh.resume_sent_to_lever ? RESUME_SENT_LINE : "");
       resume.hidden = !fresh.resume_sent_to_lever;
+      setText(stopHelp, fresh.resume_sent_to_lever ? STOP_HELP_RESUME_SENT : STOP_HELP);
       const signature = JSON.stringify([fresh.left_for_you, (fresh.fields || []).filter(isTickedStatement).map((field) => [field.key, field.links])]);
       if (signature !== listed) {
         listed = signature;
@@ -1293,6 +1297,10 @@
 
     // Finish in browser: the app fills the form in a window and the student presses Submit there. Anything the app wants the
     // student to agree to first (a recent application to the company, a role Greenhouse took down) is a box to tick, never a default.
+    // Whether the plan has the app put the résumé in the form: the check's own résumé row says so, which is not the same as the switch being on
+    // (with no confirmed résumé the row is a question for the student, and the app attaches nothing).
+    const appAttachesResume = (result) => (result?.fields || []).some((field) => field.key === "resume" && ["fill", "deferred"].includes(field.disposition));
+
     function handoffControls(label, { help = true } = {}) {
       const box = element("div", "apply-start-box apply-handoff-start");
       const group = element("fieldset", "apply-ticks");
@@ -1326,7 +1334,7 @@
       const starter = {
         kind: "handoff", button, reason, busy: false, fresh: true,
         paintResume() {
-          const words = checked?.ats === "lever" ? (checked.resume_upload ? LEVER_RESUME_BY_APP : LEVER_RESUME_BY_YOU) : "";
+          const words = checked?.ats === "lever" ? (appAttachesResume(checked) ? LEVER_RESUME_BY_APP : LEVER_RESUME_BY_YOU) : "";
           resumeNote.textContent = words;
           resumeNote.hidden = !words;
         },
@@ -1361,6 +1369,19 @@
         status.textContent = "Starting…";
         const epoch = state.sessionEpoch;
         try {
+          // The sentence above the button was true when the check was read. The setting may have changed since (in another tab), so a Lever start
+          // reads the check again and, when what the app would do with the résumé is no longer what the page said, shows the new words and starts nothing.
+          if (checked?.ats === "lever") {
+            const latest = await api(`/api/v1/apply-agent/opportunities/${encodeURIComponent(item.id)}/check`);
+            if (state.sessionEpoch !== epoch || stale()) return;
+            if (appAttachesResume(latest) !== appAttachesResume(checked)) {
+              paint(latest);
+              starter.busy = false;
+              syncStarters();
+              status.textContent = LEVER_RESUME_CHANGED;
+              return;
+            }
+          }
           const acknowledged = handoffTicks().map((tick) => tick.code).filter((code) => ticked.has(code));
           const view = await api(`${APPLY_API}/opportunities/${encodeURIComponent(item.id)}/handoffs`, {
             method: "POST",

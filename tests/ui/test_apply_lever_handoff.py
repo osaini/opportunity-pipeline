@@ -125,6 +125,9 @@ def test_a_run_with_the_resume_choice_on_shows_the_resume_was_sent_and_a_stop_sa
     expect(turn.locator(".apply-turn-until")).to_contain_text("if you haven't pressed Submit application.")
     # Nothing before the student's press says "nothing was sent": the file is already with Lever.
     assert "nothing was sent" not in turn.inner_text().lower()
+    # The Stop help does not promise "Nothing is sent" right under a line that says Lever already has the file.
+    expect(turn.locator(".apply-stop-help")).to_have_text("Closes the window. Your application is not sent.")
+    assert "nothing is sent" not in turn.inner_text().lower()
     turn.get_by_role("button", name="Stop").click()
     result = section.locator(".apply-result")
     expect(result.locator(".apply-result-title")).to_have_text(NOT_SENT_LEVER_HAS_IT, timeout=30_000)
@@ -140,6 +143,20 @@ def test_a_run_with_the_resume_choice_on_shows_the_resume_was_sent_and_a_stop_sa
     assert [row for row in tracker(live_server) if row[1] == "applied"] == [row for row in before if row[1] == "applied"], "a stop moves nothing in the tracker"
 
 
+def test_a_start_after_the_resume_choice_changed_elsewhere_shows_the_new_words_and_starts_nothing(canned_agent, owner_page, base_url, live_server):
+    handoff(canned_agent, wait=60.0)
+    section = open_lever(owner_page)
+    expect(section.locator("[data-apply-resume-start]")).to_have_text(BY_YOU)
+    resume_upload(base_url, "on")    # the student turned it on in another tab; this page still says the old thing
+    finish_button(section).click()
+    expect(section.locator("[data-apply-resume-start]")).to_have_text(BY_APP)
+    expect(section.locator(".apply-handoff-start .form-status")).to_contain_text("The setting for attaching your résumé changed since this page was loaded.")
+    expect(section.locator(".apply-turn")).to_have_count(0)
+    with db(live_server) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM apply_runs").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM application_submit_claims").fetchone()[0] == 0
+
+
 def test_a_run_with_the_resume_choice_off_sends_none_and_a_stop_keeps_the_old_words(canned_agent, owner_page, live_server):
     handoff(canned_agent, wait=60.0)
     section = open_lever(owner_page)
@@ -147,6 +164,7 @@ def test_a_run_with_the_resume_choice_off_sends_none_and_a_stop_keeps_the_old_wo
     turn = section.locator(".apply-turn")
     expect(turn).to_be_visible(timeout=30_000)
     expect(turn.locator(".apply-resume-sent")).to_be_hidden()
+    expect(turn.locator(".apply-stop-help")).to_have_text("Closes the window. Nothing is sent.")
     turn.get_by_role("button", name="Stop").click()
     result = section.locator(".apply-result")
     expect(result.locator(".apply-result-title")).to_have_text(NOT_SENT, timeout=30_000)
