@@ -394,8 +394,17 @@ behavior pinned (section 12, LV1). It does these things and nothing else:
   and not all of `/cdn-cgi/` (`LEVER_CLOUDFLARE_PATH_PREFIXES`), and the hCaptcha hosts are the three section 7 names (`LEVER_CAPTCHA_ENDPOINTS`, the one tuple the recording extends).
   Those three hosts are not yet in `resolvable_hosts` (`LEVER_CAPTCHA_RESOLVABLE_HOSTS`): the resolver rule is one list for every ATS, so joining them lets a Greenhouse run's browser
   look up hCaptcha, which `tests/test_apply_agent_static.py` rules out today. That goes with the driver.
-- The outcome table has the four rows of 6.13 and the challenge rule; a challenge with no POST sent answers `waiting` with detail `{"waiting": "challenge"}` until the waiting is over,
-  and a caller must read the detail (it is not the security-code wait).
+- The outcome table has the four rows of 6.13 and the challenge rule; a challenge with no POST sent answers `challenge_wait` with detail `{"waiting": "challenge"}` until the waiting is
+  over. It is not named `waiting`: the shared loop reads that as a security-code prompt, and Lever emails no code.
+- Lever's `RoutePolicy` sets `security_code_posts=False`, so the one-more-POST rule for an emailed code does not exist there: a second POST to the apply URL is refused
+  (`second_submit_post`) whatever the shared prompt counter says.
+- The resume POST in the student's turn needs a file the student chose: `RouteState.student_files_chosen` (the driver raises it on a trusted selection in the page's file input,
+  as the press listener reports Submit) pays for one read each, counted in `student_file_reads_passed`; a read with none left is refused (`resume_post_unasked`). Without that a page
+  script could post any bytes as a "file" before Submit. The part's content type is always read for a planned value, and in the fill so is its file name unless it is exactly
+  `RouteState.resume_file_name`, the name the app attached the file under. The student's own file name is not read.
+- Where the build is wider than the table: the `after hand-over` row lists writes to a CAPTCHA endpoint only, and `route_decision` also allows a write to Cloudflare's challenge path
+  there, as in every other phase (the value guard still reads it). The Hosts paragraph names Cloudflare's beacons, so this follows that text; the owner decides whether the row should refuse it.
+- The value guard sees no cookies: the route handler gives `route_decision` Playwright's `request.headers`, which leaves them out (listed in `docs/known-defects.md`).
 
 ### 5.3 The Lever modules
 

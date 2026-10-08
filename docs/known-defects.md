@@ -18,7 +18,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Apply for me | 0 | 3 | 6 | 9 |
+| Apply for me | 0 | 3 | 7 | 10 |
 | Mail, Gmail and inboxes | 0 | 4 | 8 | 12 |
 | Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
@@ -26,7 +26,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Scoring, scheduling and configuration | 1 | 2 | 8 | 11 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **28** | **33** | **62** |
+| **Total** | **1** | **28** | **34** | **63** |
 
 ## Start here: the high-severity entries
 
@@ -177,6 +177,13 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** The check reads the stage alone. An application left at "interview" after the process quietly ended (no rejection email, a stage the student never updated) counts as an interview in progress indefinitely, so every later Apply for me run at that company stops to ask "You have an interview in progress at ...", and unattended mode can never pass it. Nothing is sent and the student can tick past it, so the cost is a repeated question, not a wrong application.
 - **Suggested fix:** Count an interview only while its `updated_at` is recent (for example 60 days), and say "an interview last updated on {date}" so the student can see why it was asked; or offer "this ended" beside the tick, which moves the old application out of the interview stage.
 - **Regression suite:** tests/test_apply_active_interview.py (an interview last updated 90 days ago does not ask, or asks with its date)
+
+### The route handler's value guard never sees cookies
+- **Severity:** low (found 2026-10-08, review of the Lever request policy)
+- **Where:** `opportunity_app/apply/agent.py` the route handler (`RouteRequest(... headers=request.headers ...)`); `opportunity_app/apply/checks.py` `leaked_field()`
+- **What happens:** Playwright's `Request.headers` leaves out cookie headers, so a value a page script writes to `document.cookie` rides on the request to the page's own host and is never checked. `leaked_field` does read a `Cookie` header it is given (the pure-function tests in `tests/test_apply_lever_policy.py` show that), but the handler never gives it one. The cookie goes only to the cookie's own domain, which is the ATS's, so the reach is a value written into the ATS's own cookie jar, not another host.
+- **Suggested fix:** Build the facts from `request.all_headers()` and fall back to refusing the request if that fails. Check first on a live run that `all_headers()` returns inside a route handler before the request is sent, since it waits for the browser's extra header info.
+- **Regression suite:** tests/test_apply_agent_browser.py (a page that sets a cookie holding a planned value; the next request to its host is refused)
 
 ## Mail, Gmail and inboxes
 
