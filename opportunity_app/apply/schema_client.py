@@ -14,7 +14,7 @@ answer) or the fakes in tests/apply_fake_ats.py, which make no request at all.
 
 from __future__ import annotations
 
-import gzip
+import http.client
 import json
 import urllib.error
 import urllib.parse
@@ -56,7 +56,7 @@ class GreenhouseSchemaClient:
             if exc.code == 404:
                 return None
             raise SchemaUnavailable(f"Greenhouse answered HTTP {exc.code}") from exc
-        except (urllib.error.URLError, OSError, ValueError) as exc:
+        except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
             raise SchemaUnavailable(f"Greenhouse did not answer ({type(exc).__name__})") from exc
         if len(body) > MAX_BYTES:
             raise SchemaUnavailable("Greenhouse's listing was larger than expected")
@@ -70,12 +70,29 @@ class GreenhouseSchemaClient:
 
 
 def _decoded(response: Any, body: bytes) -> bytes:
-    if str(response.headers.get("Content-Encoding", "")).lower() == "gzip":
-        try:
-            return gzip.decompress(body)
-        except (OSError, EOFError, zlib.error) as exc:
-            raise SchemaUnavailable("The answer could not be read") from exc
-    return body
+    """The answer's bytes, unpacked when it is gzip, and never more than ``MAX_BYTES + 1`` of them.
+
+    The read from the wire is capped, but a small gzip answer can unpack to gigabytes, so the unpacking is capped too: an answer that would
+    pass ``MAX_BYTES`` comes back ``MAX_BYTES + 1`` long, which the caller refuses as too large.
+    """
+    if str(response.headers.get("Content-Encoding", "")).lower() != "gzip":
+        return body
+    parts: list[bytes] = []
+    size = 0
+    try:
+        while body:  # a gzip answer may be several members, one after another
+            unpacker = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            part = unpacker.decompress(body, MAX_BYTES + 1 - size)
+            parts.append(part)
+            size += len(part)
+            if size > MAX_BYTES:
+                break
+            if not unpacker.eof:
+                raise EOFError("the answer ended early")
+            body = unpacker.unused_data
+    except (OSError, EOFError, zlib.error) as exc:
+        raise SchemaUnavailable("The answer could not be read") from exc
+    return b"".join(parts)
 
 
 def default_schema_client_factory() -> SchemaClient:
@@ -120,7 +137,7 @@ class LeverPageClient:
             if exc.code == 404:
                 return None
             raise SchemaUnavailable(f"Lever answered HTTP {exc.code}") from exc
-        except (urllib.error.URLError, OSError, ValueError) as exc:
+        except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
             raise SchemaUnavailable(f"Lever did not answer ({type(exc).__name__})") from exc
         if len(body) > MAX_BYTES:
             raise SchemaUnavailable("Lever's page was larger than expected")

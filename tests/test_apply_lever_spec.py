@@ -6,8 +6,10 @@ and the pages are the sanitized fixtures in tests/fixtures/apply/lever/. Every c
 
 import dataclasses
 import gzip
+import http.client
 import io
 import sys
+import tracemalloc
 import unittest
 import urllib.error
 import urllib.request
@@ -48,6 +50,13 @@ class Response:
 
     def __exit__(self, *_):
         return False
+
+
+class CutShort(Response):
+    """An answer whose body ends before its length says (a chunked reply that stops)."""
+
+    def read(self, limit=None):
+        raise http.client.IncompleteRead(b"<html>", 100)
 
 
 def http_error(code):
@@ -173,6 +182,35 @@ class PageClientTests(unittest.TestCase):
         found, _ = self.fetch(Response(gzip.compress(page.encode("utf-8")), encoding="gzip"))
         self.assertEqual(found, page)
         self.assertIsInstance(self.fetch(Response(b"not gzip at all", encoding="gzip"))[0], SchemaUnavailable)
+
+    def test_an_answer_cut_short_or_malformed_at_the_http_level_is_unavailable_not_a_crash(self):
+        for name, response in (("cut short", CutShort(b"")),):
+            with self.subTest(case=name):
+                self.assertIsInstance(self.fetch(response)[0], SchemaUnavailable)
+        for error in (http.client.BadStatusLine("junk"), http.client.LineTooLong("header line"), http.client.RemoteDisconnected("closed")):
+            with self.subTest(error=type(error).__name__):
+                self.assertIsInstance(self.fetch(error=error)[0], SchemaUnavailable)
+
+    def test_a_small_gzip_answer_that_expands_past_the_cap_is_refused_without_being_expanded(self):
+        bomb = gzip.compress(b"\x00" * (64 * 1024 * 1024))
+        self.assertLess(len(bomb), schema_client.MAX_BYTES)
+        tracemalloc.start()
+        try:
+            found, _ = self.fetch(Response(bomb, encoding="gzip"))
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        self.assertIsInstance(found, SchemaUnavailable)
+        self.assertIn("larger than expected", str(found))
+        self.assertLess(peak, 4 * schema_client.MAX_BYTES, "the answer was not unpacked past the cap (%d bytes held)" % peak)
+
+    def test_a_gzip_answer_of_several_parts_or_cut_short_is_read_whole_or_unavailable(self):
+        page = "<html><title>Fixture Co - Role</title></html>"
+        halves = gzip.compress(page[:20].encode("utf-8")) + gzip.compress(page[20:].encode("utf-8"))
+        self.assertEqual(self.fetch(Response(halves, encoding="gzip"))[0], page)
+        self.assertIsInstance(self.fetch(Response(gzip.compress(page.encode("utf-8"))[:-12], encoding="gzip"))[0], SchemaUnavailable)
+        exact = gzip.compress(b"y" * schema_client.MAX_BYTES)
+        self.assertEqual(len(self.fetch(Response(exact, encoding="gzip"))[0]), schema_client.MAX_BYTES)
 
     def test_the_read_is_capped_at_four_megabytes(self):
         response = Response(b"x" * (schema_client.MAX_BYTES + 10))

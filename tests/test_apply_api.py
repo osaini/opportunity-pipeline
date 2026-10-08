@@ -5,12 +5,14 @@ test proves that no socket is opened while it runs, with the sandbox's own wirin
 """
 
 import gzip
+import http.client
 import importlib.util
 import io
 import json
 import sqlite3
 import sys
 import tempfile
+import tracemalloc
 import unittest
 import urllib.error
 from contextlib import closing
@@ -1321,6 +1323,23 @@ class SchemaClientTests(unittest.TestCase):
                         self.Response(b"x" * (apply_schema_client.MAX_BYTES + 10))):
             with self.subTest(problem=type(problem).__name__):
                 self.assertIsInstance(self.fetch(problem)[0], SchemaUnavailable)
+
+    def test_an_answer_cut_short_is_unavailable_and_a_small_gzip_that_expands_past_the_cap_is_refused(self):
+        class CutShort(self.Response):
+            def read(self, limit=-1):
+                raise http.client.IncompleteRead(b"{", 100)
+
+        self.assertIsInstance(self.fetch(CutShort(b""))[0], SchemaUnavailable)
+        self.assertIsInstance(self.fetch(http.client.BadStatusLine("junk"))[0], SchemaUnavailable)
+        bomb = gzip.compress(b"\x00" * (64 * 1024 * 1024))
+        tracemalloc.start()
+        try:
+            found, _ = self.fetch(self.Response(bomb, {"Content-Encoding": "gzip"}))
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        self.assertIsInstance(found, SchemaUnavailable)
+        self.assertLess(peak, 4 * apply_schema_client.MAX_BYTES)
 
     def test_the_default_factory_gives_the_live_client_and_it_reaches_only_the_public_api_host(self):
         self.assertIsInstance(apply_schema_client.default_schema_client_factory(), GreenhouseSchemaClient)
