@@ -525,7 +525,7 @@ def plan(
 
 
 def _job_link(mail: Mail) -> str:
-    """A job posting link from the email for the capture form: host and path only, and a Greenhouse job id."""
+    """A job posting link from the email for the capture form: host and path only (a Lever or Ashby posting's uuid is in the path), and a Greenhouse job id."""
     for link in mail.links:
         ids = job_ids(link)
         if not ids:
