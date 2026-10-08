@@ -596,9 +596,28 @@ class HonestClockTests(WatchCase):
     def test_an_email_set_aside_from_a_sender_that_is_not_greenhouse_does_not_stall_the_watch(self):
         # The reader knew who sent it (it parsed; deciding failed), and it is not an address a confirmation comes from.
         token = self.expired()
-        self.mail("", kind="", state="error", subject="", domain="newsletter.example.test", matched_by="", verified=0, received=self.at(hours=-20), linked=False)
+        self.mail("", kind="", state="error", subject="", domain="newsletter.example.test", matched_by="none", verified=0, received=self.at(hours=-20), linked=False)
         self.assertEqual(self.watch(), self.zero(no_email_24h=1))
         self.assertEqual(self.claim_row(token)["verification"], "no_email_24h")
+
+    def test_an_email_set_aside_from_the_companys_own_domain_that_matched_the_application_still_stalls_the_watch(self):
+        # Some companies send Greenhouse's candidate email from their own domain: it could be the confirmation that failed to be read.
+        token = self.expired()
+        for matched_by in ("job_id", "company_title", "company_single"):
+            self.mail("", kind="", state="error", subject="", domain="bluefinrobotics.example", matched_by=matched_by, verified=0,
+                      received=self.at(hours=-20), linked=False)
+            self.assertEqual(self.watch(), self.zero(paused=1), matched_by)
+            self.assertEqual(self.detail(token)["watch_paused"], apply_watch.READER_SET_ASIDE)
+            with self.conn:
+                self.conn.execute("DELETE FROM application_mail_messages WHERE state='error'")
+                self.conn.execute("UPDATE application_submit_claims SET detail_json=? WHERE token=?", (json.dumps({}), token))
+
+    def test_an_email_set_aside_from_another_domain_whose_match_is_unknown_stalls_the_watch(self):
+        # A row from before the reader recorded a match, or one that could not be matched at all: it might be the confirmation.
+        token = self.expired()
+        self.mail("", kind="", state="error", subject="", domain="bluefinrobotics.example", matched_by="", verified=0, received=self.at(hours=-20), linked=False)
+        self.assertEqual(self.watch(), self.zero(paused=1))
+        self.assertEqual(self.detail(token)["watch_paused"], apply_watch.READER_SET_ASIDE)
 
     def test_an_email_set_aside_from_greenhouse_still_stalls_the_watch(self):
         token = self.expired()

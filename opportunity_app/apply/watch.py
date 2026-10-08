@@ -56,6 +56,8 @@ READER_STALE = 3 * application_inbox.PASS_EVERY
 # A watch whose reader stays stalled this long after the submission gives up, so the 14 day window never ends "paused".
 GIVE_UP_AFTER = timedelta(days=apply_runs.WATCH_DAYS - 1)
 STRONG_TIERS = ("job_id", "company_title")
+# The matches that link no email to an application, so an email with one of them is no evidence for any watch.
+NOT_A_CONFIRMATION = ("none", "ambiguous")
 # 8.8: the statistics' "recent" window is the last this-many submissions whose watch finished.
 RECENT_WINDOW = 10
 ATS_NAMES = {ATS_GREENHOUSE: "Greenhouse"}
@@ -191,12 +193,13 @@ def reader_health(
         return READER_BEHIND, last_ok
     if since is not None:
         for aside in conn.execute(
-            "SELECT received_at, sender_domain FROM application_mail_messages WHERE user_id=? AND state='error'", (user_id,),
+            "SELECT received_at, sender_domain, matched_by FROM application_mail_messages WHERE user_id=? AND state='error'", (user_id,),
         ).fetchall():
-            # An email the reader parsed before deciding failed carries its sender: one from anyone but Greenhouse cannot be the
-            # confirmation, so it does not hold the watch. One that could not even be parsed has no sender and might be.
-            domain = str(aside["sender_domain"] or "")
-            if domain and not is_greenhouse_sender(domain):
+            # An email the reader parsed before deciding failed carries its sender and the match it found. It cannot be the
+            # confirmation when it is not from Greenhouse and named none of the student's applications (a company may send
+            # Greenhouse's email from its own domain, so the sender alone is not enough). One that could not be parsed or
+            # matched has nothing recorded, and might be.
+            if aside["sender_domain"] and aside["matched_by"] in NOT_A_CONFIRMATION and not is_greenhouse_sender(str(aside["sender_domain"])):
                 continue
             received = parse_app_instant(aside["received_at"])
             if received is None or received >= since:

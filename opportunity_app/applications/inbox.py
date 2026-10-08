@@ -767,6 +767,7 @@ def _record_outcome(conn: sqlite3.Connection, user_id: str, mail: Mail | None, g
     with conn:
         sync = _pass_sync(conn, user_id, expect)
         keep = outcome.state not in ("skipped", "gone", "outreach", "error") and mail is not None
+        asked = outcome.state == "error" and mail is not None  # a message that was read, then failed to be decided
         conn.execute(
             """
             INSERT INTO application_mail_messages(user_id, gmail_id, thread_id, application_id, event_id, action_id, kind,
@@ -782,15 +783,15 @@ def _record_outcome(conn: sqlite3.Connection, user_id: str, mail: Mail | None, g
             WHERE application_mail_messages.state IN ('awaiting_resume', 'error')
             """,
             (
-                user_id, gmail_id, mail.thread_id if mail and keep else "", outcome.application_id if keep else "",
-                outcome.event_id, outcome.action_id, outcome.kind if keep else "", outcome.matched_by if keep else "",
+                user_id, gmail_id, mail.thread_id if mail and keep else "", outcome.application_id if keep or asked else "",
+                outcome.event_id, outcome.action_id, outcome.kind if keep else "", outcome.matched_by if keep or asked else "",
                 outcome.state, origin, redact(mail.subject)[:300] if mail and keep else "",
-                (mail_trust.registrable_domain(mail.sender_domain) or mail.sender_domain) if mail and (keep or outcome.state == "error") else "",
+                (mail_trust.registrable_domain(mail.sender_domain) or mail.sender_domain) if mail and (keep or asked) else "",
                 # An error row keeps the time it was first set aside (the retry waits count from it), not the email's own date.
                 mail.received_at.isoformat(timespec="seconds") if mail and outcome.state != "error" else (received_at or utc_now()), utc_now(),
                 1 if (mail is not None and keep and outcome.verified) else 0,
                 # A row set aside unread (left to outreach, read while paused) gets what reading it found.
-                bool(mail and keep), bool(mail and keep), bool(mail and (keep or outcome.state == "error")), mail is not None and outcome.state != "error",
+                bool(mail and keep), bool(mail and keep), bool(mail and (keep or asked)), mail is not None and outcome.state != "error",
             ),
         )
         if queue:
@@ -976,8 +977,17 @@ def _decide_safely(
         if is_transient_error(exc):
             raise
         LOGGER.warning("An application email could not be decided; it was set aside", exc_info=True)
-        # A message that was read and then failed to be decided keeps the mail, so its row can say who sent it (apply/watch.py).
-        return mail, Outcome("error")
+        # A message that was read and then failed to be decided keeps the mail, so its row can say who sent it and which
+        # application it named (apply/watch.py reads both to tell whether it could be a confirmation).
+        outcome = Outcome("error")
+        if mail is not None:
+            try:
+                match = match_application(conn, user_id, mail)
+                outcome.application_id, outcome.matched_by = match.application_id, match.tier
+            except Exception as match_exc:  # noqa: BLE001 - the match is a courtesy to the row; without it the row says nothing about the mail
+                if is_transient_error(match_exc):
+                    raise
+        return mail, outcome
 
 
 def _dequeue(conn: sqlite3.Connection, user_id: str, queue: str, gmail_id: str) -> None:

@@ -2141,7 +2141,10 @@ card's two answers; `apply/security_code.py` holds the D10 B reader. Decisions t
   until 13 days after the submission, or whose extended deadline would pass day 13, becomes `not_watched`
   (`detail.watch_stopped = 'reader_stalled'`); one still awaiting its email when its 14 days end becomes `not_watched`
   too (`'window_ended'`). Neither counts. The reader is not "working" while an email it set aside unread (state `error`)
-  falls in the window, or while the Gmail account read is not the application's address: the watch pauses.
+  falls in the window, or while the Gmail account read is not the application's address: the watch pauses. An error
+  row the reader parsed first records its sender and its match (`matched_by`); it is passed over only when the sender
+  is not Greenhouse and the match is `none` or `ambiguous`, since a company may send Greenhouse's email from its own
+  domain. A row with no match recorded (not parsed, or recorded before this) always stalls.
 - One email confirms one attempt (`detail.email_gmail_id`), the newest attempt first. A tombstone whose application or
   job has a newer live attempt is not flipped; the student gets a notice instead.
 - Weak evidence also covers a strong-tier email from an unverified sender.
