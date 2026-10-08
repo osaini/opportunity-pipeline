@@ -311,12 +311,16 @@ tests.a_one_option_select_and_an_agreement_in_other_words_never_carry_a_reusable
   // apply.classify.field_net marks the same fields (tick or agreement) so the plan never fills them from the answer library.
   const cases = [
     { label: "Work arrangement", options: [{ value: "h", label: "Hybrid, three days on site" }] },
+    // A long label travels between companies, so only the one-option rule stops its reusable row; a placeholder is not a choice.
+    { label: "Which arrangement would suit you best during the summer internship", options: [{ value: "h", label: "Hybrid, three days on site" }] },
+    { label: "Which arrangement would suit you best during the summer internship", options: [{ value: "", label: "Select..." }, { value: "h", label: "Hybrid, three days on site" }] },
+    { label: "Which arrangement would suit you best during the summer internship", options: [{ value: "", label: "--" }, { value: "h", label: "Hybrid, three days on site" }] },
     { label: "Code of conduct", options: [{ value: "y", label: "I will comply" }, { value: "n", label: "I will not comply" }] },
     { label: "Handbook", options: [{ value: "y", label: "I will abide by it" }, { value: "n", label: "I will not" }] },
   ];
   for (const { label, options } of cases) {
     const page = pageOf({ tag: "select", id: "question_20", name: "question_20", label, options });
-    const rows = [{ id: "r", question: label, answer: options[0].label, company: "Acme Robotics", tags: ["reusable"] }];
+    const rows = [{ id: "r", question: label, answer: options[options.length - 1].label, company: "Acme Robotics", tags: ["reusable"] }];
     assert.equal(preTicked(loadContentScript(page).scan(profile, rows, "Orbit Systems"), "question_20"), false, label);
   }
   for (const label of ["Signed by", "Sign below", "Countersignature", "Name of signatory"]) {

@@ -563,6 +563,15 @@
     }
   }
 
+  // How many real choices a select offers: the usual placeholder ("Select...", "--") has an empty value or is disabled, and is no choice.
+  function realChoiceCount(control) {
+    try {
+      return [...(control.options || [])].filter((option) => collapse(option.textContent) && option.value !== "" && !option.disabled).length;
+    } catch (_) {
+      return 0;
+    }
+  }
+
   function optionTopics(options) {
     const words = options.map(plainWords);
     if (!words.length) return [];
@@ -598,7 +607,7 @@
       const read = `${screened} ${described}`;
       // A select with one option is a tick box in a select's clothes, and the broad net's agreement topic is read on each option too
       // ("I will comply"); apply.classify.field_net reads the same.
-      const agrees = type === "select" && (choice.length === 1 || AGREEMENT_OPTION.test(plainWords([read, ...choice].join(" ")))
+      const agrees = type === "select" && (realChoiceCount(control) === 1 || AGREEMENT_OPTION.test(plainWords([read, ...choice].join(" ")))
         || choice.some((option) => netTopics(option).includes("agreement")));
       const typed = !["select", "radio", "checkbox", "file", "custom_select"].includes(type);
       // Under a demographic, compliance or background heading every question is left for the student (apply.classify.section_never).
