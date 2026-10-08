@@ -139,6 +139,8 @@ PAGE_CHANGED = 'The page changed "{question}" itself, which the app never writes
 # After a file went to the ATS (a page that reads it as it is attached), "Nothing was sent" is no longer true of the file. Each tail below is a sentence's end.
 SENT_TAILS = ("Nothing was sent.", "No application was sent.", "Your application was not sent.")
 NOT_SENT_RESUME = "Your application was not sent. {ats} received your résumé."
+# The reason ``REQUIRED_CHECK_SCRIPT`` gives for a control the page marked ``aria-invalid`` (any other reason is the browser's own validity).
+MARKED_BY_PAGE = "marked invalid by the form"
 # Not in the shared list: what the agent says when a whole step, not one field, went wrong.
 MORE_PAGES = "This form has more than one page, and the app read only the first"
 OPEN_FAILED = "The app could not open the {ats} form"
@@ -2758,7 +2760,11 @@ class ApplyAgent:
         """The QUESTION of the first field the form marks as wrong. Never the page's error text: it may quote what the student typed."""
         try:
             seen = frame.evaluate(REQUIRED_CHECK_SCRIPT)
-            for item in seen.get("invalid", []):
+            invalid = list(seen.get("invalid", []))
+            # What the page itself marked (aria-invalid) comes first: after a refusal a page draws its form again, and the browser then finds the
+            # first empty required box "invalid", which the page never said.
+            marked = [item for item in invalid if item.get("reason") == MARKED_BY_PAGE]
+            for item in marked or invalid:
                 key = str(item.get("key") or "")
                 entry = self._entry(key) if key else None
                 question = str(_attr(entry, "question") or "") if entry is not None else str(item.get("question") or "")

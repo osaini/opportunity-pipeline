@@ -290,6 +290,36 @@ class ResolvableForARunTests(unittest.TestCase):
 
 # --- The words once the file has gone ---------------------------------------------------------------------------------------------------------
 
+# --- The field a refusal names ------------------------------------------------------------------------------------------------------------------
+
+class FirstErrorTests(unittest.TestCase):
+    """After a 4xx the run names the first field the PAGE marks invalid, not the first one the browser finds empty (docs/phase5-lever-handoff-spec.md 6.13)."""
+
+    def named(self, invalid):
+        agent = ApplyAgent(mode="handoff", adapter=LeverAdapter())
+        frame = mock.Mock()
+        frame.evaluate.return_value = {"invalid": invalid}
+        return agent._first_error_question(frame)
+
+    def test_a_field_the_page_marked_wins_over_an_earlier_one_that_is_only_empty(self):
+        found = self.named([
+            {"key": "name", "question": "Full name", "reason": "required and empty"},
+            {"key": "email", "question": "Email", "reason": "marked invalid by the form"},
+        ])
+        self.assertEqual(found, "Email")
+
+    def test_with_nothing_marked_the_first_the_browser_finds_invalid_is_named_as_before(self):
+        self.assertEqual(self.named([{"key": "name", "question": "Full name", "reason": "required and empty"}]), "Full name")
+
+    def test_nothing_invalid_names_nothing(self):
+        self.assertEqual(self.named([]), "")
+
+    def test_the_reason_the_agent_looks_for_is_the_one_the_independent_check_gives(self):
+        from opportunity_app.apply import checks
+
+        self.assertIn(f'"{apply_agent.MARKED_BY_PAGE}"', checks.REQUIRED_CHECK_SCRIPT)
+
+
 class WordsOnceTheFileHasGoneTests(unittest.TestCase):
     def agent(self, sent):
         agent = ApplyAgent(mode="handoff", adapter=LeverAdapter())
