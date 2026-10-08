@@ -603,7 +603,9 @@ class RehearsalTests(AgentCase):
         self.assertEqual(self.letter_problems(run), [("file", apply_agent.NO_FILE.format(question="Cover Letter"), True)])
 
     def test_a_letter_the_form_does_not_accept_is_refused_before_it_is_attached(self):
-        run = self.letter_run(files={"resume": fakes.resume_payload(), "cover_letter": fakes.letter_payload(name="letter.exe")})
+        sources = fakes.with_letter(fakes.full_sources())
+        sources = replace(sources, cover_letter={**sources.cover_letter, "file_name": "letter.exe"})
+        run = self.letter_run(sources=sources, files={"resume": fakes.resume_payload(), "cover_letter": fakes.letter_payload(name="letter.exe")})
         self.assertEqual((run.result.outcome, run.result.reasons[0]), ("needs_you", apply_agent.FILE_TYPE.format(question="Cover Letter")))
         self.assertIsNone(run.seen["letter"])
 
