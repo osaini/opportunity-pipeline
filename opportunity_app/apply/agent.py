@@ -1140,8 +1140,9 @@ class ApplyAgent:
                     self._closing, self._why_closing = True, "elsewhere"
                 elif file_leaving:
                     self._closing, self._why_closing = True, "upload"
-                elif self._elsewhere_seen is None and (looks_like_a_send(facts, self._state) or self._send_after_a_late_press(facts)):
+                elif self._elsewhere_seen is None and (looks_like_a_send(facts, self._state) or self._send_after_a_late_press(facts))                         and self._phase == PHASE_STUDENT and not self._handed_over:
                     # Refused as always, and the turn goes on; but the page would only show its own error, so the student is told.
+                    # (Not when the student's own submission was handed over while the late press was waited for: that one is on its way.)
                     self._elsewhere_seen = {"host": safe_host(host, self._state.values)}
                     self._progress("form_elsewhere", host=self._elsewhere_seen["host"])
         route.abort("blockedbyclient")
@@ -2656,7 +2657,8 @@ class ApplyAgent:
             "confirmation_path": str(outcome.get("confirmation_path") or ""),
             "form_absent": bool(outcome.get("form_absent", False)),
             "upload_refused": dict(self._upload_refused) if self._upload_refused else None,
-            **({"elsewhere_seen": dict(self._elsewhere_seen)} if self._elsewhere_seen else {}),
+            # Only for a turn that did not go on to the board: after a hand-over the refused request was a tracker beside the submission.
+            **({"elsewhere_seen": dict(self._elsewhere_seen)} if self._elsewhere_seen and not self._handed_over else {}),
             "security_code": {**self._evidence_code, "posted": self._state.code_posts_passed > 0},
             "challenge": self._challenge,
             "browser_closed": self._browser_closed,

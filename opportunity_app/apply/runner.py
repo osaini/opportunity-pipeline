@@ -1702,14 +1702,15 @@ _SOURCE_TEXT = {
 }
 # The phases of a Finish in browser run that is still running (the last progress step names it), else "filling".
 _HANDOFF_PHASES = ("your_turn", "submitting", "security_code", "code_typed", "code_yours", "challenge")
-# How a Finish in browser run ended (``evidence.handoff_end``) when trying again can come out differently: the student or the clock ended the
-# turn, or what the student did in the window was stopped; "posted" is there for the attempt the student released with "It didn't go through"
-# (the page asks only when the claim is stopped). "board" (a property of the board itself) and any other stop are met again, so the
-# page offers the posting instead. A run with no report from the browser at all (the app's own process failed) is the board's doing no more
-# than the student's, and is offered again.
-_FINISH_AGAIN_ENDS = frozenset({"stopped", "closed", "timeout", "refused", "early", "elsewhere", "upload", "crashed", "posted"})
+# How a Finish in browser run ended (``evidence.handoff_end``) when trying again meets the same thing: "board" is a stop on a property of the
+# board itself (no submit address the app knows, a board that uploads on attach, a hidden field the app would have filled). Every other stop,
+# whatever its end (the student, the clock, a page that would not open, a Greenhouse error, a changed résumé file, none at all), is offered
+# Finish in browser again, since the result panel has no other way to start it and a second try can differ.
+_NOT_AGAIN_ENDS = frozenset({"board"})
 # Said beside a Finish in browser run's ending when the agent saw the form try to send somewhere it does not recognize (the host is a name, never a value).
-ELSEWHERE_SEEN = "While the window was open the form tried to send to {host}, which the app doesn't recognize. The app stopped it, and nothing was sent."
+# It is about that one request, never about the application: the form's own submission may have gone on, so it is said only where nothing did.
+ELSEWHERE_SEEN = ("While the window was open the form tried to send a request to {host}, which the app doesn't recognize. "
+                  "The app stopped that request; nothing went to that address.")
 _SAYS_NOT_SENT = re.compile(r"not sent|nothing was sent|no application was sent", re.IGNORECASE)
 
 
@@ -1907,10 +1908,8 @@ def _claim_facts(conn: sqlite3.Connection, row: Mapping[str, Any]) -> tuple[dict
 
 
 def _finish_again(handoff: bool, evidence: Mapping[str, Any]) -> bool:
-    """Whether the page should offer Finish in browser again after this run, if its application is not one that went or may have (see ``_FINISH_AGAIN_ENDS``)."""
-    if not handoff:
-        return False
-    return "handoff_end" not in evidence or evidence.get("handoff_end") in _FINISH_AGAIN_ENDS
+    """Whether the page should offer Finish in browser again after this run, if its application is not one that went or may have (see ``_NOT_AGAIN_ENDS``)."""
+    return handoff and evidence.get("handoff_end") not in _NOT_AGAIN_ENDS
 
 
 def _handoff_phase(progress: list[dict[str, Any]], card: Mapping[str, Any] | None, claim_state: str) -> str:
@@ -1957,7 +1956,8 @@ def run_view(
     phase = _handoff_phase(progress, card, claim_state) if handoff and running else ""
     host = (evidence.get("elsewhere_seen") or {}).get("host") if isinstance(evidence.get("elsewhere_seen"), dict) else None
     # The turn went on after the refusal, so what was seen is said beside the ending (never as the summary, which is the run's own).
-    said = [*reasons, ELSEWHERE_SEEN.format(host=host)] if handoff and isinstance(host, str) and host else reasons
+    went_on = after_click or evidence.get("handoff_end") == "posted" or row["outcome"] in ("submitted", "unconfirmed")
+    said = [*reasons, ELSEWHERE_SEEN.format(host=host)] if handoff and isinstance(host, str) and host and not went_on else reasons
     problems = [
         {"key": str(entry.get("key") or ""), "question": str(entry.get("question") or ""), "message": str(entry["problem"]),
          "required": bool(entry.get("required")), "kind": "plan"}

@@ -718,7 +718,7 @@ class PhaseTests(HandoffCase):
         text = apply_runner._summary(row, [], {}, "Acme", "Intern", told, False, phase="form_elsewhere")
         self.assertEqual(text, told[-1]["text"], "the sentence names the host the agent saw, so it is the step's own text")
         self.assertIn("doesn't recognize", PROGRESS_STEPS["form_elsewhere"])
-        self.assertIn("Nothing was sent", PROGRESS_STEPS["form_elsewhere"])
+        self.assertNotIn("Nothing was sent", PROGRESS_STEPS["form_elsewhere"], "the step is about the stopped request, not about the application")
 
     def test_a_turn_with_nothing_left_for_the_student_says_so(self):
         run_id = self.handoff(handoff_factory(wait=30))
