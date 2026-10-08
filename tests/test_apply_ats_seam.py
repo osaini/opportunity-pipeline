@@ -30,14 +30,16 @@ import frozen_pre_ats_seam as old
 import frozen_pre_route_policy as old_route
 import helpers_source
 import test_apply_runner as runner_tests
-from opportunity_app.apply import agent as apply_agent, agent_types, ats as apply_ats, checks as apply_checks, greenhouse as apply_greenhouse, preflight as apply_preflight
+from opportunity_app.apply import agent as apply_agent, agent_types, ats as apply_ats, checks as apply_checks, greenhouse as apply_greenhouse, preflight as apply_preflight, runs as apply_runs
 from opportunity_app.apply.agent_types import AgentJob, ApplyTimeouts
 from opportunity_app.apply.policy import SchemaField
+from opportunity_app.apply.runs import ClaimRefused
 from opportunity_app.apply.schema_client import GreenhouseSchemaClient
 from opportunity_app.core.timestamps import utc_now
+from pipeline_core.identity import employer_key
 
 from apply_fake_ats import FakeApplyAgentFactory, fixture_json, fixture_text
-from helpers_apply import ApplyCase, FakePlan, setUpModule, tearDownModule  # noqa: F401
+from helpers_apply import USER, ApplyCase, FakePlan, setUpModule, tearDownModule  # noqa: F401
 
 GREENHOUSE = apply_ats.GREENHOUSE
 
@@ -842,5 +844,44 @@ class AgentBranchesFollowTheAtsTests(unittest.TestCase):
         self.assertEqual(frame.mock_calls, [], "it asks the page nothing")
 
 
+# --- Correction 1: the company limit matches a board within its ATS ---------------------------------------------------
+
+class CompanyLimitIsPerAtsTests(ApplyCase):
+    """A Lever site called ``acme`` is not the Greenhouse board called ``acme`` (docs/phase5-lever-handoff-spec.md 5.2 item 4, R7)."""
+
+    def handed(self, *, ats, board, company):
+        return self.raw_claim(
+            state="submitted", mode="handoff", handed_over_at=self.at(-60 * 24 * 3).isoformat(timespec="microseconds"), ats=ats, board=board, company=company,
+        )
+
+    def block(self, ats, board, company="Orbit Systems"):
+        return apply_runs.limit_check(self.conn, USER, employer_key(company), ats, board, "handoff", self.at())
+
+    def test_the_same_board_name_on_another_ats_does_not_trip_the_limit(self):
+        self.handed(ats="second", board="acme", company="Zed Corporation")
+        self.assertIsNone(self.block("greenhouse", "acme"), "a Greenhouse board that shares a name with another ATS's site is another employer")
+        self.assertIsNone(self.block("third", "acme"))
+
+    def test_the_same_board_on_the_same_ats_still_does(self):
+        self.handed(ats="second", board="acme", company="Zed Corporation")
+        block = self.block("second", "acme")
+        self.assertEqual((block.kind, block.code), ("ask", apply_runs.ASK_COMPANY_LIMIT))
+        self.assertIn("You applied to Zed Corporation with Apply for me 3 days ago", block.message)
+
+    def test_the_same_company_name_still_counts_across_ats(self):
+        self.handed(ats="second", board="zed-site", company="Zed Corporation")
+        block = self.block("greenhouse", "another-board", company="ZED corporation")
+        self.assertEqual(block.code, apply_runs.ASK_COMPANY_LIMIT, "one company is one company whichever ATS it uses")
+
+    def test_a_hand_over_is_not_refused_for_another_atss_site_of_that_name(self):
+        self.handed(ats="second", board="bluefin", company="Zed Corporation")
+        claim = self.start("job-1", "handoff", board="bluefin", now=self.at(0))
+        self.assertEqual(claim["state"], "claimed")
+
+    def test_a_hand_over_is_still_asked_about_for_the_same_atss_board(self):
+        self.handed(ats="greenhouse", board="bluefin", company="Zed Corporation")
+        with self.assertRaises(ClaimRefused) as caught:
+            self.start("job-1", "handoff", board="bluefin", now=self.at(0))
+        self.assertEqual((caught.exception.code, caught.exception.ask), (apply_runs.ASK_COMPANY_LIMIT, True))
 if __name__ == "__main__":
     unittest.main()

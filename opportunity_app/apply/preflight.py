@@ -309,7 +309,7 @@ def _eligibility(
     rehearsal = apply_runs.rehearsal_block(conn, user_id, moment)
     rows: dict[str, dict[str, Any]] = {"rehearse": {"allowed": not rehearsal, "needs_tick": False, "reason": rehearsal or ""}}
     for name, mode in (("handoff", "handoff"), ("submit", "one_click")):
-        block = apply_runs.limit_check(conn, user_id, company_words, token, mode, moment)
+        block = apply_runs.limit_check(conn, user_id, company_words, result["ats"], token, mode, moment)
         blocked = block is not None and block.kind == "failed"
         ticked = tick or (block is not None and block.kind == "ask")
         rows[name] = {

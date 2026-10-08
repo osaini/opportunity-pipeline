@@ -1831,7 +1831,7 @@ class RunRowTests(DataCase):
     def test_the_company_limit_tick_carries_the_date_of_the_application_it_is_about(self):
         token, _run = self.attempt("op-first")
         apply_runs.hand_over(self.conn, token, user_id=USER, now=self.at(days=-3))
-        block = apply_runs.limit_check(self.conn, USER, employer_key(BLUEFIN), "bluefin", "handoff", self.at())
+        block = apply_runs.limit_check(self.conn, USER, employer_key(BLUEFIN), "greenhouse", "bluefin", "handoff", self.at())
         self.assertEqual((block.kind, block.code), ("ask", "company_limit"))
         self.assertRegex(block.date, r"^[A-Z][a-z]+ \d{1,2}$")
         self.assertIn("3 days ago", block.message)
@@ -1839,7 +1839,7 @@ class RunRowTests(DataCase):
     def test_a_block_that_is_not_the_company_limit_has_no_date(self):
         token, _run = self.attempt("op-first")
         apply_runs.hand_over(self.conn, token, user_id=USER, now=self.at(minutes=-1))
-        block = apply_runs.limit_check(self.conn, USER, employer_key(BLUEFIN), "bluefin", "handoff", self.at())
+        block = apply_runs.limit_check(self.conn, USER, employer_key(BLUEFIN), "greenhouse", "bluefin", "handoff", self.at())
         self.assertEqual((block.code, block.date), ("spacing", ""))
 
     def test_an_application_the_app_made_is_not_one_the_student_applied_to_by_hand(self):

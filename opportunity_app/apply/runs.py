@@ -278,9 +278,12 @@ class Block:
 
 
 def _limit_check(
-    conn: sqlite3.Connection, user_id: str, company: str, board_token: str, mode: str, now: datetime,
+    conn: sqlite3.Connection, user_id: str, company: str, ats: str, board_token: str, mode: str, now: datetime,
 ) -> Block | None:
-    """9.1: the first limit that blocks a hand-over now, or None. Every handed-over claim counts, released ones too."""
+    """9.1: the first limit that blocks a hand-over now, or None. Every handed-over claim counts, released ones too.
+
+    A board token is the name of a board within its ATS: the same name on another ATS is another employer's, so it is matched with ``ats``.
+    """
     zone = user_timezone(conn, user_id)
     values = limits(conn, user_id)
     latest = conn.execute(
@@ -311,14 +314,14 @@ def _limit_check(
         ).fetchone()[0]
         if day >= values["unattended_daily_cap"]:
             return Block("failed", "unattended_day", f"Unattended mode sends at most {values['unattended_daily_cap']} applications a day")
-    # The same company under another spelling is still one company: the name's key or the Greenhouse board matches.
+    # The same company under another spelling is still one company: the name's key or the same ATS's board matches.
     recent = conn.execute(
         """
         SELECT c.handed_over_at, o.company FROM application_submit_claims c LEFT JOIN opportunities o ON o.id=c.opportunity_id
-        WHERE c.user_id=? AND c.handed_over_at IS NOT NULL AND ((c.company_key<>'' AND c.company_key=?) OR (c.board_token<>'' AND c.board_token=?))
+        WHERE c.user_id=? AND c.handed_over_at IS NOT NULL AND ((c.company_key<>'' AND c.company_key=?) OR (c.board_token<>'' AND c.ats=? AND c.board_token=?))
         ORDER BY c.handed_over_at DESC LIMIT 1
         """,
-        (user_id, company, board_token),
+        (user_id, company, ats, board_token),
     ).fetchone()
     if recent is not None:
         handed = parse_app_instant(recent["handed_over_at"])
@@ -331,21 +334,21 @@ def _limit_check(
 
 
 def limit_check(
-    conn: sqlite3.Connection, user_id: str, company: str, board_token: str, mode: str, now: datetime | None = None,
+    conn: sqlite3.Connection, user_id: str, company: str, ats: str, board_token: str, mode: str, now: datetime | None = None,
 ) -> Block | None:
     """The first limit that blocks a hand-over now, with its kind ('ask' can be ticked past, 'failed' cannot), or None."""
-    return _limit_check(conn, user_id, company, board_token, mode, at_utc(now))
+    return _limit_check(conn, user_id, company, ats, board_token, mode, at_utc(now))
 
 
 def limits_block(
-    conn: sqlite3.Connection, user_id: str, company: str, board_token: str, mode: str, now: datetime | None = None,
+    conn: sqlite3.Connection, user_id: str, company: str, ats: str, board_token: str, mode: str, now: datetime | None = None,
 ) -> str | None:
     """The sentence for the first limit that stops a submit or Finish in browser now, or None (9.1).
 
     ``company`` is employer_key(name). Finish in browser (handoff) counts toward the spacing and the company limit
     but not the daily cap, because the student presses Submit.
     """
-    block = _limit_check(conn, user_id, company, board_token, mode, at_utc(now))
+    block = _limit_check(conn, user_id, company, ats, board_token, mode, at_utc(now))
     return None if block is None else block.message
 
 
@@ -589,7 +592,7 @@ def claim(
                 application_id=application_id, acknowledged=ticked, now=moment,
             )
             if block is None:
-                block = _limit_check(conn, user_id, company, board_token, mode, moment)
+                block = _limit_check(conn, user_id, company, ats, board_token, mode, moment)
                 # The company tick is for a student-started attempt; unattended mode cannot tick past it (9.1).
                 if block is not None and block.code == ASK_COMPANY_LIMIT and ASK_COMPANY_LIMIT in acknowledged and mode != "unattended":
                     block = None
