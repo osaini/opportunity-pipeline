@@ -18,7 +18,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Apply for me | 0 | 5 | 7 | 12 |
+| Apply for me | 0 | 4 | 7 | 11 |
 | Mail, Gmail and inboxes | 0 | 4 | 9 | 13 |
 | Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
@@ -26,7 +26,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Scoring, scheduling and configuration | 1 | 2 | 6 | 9 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **30** | **33** | **64** |
+| **Total** | **1** | **29** | **33** | **63** |
 
 ## Start here: the high-severity entries
 
@@ -134,13 +134,6 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** In the PR #54 review, 29 of 30 newly written never-storable wordings (criminal history, demographics, money, security clearance phrased in other words) were not caught, and two wordings from confirmed finding 0 still are not. A missed question is treated as ordinary, so the student can save its answer for that company and a later posting at the same company fills it.
 - **Suggested fix:** Widen the net from a labelled set of real Greenhouse questions, or treat every custom question in a demographic, compliance or background section as never storable.
 - **Regression suite:** tests/ unittest (`test_apply_broad_net`, `tests/fixtures/apply/broad_net.json`)
-
-### A rehearsal does not notice a multi-page Greenhouse form, so it can call a form it only half read "rehearsed"
-- **Severity:** medium (found 2026-10-02, while building the rehearsal engine, M5a)
-- **Where:** `opportunity_app/apply/agent.py` `ApplyAgent.run` (step 4 reads the page, step 11 checks it), and the `runner` view's summary sentence for `rehearsed`
-- **What happens:** The agent reads one page of the form. A Greenhouse form that shows a second page after the first is filled (or that reveals further required questions on Next) has no fixture here, so nothing detects it. The rehearsal checks the fields it can see, reports `rehearsed`, and says "Here is what the app would send", although the later pages were never read or checked.
-- **Suggested fix:** Record a multi-page fixture from a board that has one, then end such a rehearsal as `needs_you` with a sentence ("This form has more pages than the app can check yet") whenever a second page, a Next button or a step indicator is present after the first page is filled. Until then, do not offer a one-click submit for a form the rehearsal did not fully read.
-- **Regression suite:** tests/test_apply_agent_browser.py (a fixture with a Next button) and tests/test_apply_runner.py (the view's wording)
 
 ### A request a page makes while its window is closing skips the route handler, so a hostile script can carry a typed value to one of the allowed hosts
 - **Severity:** medium, privacy (found 2026-10-03, in the M5a recheck)

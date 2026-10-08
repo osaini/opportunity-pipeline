@@ -337,6 +337,24 @@ class RehearsalTests(AgentCase):
         self.assertIn("resume", [problem["key"] for problem in run.result.check_problems if problem["kind"] == "file"])
         self.assertIsNone(run.seen["resume"])
 
+    def test_a_form_with_more_than_one_page_is_not_rehearsed_as_if_it_were_read_whole(self):
+        for scenario in ("next_button", "continue_link", "step_indicator"):
+            with self.subTest(scenario=scenario):
+                run = self.go(scenario)
+                result = run.result
+                self.assertEqual((result.outcome, result.reasons), ("needs_you", [apply_agent.MORE_PAGES]))
+                self.assertFalse(apply_checks.clean_rehearsal({
+                    "outcome": result.outcome, "plan": result.plan, "join_problems": result.join_problems, "check_problems": result.check_problems,
+                }))
+                self.assertTrue(result.evidence["more_pages"])
+                self.assertEqual(result.requests, [])
+                self.assertEqual([entry for entry in result.refused if entry["method"] != "GET"], [])
+
+    def test_the_submit_button_and_the_forms_other_buttons_are_not_a_second_page(self):
+        run = self.go()
+        self.assertEqual(run.result.outcome, "rehearsed")
+        self.assertFalse(run.result.evidence["more_pages"])
+
     def test_a_file_the_form_does_not_accept_is_refused_before_it_is_attached(self):
         payload = fakes.resume_payload(name="resume.exe")
         run = self.go(files={"resume": payload}, inspect=self.state)

@@ -1913,6 +1913,14 @@ The outcome is **rehearsed**. Record the plan, the screenshots, `refused_json`, 
 `clean` (`apply_checks.clean_rehearsal`). Close the browser. When the student opens the preview in
 the one-click stage, the server issues the confirm nonce (4.6) and stores its hash on this run.
 
+**As built (2026-10-08): a form of more than one page is not "rehearsed".** The app reads one page. After the filled form's picture, a
+rehearsal runs `MORE_PAGES_SCRIPT` (`apply/checks.py`, read-only, in the form frame): a visible Next, Continue or Save and continue
+control in the form or the element around it, or a step counter ("Step 1 of 3", or `aria-current=step`), means the app read only the
+first page. The run then ends **needs_you** with "This form has more than one page, and the app read only the first" (so the view
+says "The rehearsal stopped: ... No application was sent."), `evidence.more_pages` is true, and it is never a clean rehearsal. No
+multi-page Greenhouse form has been recorded, so the words the script looks for are a guess made to fail closed; a Finish in browser
+run is unchanged (the student completes the form in the window).
+
 **Submit runs always start from a fresh page and fill again.** Rehearsal and submit are separate
 runs because:
 

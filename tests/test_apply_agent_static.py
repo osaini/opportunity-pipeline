@@ -489,6 +489,10 @@ class MutationTests(unittest.TestCase):
         real = (
             "def _route(self, route):\n    request = route.request\n    route.abort('blockedbyclient')\n    (hook or (lambda handled: handled.continue_()))(route)\n",
             "def _start(self):\n    self._context.add_init_script(NO_SIDE_CHANNELS)\n",
+            "def _watch_presses(self):\n    cdp = self._context.new_cdp_session(self._page)\n    cdp.send('Page.enable')\n    cdp.send('Runtime.enable')\n"
+            "    cdp.send('Runtime.addBinding', {'name': PRESS_BINDING, 'executionContextName': PRESS_WORLD})\n"
+            "    cdp.send('Page.addScriptToEvaluateOnNewDocument', {'source': PRESS_LISTENER, 'worldName': PRESS_WORLD, 'runImmediately': True})\n",
+            "def f(outbox, message):\n    outbox.send(message)\n",
             "def _launch_browser(playwright, **options):\n    return playwright.chromium.launch(**options)\n",
             "def _new_context(browser, **options):\n    return browser.new_context(**options)\n",
             "def _attr(item, name, default=None):\n    return getattr(item, name, default)\n",

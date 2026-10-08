@@ -27,7 +27,7 @@ import realdata_guard
 
 realdata_guard.install()
 
-from opportunity_app.apply import checks as apply_checks, policy as apply_policy, preflight as apply_preflight, runner as apply_runner, runs as apply_runs
+from opportunity_app.apply import agent as apply_agent, checks as apply_checks, policy as apply_policy, preflight as apply_preflight, runner as apply_runner, runs as apply_runs
 from opportunity_app.apply import runner_child as apply_runner_child
 from opportunity_app.apply import security_code as apply_security_code
 from opportunity_app.apply.agent_types import AgentJob, ApplyTimeouts, RunResult
@@ -1507,6 +1507,10 @@ class ViewTests(RunnerCase):
         needs = self.make(outcome="needs_you", reasons=["This is Greenhouse's older form, which the app does not fill yet"])
         self.assertEqual(needs["summary"], "The rehearsal stopped: This is Greenhouse's older form, which the app does not fill yet. No application was sent.")
         self.assertTrue(needs["can_review"])
+        pages = self.make(outcome="needs_you", reasons=[apply_agent.MORE_PAGES], evidence={"more_pages": True})
+        self.assertEqual(pages["summary"], "The rehearsal stopped: This form has more than one page, and the app read only the first. No application was sent.")
+        self.assertFalse(pages["clean"], "a form the rehearsal read only the first page of is never clean")
+        self.assertNotIn("Here is what the app would send", pages["summary"])
         failed = self.make(outcome="failed", reasons=["Greenhouse answered HTTP 503"])
         self.assertEqual(failed["summary"], "Greenhouse answered HTTP 503. No application was sent.")
         self.assertFalse(failed["can_review"])

@@ -72,6 +72,7 @@ from .checks import (
     CONFIRMED_CAPTCHA_HOSTS,
     FORM_POST_HOSTS,
     GREENHOUSE_LOOKUP_ENDPOINTS,
+    MORE_PAGES_SCRIPT,
     PHASE_AFTER_HAND_OVER,
     STATIC_ASSET_HOSTS,
     TYPED_LOOKUP_KINDS,
@@ -130,6 +131,7 @@ NO_OPTIONS = "No options came back for what you typed"
 NO_ENDPOINT = "The app has not confirmed Greenhouse's lookup service for this list yet, so it did not ask it"
 PLAN_FAILED = "The app could not plan this form"
 # Not in the shared list: what the agent says when a whole step, not one field, went wrong.
+MORE_PAGES = "This form has more than one page, and the app read only the first"
 OPEN_FAILED = "The app could not open the Greenhouse form"
 READ_FAILED = "The app could not read the form"
 CHECK_FAILED = "The app could not check the filled form"
@@ -877,7 +879,7 @@ class ApplyAgent:
         # The deferred keys whose comparison found the form does not offer the answer, or could not be read (a subset of the above).
         self._deferred_failed: set[str] = set()
         self._evidence_bits: dict[str, Any] = {
-            "page": "", "loader": {"submit_path": False, "confirmation_path": False}, "uploads_on_attach": False, "captcha_widget": False,
+            "page": "", "loader": {"submit_path": False, "confirmation_path": False}, "uploads_on_attach": False, "captcha_widget": False, "more_pages": False,
         }
         # The run's inputs.
         self._plan: Any = None
@@ -1799,13 +1801,22 @@ class ApplyAgent:
         if handoff:
             self._between()
 
-        # 12: a picture, and a rehearsal ends here.
+        # 12: a picture, and a rehearsal ends here. A form that goes on to another page was read only as far as its first, so a rehearsal of
+        # it does not call itself done (it stops as needs_you, and is never a clean rehearsal).
         self._progress("picture")
         self._screenshot("filled")
         if not handoff:
+            if self._more_pages(frame):
+                return self._finish("needs_you", [MORE_PAGES])
             return self._finish("rehearsed")
         self._between()
         return self._student_turn()
+
+    def _more_pages(self, frame: Any) -> bool:
+        """Whether the form shows a way on to another page (a Next control or a step counter). Recorded in the evidence. Read-only."""
+        more = bool(frame.evaluate(MORE_PAGES_SCRIPT))   # a page that cannot be asked ends the run as "could not check", the step it is in
+        self._evidence_bits["more_pages"] = more
+        return more
 
     def _check_view(self) -> Any:
         """The plan as the check should read it: the agent's own changes included (a field it left for the student is skipped)."""

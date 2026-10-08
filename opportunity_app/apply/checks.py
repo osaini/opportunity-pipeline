@@ -813,6 +813,32 @@ def join(schema_fields: Iterable[Any], scan_fields: Iterable[Any], fill_keys: It
 # REQUIRED_CHECK_SCRIPT: the independent re-scan of the filled form (spec 6.10)
 # ---------------------------------------------------------------------------------------------
 
+# Whether the form is one page of several: a control that goes on to another page (Next, Continue, Save and continue) or a step counter
+# ("Step 1 of 3"). It looks inside the form and the element around it, and returns fixed words only, never anything the page said. The
+# app reads one page, so a form that shows either is not a form it read whole (the rehearsal says so and does not call itself clean).
+MORE_PAGES_SCRIPT = r"""() => {
+  const form = document.querySelector("form#application-form") || document.querySelector("#application_form");
+  if (!form) return [];
+  const scope = form.parentElement || form;
+  const squash = (text) => String(text || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const shown = (el) => {
+    const style = getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden") return false;
+    const box = el.getBoundingClientRect();
+    return box.width >= 2 && box.height >= 2;
+  };
+  const found = [];
+  const goes_on = /^(save (and|&) )?(next|continue)( step| page| to [a-z ]{1,30})?\s*[>›»→]*$/;
+  for (const el of scope.querySelectorAll("button, a, [role=button], input[type=button], input[type=submit]")) {
+    const text = squash(el.innerText || el.value || el.getAttribute("aria-label"));
+    if (goes_on.test(text) && shown(el)) { found.push("next"); break; }
+  }
+  const counter = /\b(?:step|page)\s+(\d+)\s+(?:of|\/)\s+(\d+)\b/;
+  const said = counter.exec(squash(scope.innerText));
+  if ((said && Number(said[2]) > 1) || scope.querySelector("[aria-current=step]")) found.push("steps");
+  return found;
+}"""
+
 # Read-only JavaScript, run with frame.evaluate. It deliberately shares no code
 # or selectors with apps/extension/apply-engine.js, so a bug in that scanner
 # cannot hide itself here. It changes nothing on the page, and a static test

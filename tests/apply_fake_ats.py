@@ -102,6 +102,9 @@ SCENARIOS = (
     "captcha_body_leak",            # a page script POSTs a field value to a CAPTCHA endpoint
     "websocket",                    # a page script opens a WebSocket
     "s3_upload",                    # data-allow-s3="true", and attaching makes a PUT to an S3 host
+    "next_button",                  # a multi-page form: a Next button sits under the questions
+    "continue_link",                # a multi-page form: a "Save and continue" link outside the form, in the page around it
+    "step_indicator",               # a multi-page form: "Step 1 of 3" above the questions
 )
 
 _FORM = 'document.getElementById("application-form")'
@@ -141,6 +144,24 @@ _SCRIPTS = {
     "s3_upload": """document.getElementById("resume").addEventListener("change", function (e) {
       fetch("https://example-robotics-uploads.s3.amazonaws.com/resume", {method: "PUT", body: e.target.files[0]}).catch(function () {});
     });""",
+    "next_button": """(function () {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Next";
+      """ + _FORM + """.appendChild(button);
+    })();""",
+    "continue_link": """(function () {
+      var link = document.createElement("a");
+      link.href = "#page-2";
+      link.setAttribute("role", "button");
+      link.textContent = "Save and continue";
+      """ + _FORM + """.parentElement.appendChild(link);
+    })();""",
+    "step_indicator": """(function () {
+      var note = document.createElement("p");
+      note.textContent = "Step 1 of 3";
+      """ + _FORM + """.insertBefore(note, """ + _FORM + """.firstChild);
+    })();""",
     "request_submit_during_fill": """(function () {
       var form = """ + _FORM + """, fired = false;
       form.addEventListener("input", function () {
