@@ -35,6 +35,8 @@ class EndpointsFixtureTests(unittest.TestCase):
         for key in CATEGORIES:
             for entry in self.data[key]:
                 yield key, entry
+        for entry in self.data["cloudflare"]["hosts"]:
+            yield "cloudflare", entry
 
     def test_dated_and_every_category_present(self):
         self.assertRegex(self.data["checked_on"], r"^\d{4}-\d{2}-\d{2}$")
@@ -66,7 +68,7 @@ class EndpointsFixtureTests(unittest.TestCase):
         documents = {e["host"] for e in self.data["document_hosts"]}
         self.assertEqual(documents, {"jobs.lever.co", "jobs.eu.lever.co"})
         self.assertEqual(documents, {e["host"] for e in self.data["lookup_endpoints"]})
-        self.assertEqual(documents, set(self.data["cloudflare"]["hosts"]))
+        self.assertEqual(documents, {e["host"] for e in self.data["cloudflare"]["hosts"]})
 
     def test_resume_upload_is_one_exact_path_by_post(self):
         for entry in self.data["upload_endpoints"]:
@@ -99,7 +101,37 @@ class EndpointsFixtureTests(unittest.TestCase):
         for entry in self.data["refused_hosts"]:
             self.assertNotIn(entry["host"], allowed)
 
-    def test_no_websocket_and_one_subframe_host(self):
+    def test_cloudflare_hosts_that_were_not_opened_are_not_marked_seen(self):
+        flags = {e["host"]: e["confirmed"] for e in self.data["cloudflare"]["hosts"]}
+        self.assertEqual(flags, {"jobs.lever.co": True, "jobs.eu.lever.co": False})
+        documents = {e["host"]: e["confirmed"] for e in self.data["document_hosts"]}
+        self.assertEqual(flags, documents)
+
+    def test_every_refused_host_is_one_a_page_names_or_was_seen_to_request(self):
+        for entry in self.data["refused_hosts"]:
+            with self.subTest(host=entry["host"]):
+                self.assertTrue(entry["confirmed"] or entry.get("named_by_page"), entry)
+
+    def test_bugsnag_and_analytics_are_recorded_under_the_hosts_the_pages_name(self):
+        refused = {e["host"]: e for e in self.data["refused_hosts"]}
+        self.assertIn("bugs.lever.co", refused)
+        self.assertIn("www.google-analytics.com", refused)
+        self.assertNotIn("bugsnag.com", refused)
+        self.assertNotIn("google-analytics.com", refused)
+        # Bugsnag's endpoint is a lever.co host, so a lever.co suffix rule would let it through.
+        self.assertTrue(refused["bugs.lever.co"]["host"].endswith(".lever.co"))
+        self.assertEqual(refused["bugs.lever.co"]["types"], ["xhr", "fetch"])
+
+    def test_the_linkedin_post_is_recorded_as_a_sub_frame_document(self):
+        refused = {e["host"]: e for e in self.data["refused_hosts"]}
+        linkedin = refused["www.linkedin.com"]
+        self.assertIn("document", linkedin["types"])
+        self.assertNotIn("xhr", linkedin["types"])
+        posts = self.data["subframe_posts_seen"]
+        self.assertEqual([(p["method"], p["host"], p["path"], p["type"]) for p in posts],
+                         [("POST", "www.linkedin.com", "/talentwidgets/apply-with-linkedin", "document")])
+
+    def test_no_websocket_and_one_subframe_get_host(self):
         self.assertEqual(self.data["websockets_seen"], [])
         self.assertEqual(self.data["subframe_hosts_seen"], ["newassets.hcaptcha.com"])
 

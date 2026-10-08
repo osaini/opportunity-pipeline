@@ -198,8 +198,8 @@ pages say a little more than section 3 did:
   not exist answered 404 with a short page and no form. Neither parses as a form.
 
 **Note, 2026-10-08 (the load recorded: Q3 and Q4).** Two public apply pages were opened with headless Chromium that aborted
-every request but GET, and the Location field was typed into (nothing else was typed, pressed or attached). Items 9, 10 and
-14 held, and these are the places where the load says more: hCaptcha and Cloudflare each make POSTs at load, before
+every request but GET, and the Location field was typed into (nothing else was typed, pressed or attached). Item 9 held; items 10 and
+14 were not contradicted (nothing was pressed, and the Submit handler was not read). These are the places where the load says more: hCaptcha and Cloudflare each make POSTs at load, before
 Submit; the location lookup answers a JSON array of `{name, id}`; and one board also loads a LinkedIn "Apply with" widget.
 The lists are in Q3 and Q4 (section 11) and in `tests/fixtures/apply/lever/endpoints.json`.
 
@@ -744,7 +744,7 @@ as-built rule (Phase 5 6.13). The exact paths are pinned after the same recordin
 be reachable by GET: on the page read, Submit does nothing without it (3.10).
 
 **Refused for every method, silently (as Greenhouse's Snowplow host is):** `googletagmanager.com`,
-`google-analytics.com`, and Bugsnag's hosts. The page works without them.
+`www.google-analytics.com`, and Bugsnag's host, which is `bugs.lever.co` (the page's own `bug-snag.js` tag names it). `bugs.lever.co` is a `lever.co` host, so no rule may let `lever.co` through by suffix; the policy lists exact hosts.
 
 | Mode and phase | Allowed | Aborted and recorded |
 | --- | --- | --- |
@@ -972,11 +972,20 @@ stay as they are.
     (`hcaptcha.html`, `hcaptcha-enclave.html`) from `newassets.hcaptcha.com/captcha/v1/...`; and four `GET /logo.png`
     fetches, each to a different twelve-hex-digit host `<id>.w.hcaptcha.com` (pinned as a pattern).
   - **POST, hCaptcha, at load, before anyone presses Submit:** `POST /checksiteconfig` to `api.hcaptcha.com`,
-    `api2.hcaptcha.com` and `hcaptcha.com`, about ten in all. The recording aborted them; the widget's frames still
-    loaded. So the earlier assumption that hCaptcha posts only after Submit is wrong: the policy sees these POSTs on
-    every page, and the checked-in `CAPTCHA_ENDPOINTS` (`checks.py`) does not name `api2.hcaptcha.com`. The load-time
-    GETs also need `newassets.hcaptcha.com`, `js.hcaptcha.com`, `api2.hcaptcha.com` and the `*.w.hcaptcha.com` shards in the
-    Chromium resolver list (7, "Navigation DNS layer"). The widget's frames are sub-frame documents, not main-frame
+    `api2.hcaptcha.com` and `hcaptcha.com`, about ten per page (twenty between the two pages). The recording aborted
+    them; the widget's frames still loaded. So the earlier assumption that hCaptcha posts only after Submit is wrong: the
+    policy sees these POSTs on every page, and the checked-in `CAPTCHA_ENDPOINTS` (`checks.py`) does not name
+    `api2.hcaptcha.com`. `api2.hcaptcha.com`, `api.hcaptcha.com` and `hcaptcha.com` received POSTs only, never a GET.
+    They need to resolve (7, "Navigation DNS layer") only if those POSTs are allowed; today they are deliberately
+    unresolvable, so an Allow for them answers `unlisted_host`. The GETs came from `js.hcaptcha.com` and
+    `newassets.hcaptcha.com`, and the static GETs from `jobs.lever.co`, `cdn.lever.co` and
+    `lever-client-logos.s3.amazonaws.com`: those hosts are the ones the resolver list has to cover. The shard GETs were
+    seen, but whether the widget works without them is **unknown**. Do not add a `*.w.hcaptcha.com` wildcard to the
+    resolver: `*` matches dots and any length, so a name under `w.hcaptcha.com` could carry a planned value in its labels
+    (the Greenhouse shard patterns stop at three characters, below `MIN_GUARDED_VALUE`). Before any shard pattern goes
+    into `RESOLVABLE_HOSTS`, a GET-only recording with the shards' DNS failing must show the hCaptcha frames still load
+    and `onLoad` still fires. If the shards turn out to be needed, state the residual DNS exposure (twelve characters
+    under `w.hcaptcha.com`) as an accepted risk. The widget's frames are sub-frame documents, not main-frame
     navigations (rule 1 is not touched).
   - **Cloudflare, on the Lever host itself:** `GET /cdn-cgi/challenge-platform/scripts/jsd/main.js` (script) and one
     beacon `POST /cdn-cgi/challenge-platform/h/g/jsd/oneshot/<token>/<token>` (xhr) per page. No
@@ -984,10 +993,16 @@ stay as they are.
   - **Lever's own static hosts:** `jobs.lever.co` (`/js/*`, `/img/*`), `cdn.lever.co` (`/fonts/*`) and
     `lever-client-logos.s3.amazonaws.com` (the company logo).
   - **Third parties:** `www.googletagmanager.com/gtag/js` (refused, as listed above). No Bugsnag and no
-    `google-analytics.com` request at load. **New:** the company board loaded the "Apply with LinkedIn" widget
+    `www.google-analytics.com` request at load. Lever's Bugsnag reports go to `bugs.lever.co` (the `data-endpoint` of
+    the `bug-snag.js` tag), so the adapter puts that exact host in `telemetry_hosts` and never allows `lever.co` by
+    suffix. **New:** the company board loaded the "Apply with LinkedIn" widget
     (`awliV3.js` from the Lever host, then `platform.linkedin.com` and `www.linkedin.com`, with a POST to the latter);
-    it is not in the list above and the page works without it, so it goes into the refused hosts, for the adapter's
-    builder to confirm.
+    it is not in the list above, and the page loaded with only the widget's POST refused (its GETs were let through), so
+    it goes into the refused hosts, for the adapter's builder to confirm. That POST is a **sub-frame document** request
+    (a form submitted into an iframe at every load), not an xhr. `student_submit_elsewhere` closes the student's turn on
+    any refused non-GET document request to a host that is not telemetry or CAPTCHA, so the adapter must put
+    `www.linkedin.com` (and `platform.linkedin.com`) in `telemetry_hosts`, or otherwise exclude them from that check;
+    otherwise a reload during the student's turn on a board with the widget ends the run as "elsewhere".
   - No WebSocket on either page.
   Still open: the endpoints hCaptcha uses after Submit is pressed (`getcaptcha`, `checkcaptcha` and the like), which exist
   only at the first real handoff. Until then the run behaves as before: an unlisted non-GET is aborted and the run says
