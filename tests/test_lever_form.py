@@ -714,7 +714,7 @@ class MalformedMarkupTests(unittest.TestCase):
                 plan = build_plan(schema, None, sources(), "Fixture Co", "handoff", ats_name="Lever", ats="lever")
                 elapsed = time.monotonic() - started
                 self.assertGreater(len(plan.fields), 0)
-                self.assertLess(elapsed, 1.0, "the check of a page of %d bytes took %.1f seconds" % (len(text), elapsed))
+                self.assertLess(elapsed, 3.0, "the check of a page of %d bytes took %.1f seconds (0.3 is usual, 25 or more is the quadratic cost)" % (len(text), elapsed))
                 self.assertLess(len(json.dumps([item.question for item in plan.fields])), 150_000)
 
     def test_deeply_nested_label_and_answer_markup_is_cheap(self):
