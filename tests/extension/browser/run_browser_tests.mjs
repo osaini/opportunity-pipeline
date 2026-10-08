@@ -102,7 +102,15 @@ try {
   await panel.getByLabel("Local server").fill(trackerOrigin);
   await panel.getByLabel("Pairing code").fill("browser-pairing-code-123456");
   await panel.getByRole("button", { name: "Pair extension" }).click();
-  await panel.getByText("Paired. Open an application page", { exact: false }).waitFor();
+  try {
+    await panel.getByText("Paired. Open an application page", { exact: false }).waitFor();
+  } catch (error) {
+    // CI has timed out here twice (2026-10-02, 2026-10-05) and never locally: say what the panel showed instead.
+    const shown = await panel.locator("#status").innerText().catch(() => "(unreadable)");
+    const origin = await panel.getByLabel("Local server").inputValue().catch(() => "(unreadable)");
+    throw new Error(`${error.message}\nStatus line: ${JSON.stringify(shown)}\nLocal server field: ${JSON.stringify(origin)} `
+      + `(tracker ${trackerOrigin})\nPage defects so far:\n${defects.join("\n") || "(none)"}`, { cause: error });
+  }
 
   await ats.bringToFront();
   const scan = await panel.evaluate(async ({ files }) => {

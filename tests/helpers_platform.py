@@ -12,6 +12,7 @@ import tempfile
 import threading
 import zipfile
 from contextlib import contextmanager
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -63,6 +64,32 @@ CREATE TABLE jobs (
 );
 """
 
+# The rows below were written for this day, and the tests that read them rely on the ages their dates had then: postings seven weeks
+# old (between scoring's "+5 updated within 21 days" and "-5 posting timestamp over 60 days old", so a blank profile's matches carry
+# no reason at all), an application 47 days old (short of the 60-day silent-application archive), follow-ups six weeks overdue, and
+# a deadline three weeks past. Written as fixed dates they aged across those lines on 2026-10-07, so every date in them is moved
+# forward by whole days to keep the distance from today it had from FIXTURE_AS_OF. Whole days keep each time of day.
+FIXTURE_AS_OF = date(2026, 9, 25)
+
+
+def fixture_shift(today: date | None = None) -> timedelta:
+    """How far the fixture's dates move: from FIXTURE_AS_OF to today (UTC), in whole days."""
+    return (today or datetime.now(timezone.utc).date()) - FIXTURE_AS_OF
+
+
+def as_of_today(value: str, today: date | None = None) -> str:
+    """A fixture date or ISO timestamp, written for FIXTURE_AS_OF, moved to the same distance from today (and in the same form)."""
+    if "T" in value:
+        return (datetime.fromisoformat(value) + fixture_shift(today)).isoformat()
+    return (date.fromisoformat(value) + fixture_shift(today)).isoformat()
+
+
+def as_of_today_text(value: str, today: date | None = None) -> str:
+    """as_of_today for a date written out in a posting's text ("September 1, 2026")."""
+    moved = date.fromisoformat(as_of_today(value, today))
+    return f"{moved:%B} {moved.day}, {moved.year}"
+
+
 JOBS = [
     (
         "job-a",
@@ -74,10 +101,10 @@ JOBS = [
         "Austin, TX",
         "internship",
         "https://example.com/jobs/a",
-        "Design mechanisms using SolidWorks. Apply by September 1, 2026.",
-        "2026-08-08T00:00:00+00:00",
-        "2026-08-08T01:00:00+00:00",
-        "2026-08-09T01:00:00+00:00",
+        f"Design mechanisms using SolidWorks. Apply by {as_of_today_text('2026-09-01')}.",
+        as_of_today("2026-08-08T00:00:00+00:00"),
+        as_of_today("2026-08-08T01:00:00+00:00"),
+        as_of_today("2026-08-09T01:00:00+00:00"),
         1,
         "fp-a",
         "cfp-a",
@@ -87,7 +114,7 @@ JOBS = [
         "shortlisted",
         "Strong fit",
         None,
-        "2026-08-14",
+        as_of_today("2026-08-14"),
     ),
     (
         "job-b",
@@ -100,9 +127,9 @@ JOBS = [
         "co-op",
         "https://example.com/jobs/b",
         "Summer 2027 controls role with Python.",
-        "2026-08-07T00:00:00+00:00",
-        "2026-08-07T01:00:00+00:00",
-        "2026-08-09T02:00:00+00:00",
+        as_of_today("2026-08-07T00:00:00+00:00"),
+        as_of_today("2026-08-07T01:00:00+00:00"),
+        as_of_today("2026-08-09T02:00:00+00:00"),
         1,
         "fp-b",
         "cfp-b",
@@ -111,8 +138,8 @@ JOBS = [
         '["35 base"]',
         "applied",
         "Applied on employer site",
-        "2026-08-09T03:00:00+00:00",
-        "2026-08-16",
+        as_of_today("2026-08-09T03:00:00+00:00"),
+        as_of_today("2026-08-16"),
     ),
 ]
 

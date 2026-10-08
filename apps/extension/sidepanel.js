@@ -522,5 +522,14 @@
     pageChanged();
   });
 
-  storedAuth().then((auth) => { renderAuth(auth); if (auth.deviceToken) flushPendingMetadata(); });
+  // The panel opens on the pairing form before this storage read comes back. A server the student typed meanwhile is the one
+  // they mean: the stored (or default) origin fills the field only if they have not typed in it.
+  let serverOriginTyped = false;
+  $("server-origin").addEventListener("input", () => { serverOriginTyped = true; });
+  storedAuth().then((auth) => {
+    const typed = serverOriginTyped ? $("server-origin").value : null;
+    renderAuth(auth);
+    if (typed !== null && !auth.deviceToken) $("server-origin").value = typed;
+    if (auth.deviceToken) flushPendingMetadata();
+  });
 })();

@@ -1084,7 +1084,9 @@ class FrontTests(HandoffCase):
             return real(inbox, message)
 
         with mock.patch.object(apply_runner, "_answer", side_effect=spy):
-            run_id = self.handoff(handoff_factory(wait=1.5))
+            # The student's turn lasts until the request has reached the agent (then half a second more, for a second
+            # OP_FRONT to show up if one were sent). A fixed 1.5 s turn raced the request on a loaded machine.
+            run_id = self.handoff(handoff_factory(wait=15.0, after_front=0.5))
             self.turn(run_id)
             self.assertFalse(self.runner.front("run-" + "0" * 32), "only the run this app is running")
             caller = threading.current_thread().name
@@ -1109,8 +1111,50 @@ class PipeTests(unittest.TestCase):
         self.inbox_recv, self.inbox_send = context.Pipe(duplex=False)
         self.outbox_recv, self.outbox_send = context.Pipe(duplex=False)
         self.channel = ChildChannel(self.inbox_recv, self.outbox_send, ApplyTimeouts(reply_s=0.4))
-        for end in (self.inbox_recv, self.inbox_send, self.outbox_recv, self.outbox_send):
-            self.addCleanup(end.close)
+        self.addCleanup(self.close_pipes)
+
+    def close_pipes(self):
+        # The parent's end first: the reader reads end-of-file and closes the inbox itself. Closing the inbox from this thread
+        # while the reader may still be inside recv() is the race test_the_inbox_is_closed_only_by_its_reader is about.
+        self.inbox_send.close()
+        self.assertTrue(wait_until(lambda: self.inbox_recv.closed, 5), "the reader never closed the inbox after end-of-file")
+        for end in (self.outbox_recv, self.outbox_send):
+            end.close()
+
+    def test_the_inbox_is_closed_only_by_its_reader(self):
+        # The agent's thread closes the channel as the run ends (child_main's finally), often just after the reader filed the
+        # hand-over reply that woke it, so the reader is on its way back into recv(). Had the agent's thread closed the inbox
+        # then, a pipe made next (the next test's, on an xdist worker) can take the freed descriptor, and the stale reader
+        # reads that pipe's frames: CI lost test_a_corrupt_frame_stops_the_run_visibly_and_marks_the_parent_gone's frame so.
+        inbox_recv, inbox_send = multiprocessing.get_context("spawn").Pipe(duplex=False)
+        _, outbox_send = multiprocessing.get_context("spawn").Pipe(duplex=False)
+        entered, release = threading.Event(), threading.Event()
+
+        class HeldInbox:
+            """The real inbox, with the reader held inside its second recv() (after it filed the first message)."""
+
+            calls = 0
+
+            def recv(self):
+                HeldInbox.calls += 1
+                if HeldInbox.calls == 2:
+                    entered.set()
+                    release.wait(5)
+                return inbox_recv.recv()
+
+            def close(self):
+                inbox_recv.close()
+
+        channel = ChildChannel(HeldInbox(), outbox_send, ApplyTimeouts(reply_s=0.4))
+        inbox_send.send({"op": OP_FRONT})
+        self.assertTrue(entered.wait(5), "the reader never came back into recv()")
+        channel.close()   # what child_main does as the run ends
+        self.assertFalse(inbox_recv.closed, "the agent's thread closed the inbox while the reader was inside recv()")
+        self.assertTrue(outbox_send.closed, "the agent's own end, the outbox, is closed at once")
+        release.set()
+        self.assertFalse(channel.parent_gone())
+        inbox_send.close()
+        self.assertTrue(wait_until(lambda: channel.parent_gone() and inbox_recv.closed, 5), "the reader closes the inbox at end-of-file")
 
     def test_a_corrupt_frame_stops_the_run_visibly_and_marks_the_parent_gone(self):
         self.assertFalse(self.channel.cancelled() or self.channel.parent_gone())

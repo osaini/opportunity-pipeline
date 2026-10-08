@@ -103,6 +103,13 @@ class ChildChannel:
                 self._file(message)
             except Exception:  # noqa: BLE001 - end of file, a closed pipe, or a corrupt frame (an UnpicklingError): fail closed
                 break
+        # This thread is the inbox's only reader, so it is the one that closes it (close() leaves it alone). Closed from the agent's
+        # thread while this one is between taking the descriptor and reading it, the number is free again; in a thread child, which
+        # shares the server's process, the next pipe made can take it, and this thread would then read (and lose) that pipe's messages.
+        try:
+            self._inbox.close()
+        except Exception:  # noqa: BLE001 - already closed
+            pass
         # The runner went away (it closed its end, or died), or sent something unreadable: nobody can be trusted to hear
         # this run any more, so stop it. Before the hand-over that closes the browser; after it the agent keeps the window
         # for the student until its own time is up (parent_gone). A page that never yields never reads the flag, so a process
@@ -269,11 +276,11 @@ class ChildChannel:
         self._send({"op": OP_ERROR, "error": type(exc).__name__})
 
     def close(self) -> None:
-        for end in (self._outbox, self._inbox):
-            try:
-                end.close()
-            except Exception:  # noqa: BLE001 - already closed
-                pass
+        """Close the outbox. The inbox is the reader thread's to close, at end-of-file (see _read)."""
+        try:
+            self._outbox.close()
+        except Exception:  # noqa: BLE001 - already closed
+            pass
 
 
 def _report(channel: ChildChannel, result: RunResult | None, failure: BaseException | None) -> None:

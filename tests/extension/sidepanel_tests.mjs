@@ -357,3 +357,28 @@ sidepanelTests.a_sync_the_tracker_refused_is_not_queued = async () => {
   await panel.scan();
   assert.equal(panel.store.pendingMetadata.length, 0, "a refusal would never succeed on retry, so it is not kept");
 };
+
+sidepanelTests.a_server_typed_before_the_stored_one_loads_is_the_one_paired_with = async () => {
+  // The panel fills the Local server field from storage as it opens. A student (or the CI browser test, which timed out
+  // here) who types a server before that read comes back must not have it replaced by the default 127.0.0.1:8765.
+  const panel = await loadSidepanel({ unpaired: true, holdStartupStorage: true });
+  panel.typeInto("server-origin", "http://127.0.0.1:9123");
+  panel.typeInto("pairing-code", "pairing-code-123456");
+  panel.releaseStartupStorage();
+  await settle();
+  assert.equal(panel.$("server-origin").value, "http://127.0.0.1:9123", "the startup render kept what the student typed");
+  await panel.pair();
+  const redeem = panel.requests.filter((item) => item.path === "/api/v1/extension/pairings/redeem");
+  assert.deepEqual(redeem.map((item) => item.origin), ["http://127.0.0.1:9123"]);
+  assert.match(panel.$("status").textContent, /^Paired\./);
+  assert.equal(panel.store.serverOrigin, "http://127.0.0.1:9123");
+};
+
+sidepanelTests.an_untouched_server_field_shows_the_stored_server_once_it_loads = async () => {
+  // The other half: a field the student has not typed in is filled from storage, as before.
+  const panel = await loadSidepanel({ unpaired: true, holdStartupStorage: true });
+  panel.store.serverOrigin = "http://127.0.0.1:9555";
+  panel.releaseStartupStorage();
+  await settle();
+  assert.equal(panel.$("server-origin").value, "http://127.0.0.1:9555");
+};
