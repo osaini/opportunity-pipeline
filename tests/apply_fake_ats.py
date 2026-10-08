@@ -1162,6 +1162,7 @@ class FakeLever:
         self.requests: list[LeverSeen] = []
         self.websockets: list[str] = []
         self.held: list[Any] = []                     # /parseResume requests waiting for release_held()
+        self._held_seen: dict[int, LeverSeen] = {}    # id(route) -> the request it holds, so a release marks only what a page really got
         self.unanswered: list[Any] = []               # requests that never get an answer ("timeout")
         self.interstitials_served = 0                 # how many GETs of the form the Cloudflare interstitial answered
         self._interstitial_started: float | None = None
@@ -1213,20 +1214,22 @@ class FakeLever:
         held, self.held = self.held, []
         for route in held:
             body = json.dumps(lever_parse_reply()) if status == 200 else json.dumps({"error": "could not read the file"})
+            seen = self._held_seen.pop(id(route), None)
             try:
+                if route.request.frame.page.is_closed():
+                    continue   # Playwright accepts a fulfill for a closed page without a word: the reply reached nothing, its record stays 0
                 route.fulfill(status=status, content_type="application/json", body=body)
-            except Exception:  # noqa: BLE001 - the page was closed while it waited
-                pass
-        if held:
-            for seen in self.requests:
-                if seen.path == LEVER_PARSE_PATH and seen.status == 0:
-                    seen.status = status
+            except Exception:  # noqa: BLE001 - the page was closed while it waited: the reply reached nothing, so its record stays unanswered (0)
+                continue
+            if seen is not None:
+                seen.status = status
         return len(held)
 
     def drop_unanswered(self) -> None:
         """Fail every request that was held or never answered, so a context can close without Playwright logging a route left open.
         Call it before the context closes (a test's cleanup)."""
         pending, self.held, self.unanswered = self.held + self.unanswered, [], []
+        self._held_seen.clear()
         for route in pending:
             try:
                 route.abort()
@@ -1260,6 +1263,7 @@ class FakeLever:
             return
         if reply is _HELD:
             self.held.append(route)
+            self._held_seen[id(route)] = self.requests[-1]   # the request answer() just recorded (route callbacks run one at a time)
             return
         if getattr(reply, "abort", False):
             route.abort("connectionrefused")

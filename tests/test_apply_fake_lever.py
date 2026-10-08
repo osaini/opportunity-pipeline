@@ -477,6 +477,18 @@ class ResumeReaderBrowserTests(FakeLeverBrowserCase):
         self.assertTrue(self.wait_until(page, lambda: fake.held))
         context.close()
         self.assertEqual(fake.release_held(), 1)
+        self.assertEqual([seen.status for seen in fake.parse_posts()], [0])   # nothing reached a page: the record does not say it did
+
+    def test_releasing_held_replies_never_marks_a_request_that_was_never_answered(self):
+        fake, page = self.open(FakeLever(parse_mode="timeout"))
+        self.attach(page, wait=False)
+        self.assertTrue(self.wait_until(page, lambda: fake.unanswered))
+        fake.parse_mode = "held"
+        page.set_input_files('input[name="resume"]', {**RESUME, "name": "Second Resume.pdf"})
+        self.assertTrue(self.wait_until(page, lambda: fake.held))
+        self.assertEqual(fake.release_held(), 1)
+        self.assertEqual([seen.status for seen in fake.parse_posts()], [0, 200])
+        self.assertEqual(len(fake.unanswered), 1)
 
     def test_a_file_over_the_limit_is_not_sent(self):
         fake = FakeLever()
