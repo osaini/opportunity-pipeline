@@ -125,6 +125,19 @@ def follow_up_wording(key: str) -> bool:
     )
 
 
+def follow_up_shaped(key: str) -> bool:
+    """Whether a question could be a continuation of the one above it by its shape alone: a follow-up wording, a short question,
+    one that opens with a question word, or none at all.
+
+    Wider than ``follow_up_wording``, and the rule the extension's ``followUpShaped`` reads. It decides whether a chain of
+    never-storable questions runs on through this one (see ``build_plan``): "Name of the employer" under a probation question
+    is not worded as a follow-up, but a "describe" under it still belongs to the probation question.
+    """
+    if not key:
+        return True
+    return needs_label_key(key) or len(key.split()) < 6 or bool(_CONTEXT_WH.search(without_enumeration(key)))
+
+
 def context_dependent(key: str) -> bool:
     """A key whose saved answer is never reused for another company, even when the row is tagged reusable."""
     return needs_label_key(key) or bool(_CONTEXT_WORDING.search(key))

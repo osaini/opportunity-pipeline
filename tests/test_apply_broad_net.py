@@ -996,6 +996,27 @@ class FollowUpInheritanceTests(unittest.TestCase):
         self.assertIn("criminal", got.net_never)
         self.assertEqual((got.source.kind, got.problem_kind), ("none", "sensitive_never"))
 
+    def test_a_never_storable_chain_runs_through_a_child_the_wording_alone_does_not_call_a_follow_up(self):
+        """The shared chain vectors: the engine marks the same fields never storable (reusable_and_sensitive.mjs)."""
+        chains = json.loads((FIXTURES / "net_chains.json").read_text(encoding="utf-8"))["chains"]
+        for chain in chains:
+            fields = [yes_no(chain["parent"], name="p", parent="Resume/CV")]
+            above = chain["parent"]
+            for index, label in enumerate(chain["children"]):
+                fields.append(F(f"c{index}", label, "textarea", parent=above))
+                above = label
+            got = plan(BASE + fields)
+            for index, label in enumerate(chain["children"]):
+                with self.subTest(parent=chain["parent"], child=label):
+                    entry = got.get(f"c{index}")
+                    never = bool(entry.net_never) or entry.sensitive is not None
+                    self.assertEqual(never, chain["never"][index])
+                    if never:
+                        rows = [answer(entry.answer_key, "Details", COMPANY), answer(label, "Details", COMPANY)]
+                        filled = plan(BASE + fields, sources(answers=rows)).get(f"c{index}")
+                        self.assertNotEqual(filled.source.kind, "answer")
+                        self.assertEqual(apply_preflight._action(filled, {})["type"], "manual")
+
     def test_a_question_after_an_ordinary_one_takes_nothing(self):
         fields = [yes_no("Are you willing to relocate?", name="p", parent="Resume/CV"), F("q", "Please tell us more about your plans", "textarea", parent="Are you willing to relocate?")]
         self.assertEqual(plan(BASE + fields).get("q").net, ())

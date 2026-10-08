@@ -1,0 +1,62 @@
+{
+  "_comment": "Chains of questions, each filed under the one above it (docs/phase5-apply-agent-spec.md 7.3, 'As built'). 'parent' is the first question (a Yes/No choice), 'children' are the questions after it in page order, and 'never' says, for each child, whether the app may offer to save an answer to it (false) or must leave it for the student (true). A child that is follow-up shaped (a follow-up wording, under six words, or one that opens with a question word) passes a never-storable chain on to the next one even when its own wording does not read as a follow-up, so a grandchild is never storable too. An independent question is not: only the child right after it is read on the parent. apply_classify (field_net through build_plan) and the engine's scan (netReadings) must agree on every child they both read; tests/test_apply_broad_net.py and tests/extension/suites/reusable_and_sensitive.mjs run this file.",
+  "chains": [
+    {
+      "parent": "Have you ever been convicted of a felony?",
+      "children": [
+        "Name of the employer",
+        "Describe the outcome in detail"
+      ],
+      "never": [
+        true,
+        true
+      ]
+    },
+    {
+      "parent": "Do you have any pending cases?",
+      "children": [
+        "Name of the employer",
+        "Describe the outcome in detail"
+      ],
+      "never": [
+        true,
+        true
+      ]
+    },
+    {
+      "parent": "Are you currently on probation or parole?",
+      "children": [
+        "Who is your supervising officer",
+        "When does the term end"
+      ],
+      "never": [
+        true,
+        true
+      ]
+    },
+    {
+      "parent": "Have you been involved in a court proceeding?",
+      "children": [
+        "Name of employer involved",
+        "Anything else about that",
+        "Other relevant items to include"
+      ],
+      "never": [
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "parent": "Are you willing to relocate?",
+      "children": [
+        "Which city would you prefer",
+        "Why that one"
+      ],
+      "never": [
+        false,
+        false
+      ]
+    }
+  ]
+}

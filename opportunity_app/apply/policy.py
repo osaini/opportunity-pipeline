@@ -55,6 +55,7 @@ from .classify import (
     classify_sensitive,
     context_dependent,
     field_net,
+    follow_up_shaped,
     follow_up_wording,
     most_restrictive,
     needs_label_key,
@@ -944,6 +945,9 @@ def build_plan(
     # The same, for the broad net's topics (NET_TOPICS): what each question's own words hit, and what a follow-up chain carries.
     net_own: dict[str, frozenset[str]] = {}
     net_chain: dict[str, frozenset[str]] = {}
+    # The never-storable topics only: they run on through every follow-up-shaped child (the extension's ``followsNever``), so a
+    # child that does not read as a follow-up cannot break the chain of a grandchild of a never-storable question.
+    never_chain: dict[str, frozenset[str]] = {}
     for item in fields:
         control = control_of(item)
         if control == "hidden" or item.name in ALTERNATE_TEXT_FIELDS:
@@ -991,9 +995,13 @@ def build_plan(
                     topics |= net_chain.get(item.parent, frozenset())
                 if parent_category is not None:
                     topics.add(CATEGORY_TOPIC[parent_category])
+            carried = never_chain.get(item.parent, frozenset()) if custom_child and follow_up_shaped(label_key) else frozenset()
+            topics |= carried
             net = frozenset(topics)
             net_own[item.label] = frozenset(net_own.get(item.label, frozenset()) | own_net)
             net_chain[item.label] = frozenset(net_chain.get(item.label, frozenset()) | (net if continues else own_net))
+            own_never = (frozenset(own_net) | {CATEGORY_TOPIC.get(category or "", "")}) & NEVER_TOPICS
+            never_chain[item.label] = frozenset(never_chain.get(item.label, frozenset()) | own_never | carried)
         # The net tightens only an ordinary question: a sensitive one already goes through the store and never the library.
         ordinary = control != "file" and category is None
         net_company = ordinary and (bool(net) or bool(marks))

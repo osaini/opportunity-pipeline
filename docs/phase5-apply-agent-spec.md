@@ -2414,7 +2414,10 @@ only tightens what may be done with a question the classifier called ordinary:
   follow a felony question, as do "Which type?" and then "What is the expiration date of your current status?" under a
   visa question. This mirrors the `own` chain in `build_plan`. A follow-up-shaped field in a chain under a never-storable
   question is marked `never_storable`, so the panel offers no Save for it; an independent question after one is still
-  offered. A checkbox is never pre-ticked from a row saved at another company (an option row never travels).
+  offered. `build_plan` keeps the same chain for the never-storable topics (`follow_up_shaped`, the engine's `followUpShaped`):
+  a child that is short or opens with a question word passes them on even when its own wording does not read as a follow-up,
+  so its own child is never storable too (`tests/fixtures/apply/net_chains.json`, run by both suites). A checkbox is never
+  pre-ticked from a row saved at another company (an option row never travels).
 
 The net over-reads on purpose ("Would you like to opt in to updates?" is immigration wording to it, and a question that
 only comes after a sensitive one takes that one's topics). Over-blocking costs some reuse; under-blocking is the bug. It

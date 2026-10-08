@@ -18,7 +18,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Apply for me | 0 | 6 | 8 | 14 |
+| Apply for me | 0 | 5 | 8 | 13 |
 | Mail, Gmail and inboxes | 0 | 4 | 9 | 13 |
 | Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
@@ -26,7 +26,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Scoring, scheduling and configuration | 1 | 2 | 6 | 9 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **31** | **34** | **66** |
+| **Total** | **1** | **30** | **34** | **65** |
 
 ## Start here: the high-severity entries
 
@@ -120,13 +120,6 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** A select, radio or text field that agrees to something in words the lists miss (for example a one-option select that works as a tick box, or a signature line worded unusually) gets no `agreement` mark, so a saved answer the student gave at the same company for another posting fills it. Only an exact stored statement should tick or choose an agreement (D9 B).
 - **Suggested fix:** Treat any one-option select as a tick box, and leave a select or text field for the student whenever its options or heading hit the broad net's agreement topic, not only the narrow lists.
 - **Regression suite:** tests/ unittest (`test_apply_policy`, `test_apply_broad_net`)
-
-### The Python net chain stops at a child that does not continue by its wording, so a grandchild of a never-storable question gets a save form
-- **Severity:** medium (PR #54 review)
-- **Where:** `opportunity_app/apply/policy.py` `build_plan()` (the `net_chain` / `continues` logic for custom follow-ups)
-- **What happens:** Under a never-storable question (a criminal-history question, say), a child whose wording does not read as a follow-up breaks the chain, so its own child (the grandchild) is treated as ordinary: the Needs you view offers to save it and a same-company row can fill it. The extension marks the same field `never_storable`, so the two disagree.
-- **Suggested fix:** Carry the never-storable topics down every custom child of a never-storable parent, as the extension does, and pin the three-level chain with a shared vector.
-- **Regression suite:** tests/ unittest (`test_apply_policy`), node tests/extension/run_tests.mjs
 
 ### The broad never-storable net misses most fresh wordings
 - **Severity:** medium (PR #54 review)

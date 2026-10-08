@@ -291,3 +291,18 @@ tests.a_follow_up_of_a_never_storable_question_offers_no_save_and_an_independent
   const independent = scanned({ tag: "textarea", id: "question_2", name: "question_2", label: "Describe your experience with distributed systems in detail" });
   assert.equal(fieldById(independent, "question_2").never_storable, false, "an independent question after one is still offered for saving");
 };
+
+tests.the_never_storable_chains_match_the_shared_vectors_the_python_plan_also_runs = () => {
+  // apply_classify (field_net through build_plan) reads the same chains: tests/fixtures/apply/net_chains.json.
+  const yesNo = [{ value: "y", label: "Yes" }, { value: "n", label: "No" }];
+  const { chains } = loadApplyFixture("net_chains.json");
+  assert.ok(chains.length >= 4);
+  for (const chain of chains) {
+    const controls = [{ tag: "select", id: "question_0", name: "question_0", label: chain.parent, options: yesNo }];
+    chain.children.forEach((label, index) => controls.push({ tag: "textarea", id: `question_${index + 1}`, name: `question_${index + 1}`, label }));
+    const scanned = loadContentScript(pageOf(...controls)).scan(profile, [], "Acme Robotics");
+    chain.children.forEach((label, index) => {
+      assert.equal(fieldById(scanned, `question_${index + 1}`).never_storable, chain.never[index], `${chain.parent} / ${label}`);
+    });
+  }
+};
