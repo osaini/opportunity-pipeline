@@ -2087,11 +2087,15 @@ class ApplyAgent:
             self._state.resume_sha256 = hashlib.sha256(payload.buffer).hexdigest()
             self._state.resume_file_name = payload.name
 
-        try:
-            attached = self._attach_entry(frame, entry, before=allow)
-            if attached:
+        def read(control: Any) -> None:
+            # The file is with the page the moment it is in the input: its change handler sends it on. So the read is waited for here, before the app looks
+            # at the input at all, whatever that look finds (a check that fails would otherwise go on to fill while the page's reply is still to come).
+            if int(control.evaluate(_FILE_STATE).get("count") or 0) == 1:
                 self._parse_result = self._wait_for_parse(frame)
                 self._resume_stored = bool(self.adapter.page_facts(frame).get("resume_storage_id"))   # the page's own id for the file: only read
+
+        try:
+            self._attach_entry(frame, entry, before=allow, after=read)
         finally:
             self._state.resume_upload_allowed = False
 
@@ -2485,10 +2489,13 @@ class ApplyAgent:
                 continue   # already attached: a page that reads a file as it is attached takes it before anything else (``_attach_first``)
             self._attach_entry(frame, entry)
 
-    def _attach_entry(self, frame: Any, entry: Any, *, before: Callable[[FilePayload], None] | None = None) -> bool:
+    def _attach_entry(
+        self, frame: Any, entry: Any, *, before: Callable[[FilePayload], None] | None = None, after: Callable[[Any], None] | None = None,
+    ) -> bool:
         """Attach the file one plan entry names and check the input holds it. True when it does; False when the file was left for the student.
 
-        ``before`` is called with the payload just before it goes in (Lever: the request rules are told which file the page may read).
+        ``before`` is called with the payload just before it goes in (Lever: the request rules are told which file the page may read). ``after`` is
+        called with the input right after the file is in it and before anything is read back (Lever: the page has begun reading it, and the app waits).
         """
         handoff = self.mode == "handoff"
         source = _attr(entry, "source")
@@ -2534,9 +2541,15 @@ class ApplyAgent:
         if before is not None:
             before(payload)
         self._attach(control.first, payload, key)
+        if after is not None:
+            after(control.first)
         state = control.first.evaluate(_FILE_STATE)
         group_text = self.adapter.field_container(frame, key).inner_text(timeout=ACTION_TIMEOUT_MS)
-        if not (state["count"] == 1 and state["name"] == payload.name and state["size"] == len(payload.buffer) and payload.name in group_text):
+        # The page shows the name as text, where a run of spaces is one: both sides are read the way text is.
+        if not (
+            state["count"] == 1 and state["name"] == payload.name and state["size"] == len(payload.buffer)
+            and " ".join(payload.name.split()) in " ".join(group_text.split())
+        ):
             if handoff:
                 self._leave_field(frame, entry)   # clears the input
                 return False

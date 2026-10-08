@@ -76,9 +76,9 @@ def resume_payload(data=RESUME_BYTES, name=RESUME_NAME):
     return FilePayload(name=name, mime_type="application/pdf", buffer=data, sha256=hashlib.sha256(data).hexdigest())
 
 
-def lever_sources(*, upload=True, location=LOCATION, facts=None, **more):
+def lever_sources(*, upload=True, location=LOCATION, facts=None, resume_name=RESUME_NAME, **more):
     """What a value may come from for a Lever run. ``upload`` is the student's L1 choice (apply_lever_resume_upload)."""
-    resume = dict(helpers_apply.RESUME_OK, sha256=RESUME_SHA, original_name=RESUME_NAME)
+    resume = dict(helpers_apply.RESUME_OK, sha256=RESUME_SHA, original_name=resume_name)
     src = helpers_apply.sources(facts=FACTS if facts is None else facts, labels={"location": location} if location else {}, resume=resume, **more)
     return dataclasses.replace(src, resume_upload=upload)
 
@@ -302,6 +302,59 @@ class ParseTimeoutTests(LeverCase):
         self.assertEqual(run.agent.keys(), ["resume"])
         self.assertEqual(fake.release_held(), 1)
         self.assertEqual([seen.status for seen in fake.parse_posts()], [0], "the page was gone when the reply came")
+
+
+# --- A read that has begun is waited for, whatever the app finds when it looks at the input afterwards ----------------------------------------
+
+class ReadStartedTests(LeverCase):
+    """The file is with Lever the moment it is attached (the page's change handler posts it). The app waits for the read to end before it touches
+    anything, even when its own look at the input afterwards finds fault, and the reader's late reply never lands in the student's turn."""
+
+    def ticks(self):
+        forms = []
+
+        def student(page, step, seen):
+            if step == "handoff":
+                forms.append(page.evaluate(FORM_VALUES_JS))
+
+        return forms, student
+
+    def assert_the_form_is_the_students(self, forms):
+        self.assertTrue(forms, "the student's turn was never seen")
+        reply = lever_parse_reply()
+        for form in forms:
+            self.assertEqual(form["org"], "", "the reader's guess is in the form during the student's turn")
+            self.assertEqual(json.loads(form["selectedLocation"])["name"], LOCATION, "the hidden location is not the one the app chose")
+            self.assertEqual(form["location"], LOCATION)
+            self.assertNotIn(reply["org"], json.dumps(form))
+
+    def test_a_file_name_the_page_shows_with_its_spaces_squeezed_is_still_the_file_and_nothing_is_touched_while_the_page_reads(self):
+        fake = FakeLever()
+        fake.parse_delay_s = 1.5     # "working" outlasts the whole fill, so an early fill leaves the reply to land in the student's turn
+        forms, student = self.ticks()
+        name = "Sam  Rivera Resume.pdf"
+        run = self.go(fake, src=lever_sources(resume_name=name), files={"resume": resume_payload(name=name)}, student=student, timeouts=dataclasses.replace(TIMEOUTS, handoff_s=3.0))
+        self.assertTrue(all(shown == "success" for _kind, _key, shown, _frames, _before in run.agent.acts[1:]), run.agent.acts)
+        self.assertEqual(run.result.evidence["resume_parse"], "success")
+        self.assertEqual(run.result.evidence["guesses_cleared"], ["org"])
+        self.assertEqual(self.entries(run)["resume"]["disposition"], "fill")
+        self.assert_the_form_is_the_students(forms)
+
+    def test_a_check_of_the_input_that_fails_after_the_file_went_still_waits_for_the_read(self):
+        fake = FakeLever()
+        fake.parse_delay_s = 1.5
+        # The page never shows the file's name inside the question, so the app cannot confirm what the input holds.
+        fake.inject.append(script("""var label = document.querySelector('.visible-resume-upload .filename');
+            new MutationObserver(function () { if (label.textContent) label.textContent = ''; }).observe(label, {childList: true, characterData: true, subtree: true});"""))
+        forms, student = self.ticks()
+        run = self.go(fake, student=student, timeouts=dataclasses.replace(TIMEOUTS, handoff_s=3.0))
+        self.assertEqual(len(fake.parse_posts()), 1)
+        self.assertEqual(run.agent.acts[1][:3], ("attach", "resume", "success"), "the input was only taken out again once the page had finished with the file")
+        self.assertNotIn("working", [shown for _kind, _key, shown, _frames, _before in run.agent.acts], run.agent.acts)
+        self.assertEqual((run.result.evidence["resume_parse"], run.result.evidence["resume_sent_to_lever"]), ("success", True))
+        self.assertEqual(self.entries(run)["resume"]["disposition"], "left_for_you")
+        self.assertEqual(self.left(run)["resume_sent"], "Your résumé was sent to Lever when the app attached it.")
+        self.assert_the_form_is_the_students(forms)
 
 
 # --- Item 2: the reader's guesses --------------------------------------------------------------------------------------------
