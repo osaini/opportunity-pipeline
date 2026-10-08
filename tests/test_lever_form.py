@@ -320,6 +320,32 @@ class StandardFieldTests(unittest.TestCase):
         self.assertEqual([(item.name, item.label) for item in form.fields], [("name", "name")])
 
 
+class ScannerNameTests(unittest.TestCase):
+    """The scanner subclasses html.parser.HTMLParser, whose own private names change between patch releases (3.12.15 added
+    ``_pending``, which the scanner used too and overwrote). Every private name the scanner sets or defines is mangled to
+    the class (``self.__name``), so no release can collide with it, and no public one shadows the base class."""
+
+    def test_the_scanner_keeps_no_single_underscore_name_and_shadows_nothing_of_htmlparser(self):
+        import ast
+        import inspect
+        from html.parser import HTMLParser
+        from opportunity_app.apply import lever_form
+
+        tree = ast.parse(inspect.getsource(lever_form._Scanner))
+        assigned = {node.attr for node in ast.walk(tree)
+                    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self"
+                    and isinstance(node.ctx, ast.Store)}
+        defined = {node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
+        handlers = {name for name in defined if name.startswith("handle_")} | {"__init__"}
+        single = sorted(name for name in assigned | (defined - handlers) if name.startswith("_") and not name.startswith("__"))
+        self.assertEqual(single, [])
+        base = HTMLParser()
+        base.feed("<p>text</p>")
+        base.close()
+        shadowed = sorted(name for name in assigned | (defined - handlers) if not name.startswith("__") and (name in vars(base) or hasattr(HTMLParser, name)))
+        self.assertEqual(shadowed, [])
+
+
 class FieldKindTests(unittest.TestCase):
     """5.4 item 3: a fixed name on the wrong kind of control is not the fixed field. It is an unknown control, never filled."""
 
