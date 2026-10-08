@@ -1,4 +1,4 @@
-"""Apply for me, the confirmation watch: does Greenhouse's email arrive, and what the application card says about it.
+"""Apply for me, the confirmation watch: does the ATS's confirmation email arrive (Greenhouse's, Lever's), and what the application card says about it.
 
 docs/phase5-apply-agent-spec.md, 6.16 (the watch), 5.6 (D12, when the watch is available), 8 and 8.8 (what is
 counted per ATS) and 10.5 (the card). It opens no browser and reaches no network: ``watch`` is a database query over
@@ -8,8 +8,8 @@ this module imports apply_runs).
 
 What confirms. An email confirms an attempt only as a strong match: a confirmation the reader matched to this
 application by the job id or by company and role, whose sender Gmail vouched for (``sender_verified``), received no
-earlier than five minutes before the hand-over, and whose subject is not Greenhouse's security-code email. Anything
-weaker (``company_single``, an unverified sender, an unmatched email from a Greenhouse sender that names the company)
+earlier than five minutes before the hand-over, and whose subject is not Greenhouse's security-code email (the one classifier that stays Greenhouse's). Anything
+weaker (``company_single``, an unverified sender, an unmatched email from the application's own ATS that names the company)
 only sets ``detail.possible_email_at``: it never confirms, never stops the clock and never counts in the statistics.
 One email confirms one attempt (``detail.email_gmail_id``), the newest attempt first.
 
@@ -44,9 +44,9 @@ from ..core.timestamps import parse_app_instant
 from ..integrations.gmail_client import connection_state
 from ..mail.gmail_connection import connector_row
 from ..student import preparation
-from .ats import name_of
+from .ats import REGISTRY, name_of
 from .claims import UNCONFIRMED_UNWRITTEN, claim_held
-from .greenhouse import ATS_GREENHOUSE, is_greenhouse_sender
+from .greenhouse import ATS_GREENHOUSE
 
 LOGGER = logging.getLogger(__name__)
 
@@ -61,6 +61,18 @@ STRONG_TIERS = ("job_id", "company_title")
 NOT_A_CONFIRMATION = ("none", "ambiguous")
 # 8.8: the statistics' "recent" window is the last this-many submissions whose watch finished.
 RECENT_WINDOW = 10
+
+
+def _is_sender_of(ats: str, domain: str) -> bool:
+    """Whether the sender domain is the confirmation sender of the ATS with this key (a key that is not registered has none)."""
+    return any(spec.key == ats and spec.is_confirmation_sender(domain) for spec in REGISTRY)
+
+
+def _is_any_ats_sender(domain: str) -> bool:
+    """Whether the sender domain is the confirmation sender of any registered ATS."""
+    return any(spec.is_confirmation_sender(domain) for spec in REGISTRY)
+
+
 # The notices' sentences; {ats} is the ATS's display name (apply.ats.name_of of the claim's ats).
 EMAIL_AFTER_RELEASE = "{ats} confirmed an application to {company} by email, after an attempt was marked as not sent. Check it."
 EMAIL_CONFIRMED = "{ats} confirmed your application to {company} by email"
@@ -199,10 +211,10 @@ def reader_health(
             "SELECT received_at, sender_domain, matched_by FROM application_mail_messages WHERE user_id=? AND state='error'", (user_id,),
         ).fetchall():
             # An email the reader parsed before deciding failed carries its sender and the match it found. It cannot be the
-            # confirmation when it is not from Greenhouse and named none of the student's applications (a company may send
-            # Greenhouse's email from its own domain, so the sender alone is not enough). One that could not be parsed or
+            # confirmation when it is not from an ATS's own sender (Greenhouse's, Lever's) and named none of the student's applications
+            # (a company may send its ATS's email from its own domain, so the sender alone is not enough). One that could not be parsed or
             # matched has nothing recorded, and might be.
-            if aside["sender_domain"] and aside["matched_by"] in NOT_A_CONFIRMATION and not is_greenhouse_sender(str(aside["sender_domain"])):
+            if aside["sender_domain"] and aside["matched_by"] in NOT_A_CONFIRMATION and not _is_any_ats_sender(str(aside["sender_domain"])):
                 continue
             received = parse_app_instant(aside["received_at"])
             if received is None or received >= since:
@@ -266,7 +278,7 @@ def _evidence(conn: sqlite3.Connection, user_id: str, claim: dict[str, Any], use
                 strong = strong or item
             elif row["matched_by"] == "company_single" or row["matched_by"] in STRONG_TIERS:
                 weak = weak or item
-        elif (row["application_id"] or "") == "" and tokens and is_greenhouse_sender(str(row["sender_domain"] or "")) \
+        elif (row["application_id"] or "") == "" and tokens and _is_sender_of(str(claim["ats"] or ""), str(row["sender_domain"] or "")) \
                 and tokens <= set(normalized(subject).split()):
             weak = weak or item
         if strong is not None:
