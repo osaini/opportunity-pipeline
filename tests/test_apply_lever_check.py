@@ -6,10 +6,13 @@ Covers the check for a Lever role (6.0), the two switches' effect on it, and tha
 The plan's Lever rows are in test_apply_lever_plan.py, the refusal of every mode but Finish in browser in test_apply_lever_modes.py.
 """
 
+import dataclasses
 import json
 import sys
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -17,7 +20,7 @@ import realdata_guard
 
 realdata_guard.install()
 
-from opportunity_app.apply import preflight as apply_preflight, runs as apply_runs, sensitive as apply_sensitive
+from opportunity_app.apply import ats as apply_ats, preflight as apply_preflight, runs as apply_runs, sensitive as apply_sensitive
 
 from apply_fake_ats import FakeLeverPageClient, LEVER_COMPANY, LEVER_JOB_ID, LEVER_ROLE_ID, LEVER_SITE, LEVER_TITLE, LEVER_URL, seed_lever_role
 from helpers_apply import USER, setUpModule, tearDownModule  # noqa: F401
@@ -42,6 +45,13 @@ class LeverCheckTests(PolicyCase):
                 (USER, key, value, "2026-09-29T12:00:00+00:00"),
             )
 
+    @contextmanager
+    def window_not_built(self):
+        """The registry as it was before Lever's window was connected (``adapter_built`` False), to keep the wording of that state tested."""
+        unbuilt = tuple(dataclasses.replace(spec, adapter_built=False) if spec.key == "lever" else spec for spec in apply_ats.REGISTRY)
+        with mock.patch.object(apply_ats, "REGISTRY", unbuilt):
+            yield
+
     def lever_check(self, role=LEVER_ROLE_ID, **kwargs):
         kwargs.setdefault("page_client", self.pages)
         return apply_preflight.check(
@@ -62,8 +72,19 @@ class LeverCheckTests(PolicyCase):
         self.assertEqual(names["name"]["source"], "Profile")
         self.assertIn("disability_status", names)
 
-    def test_it_says_plainly_that_nothing_can_start_yet_and_offers_no_window_action(self):
+    def test_with_the_window_built_finish_in_browser_is_the_one_action_and_nothing_else_is_offered(self):
         result = self.lever_check()
+        self.assertEqual(result["offers"]["rehearse"], False)
+        self.assertEqual(result["offers"]["handoff"], True)
+        self.assertEqual(result["eligibility"]["handoff"]["allowed"], True, result["eligibility"]["handoff"])
+        self.assertEqual(
+            {name: (row_["allowed"], row_["reason"]) for name, row_ in result["eligibility"].items() if name != "handoff"},
+            {"rehearse": (False, "Lever supports Finish in browser only, for now"), "submit": (False, "Lever supports Finish in browser only, for now")},
+        )
+
+    def test_it_says_plainly_that_nothing_can_start_while_the_window_is_not_built_and_offers_no_window_action(self):
+        with self.window_not_built():
+            result = self.lever_check()
         self.assertEqual(result["offers"], {"rehearse": False, "handoff": False, "note": "Finish in browser for Lever postings is not available yet"})
         self.assertEqual(
             {name: (row_["allowed"], row_["reason"]) for name, row_ in result["eligibility"].items()},
@@ -74,8 +95,10 @@ class LeverCheckTests(PolicyCase):
         self.assertEqual(result["eligibility"]["handoff"]["ticks"], [])
 
     def test_the_resume_sentence_follows_the_students_choice_and_it_starts_off(self):
-        self.assertIn("you attach it yourself on Lever's application page", self.lever_check()["notes"][0])
-        self.assertNotIn("window", " ".join(self.lever_check()["notes"]))
+        self.assertIn("you attach it yourself in the window", self.lever_check()["notes"][0])
+        with self.window_not_built():
+            self.assertIn("you attach it yourself on Lever's application page", self.lever_check()["notes"][0])
+            self.assertNotIn("window", " ".join(self.lever_check()["notes"]))
         self.switch("apply_lever_resume_upload", "on")
         notes = self.lever_check()["notes"]
         self.assertIn("sent to Lever before you press Submit", notes[0])
@@ -155,7 +178,8 @@ class LeverCheckTests(PolicyCase):
 
     def test_no_sentence_of_the_check_sends_the_student_to_a_window_that_cannot_open_yet(self):
         self.many_cards()
-        result = self.lever_check()
+        with self.window_not_built():
+            result = self.lever_check()
         said = [item["message"] for item in result["problems"]] + result["notes"] + [item.get("note", "") for item in result["fields"]]
         self.assertTrue(any("on Lever's application page" in text for text in said))
         for text in said:

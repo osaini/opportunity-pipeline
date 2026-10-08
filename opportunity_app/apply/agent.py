@@ -105,7 +105,8 @@ from .checks import (
 )
 from .ats import REGISTRY, AtsAdapter, AtsSpec, spec_for
 from .greenhouse import ATS_GREENHOUSE, BOARD_HOSTS, SUBMIT_HOST
-from .lever import LEVER_HOSTS
+from .lever import ATS_LEVER, LEVER_HOSTS
+from .lever_adapter import LeverAdapter
 from .runs import INSTALL_PLAYWRIGHT, PlaywrightProbe
 
 # --- What the agent says (WP2 and WP3 never parse these) ------------------------------------------------------------
@@ -3208,7 +3209,7 @@ class ApplyAgent:
 
 
 # One adapter class for each ATS in ats.REGISTRY whose driver is built (``AtsSpec.adapter_built``; tests/test_apply_ats_seam.py keeps the two lists the same).
-ADAPTERS: dict[str, Callable[[], AtsAdapter]] = {ATS_GREENHOUSE: GreenhouseAdapter}
+ADAPTERS: dict[str, Callable[[], AtsAdapter]] = {ATS_GREENHOUSE: GreenhouseAdapter, ATS_LEVER: LeverAdapter}
 
 
 class DefaultApplyAgentFactory:

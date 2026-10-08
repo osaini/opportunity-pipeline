@@ -62,18 +62,6 @@ ADMIN_TOKEN = "sandbox-admin-token"
 FAKE_APPLY_ENV = "PIPELINE_SANDBOX_FAKE_APPLY"
 
 
-def lever_window_stand_in() -> None:
-    """Mark Lever's Finish in browser built, in this process only: the sandbox's fake agent answers for the driver the real build adds later.
-
-    The registry is read by the check, the start routes and the settings, so they all offer the window; nothing outside the sandbox changes.
-    """
-    from dataclasses import replace
-
-    from opportunity_app.apply import ats as apply_ats
-
-    apply_ats.REGISTRY = tuple(replace(spec, adapter_built=True) if spec.key == apply_ats.LEVER.key else spec for spec in apply_ats.REGISTRY)
-
-
 def fake_apply_enabled() -> bool:
     return os.environ.get(FAKE_APPLY_ENV, "").strip() == "1"
 
@@ -143,7 +131,6 @@ def main() -> int:
     fake_apply = fake_apply_enabled()
     if fake_apply:
         seed_fake_apply(platform_path, root / "resumes")
-        lever_window_stand_in()
     app = build_sandbox_app(
         root,
         platform_path,

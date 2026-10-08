@@ -225,10 +225,10 @@ class StaticScanTests(unittest.TestCase):
         self.assertFalse({name for name in imported if "playwright" in name or name in (".agent", ".runner", ".runs")}, imported)
 
 
-# --- Reachable only in tests and the sandbox --------------------------------------------------------------------------------------------
+# --- Reachable from the app by one place -------------------------------------------------------------------------------------------------
 
-class NotReachableInProductionTests(unittest.TestCase):
-    def test_no_module_of_the_app_imports_the_lever_driver(self):
+class ReachableByOnePlaceTests(unittest.TestCase):
+    def test_one_module_of_the_app_imports_the_lever_driver_the_agents_table_of_adapters(self):
         importers = []
         for relative, text in python_modules("*.py").items():
             if relative == ADAPTER_PATH:
@@ -238,17 +238,19 @@ class NotReachableInProductionTests(unittest.TestCase):
                 names = [alias.name for alias in node.names] if isinstance(node, ast.Import) else [node.module or ""] + [alias.name for alias in node.names] if isinstance(node, ast.ImportFrom) else []
                 if any("lever_adapter" in name or name == "LeverAdapter" for name in names):
                     importers.append(relative)
-        self.assertEqual(importers, [], "a module of the app reaches the Lever driver: LV4 adds the one place, and changes this test")
+        self.assertEqual(importers, ["apply/agent.py"], "the driver is reached from the agent's ADAPTERS and nowhere else")
 
-    def test_the_agent_factory_has_no_lever_adapter_and_builds_no_agent_for_it(self):
-        self.assertEqual(set(apply_agent.ADAPTERS), {"greenhouse"})
-        self.assertFalse(apply_ats.LEVER.adapter_built)
-        with self.assertRaisesRegex(RuntimeError, "no driver for Lever"):
-            apply_agent.DefaultApplyAgentFactory()(mode="handoff", run_id="r", screenshot_dir=None, timeouts=agent_types.ApplyTimeouts(),
-                                                    on_progress=lambda *_: None, heartbeat=lambda: None, ats="lever")
+    def test_the_agent_factory_builds_the_lever_adapter_for_a_lever_job_and_the_registry_says_the_driver_is_built(self):
+        self.assertEqual(set(apply_agent.ADAPTERS), {"greenhouse", "lever"})
+        self.assertTrue(apply_ats.LEVER.adapter_built)
+        agent = apply_agent.DefaultApplyAgentFactory()(mode="handoff", run_id="r", screenshot_dir=None, timeouts=agent_types.ApplyTimeouts(),
+                                                       on_progress=lambda *_: None, heartbeat=lambda: None, ats="lever")
+        self.assertIsInstance(agent.adapter, LeverAdapter)
 
-    def test_the_runner_refuses_finish_in_browser_for_lever_before_it_reads_anything(self):
-        self.assertEqual(apply_ats.mode_refusal(apply_ats.LEVER, "handoff"), ("ats_not_built", "Finish in browser for Lever postings is not available yet"))
+    def test_the_runner_takes_finish_in_browser_for_lever_and_refuses_the_other_modes_by_what_lever_supports(self):
+        self.assertIsNone(apply_ats.mode_refusal(apply_ats.LEVER, "handoff"))
+        for mode in ("lookup", "rehearse", "submit"):
+            self.assertEqual(apply_ats.mode_refusal(apply_ats.LEVER, mode)[0], "ats_mode")
 
     def test_the_agent_runs_lever_in_finish_in_browser_only(self):
         for mode in ("lookup", "rehearse", "submit"):
@@ -393,10 +395,10 @@ class FirstErrorTests(unittest.TestCase):
         self.assertIn(f'"{apply_agent.MARKED_BY_PAGE}"', checks.REQUIRED_CHECK_SCRIPT)
 
 
-class WordsOnceTheFileHasGoneTests(unittest.TestCase):
-    def agent(self, sent):
 # --- The words once the file has gone ---------------------------------------------------------------------------------------------------------
 
+class WordsOnceTheFileHasGoneTests(unittest.TestCase):
+    def agent(self, sent):
         agent = ApplyAgent(mode="handoff", adapter=LeverAdapter())
         agent._reads = True
         agent._state.resume_posts_passed = 1 if sent else 0

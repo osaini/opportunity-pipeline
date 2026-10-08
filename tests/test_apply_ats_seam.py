@@ -39,6 +39,7 @@ from opportunity_app.apply import (
     preflight as apply_preflight, runner as apply_runner, runs as apply_runs,
 )
 from opportunity_app.apply.agent_types import AgentJob, ApplyTimeouts, RunResult
+from opportunity_app.apply.lever_adapter import LeverAdapter
 from opportunity_app.apply.policy import SchemaField
 from opportunity_app.apply.runs import ClaimRefused
 from opportunity_app.apply.schema_client import GreenhouseSchemaClient
@@ -314,7 +315,7 @@ def build(factory, **more):
 class FactoryTests(unittest.TestCase):
     def test_every_registered_ats_whose_driver_is_built_has_an_adapter_and_the_reverse(self):
         self.assertEqual(set(apply_agent.ADAPTERS), {spec.key for spec in apply_ats.REGISTRY if spec.adapter_built})
-        self.assertFalse(apply_ats.LEVER.adapter_built, "Lever is read-only until its driver lands (LV3)")
+        self.assertTrue(apply_ats.LEVER.adapter_built, "Lever's driver is connected (LV4)")
 
     def test_greenhouse_gets_the_greenhouse_adapter_with_or_without_the_argument(self):
         factory = apply_agent.DefaultApplyAgentFactory()
@@ -325,9 +326,13 @@ class FactoryTests(unittest.TestCase):
         with self.assertRaises(apply_ats.UnknownAts):
             build(apply_agent.DefaultApplyAgentFactory(), ats="ashby")
 
+    def test_lever_gets_the_lever_adapter(self):
+        self.assertIs(type(build(apply_agent.DefaultApplyAgentFactory(), ats="lever").adapter), LeverAdapter)
+
     def test_an_ats_that_is_registered_but_has_no_driver_builds_no_agent_and_says_so(self):
-        with self.assertRaisesRegex(RuntimeError, "no driver for Lever"):
-            build(apply_agent.DefaultApplyAgentFactory(), ats="lever")
+        lonely = dataclasses.replace(apply_ats.LEVER, key="lonely", display_name="Lonely", adapter_built=False)
+        with mock.patch.object(apply_ats, "REGISTRY", (*apply_ats.REGISTRY, lonely)), self.assertRaisesRegex(RuntimeError, "no driver for Lonely"):
+            build(apply_agent.DefaultApplyAgentFactory(), ats="lonely")
 
     def test_the_adapter_is_chosen_through_the_registry(self):
         gone = dataclasses.replace(GREENHOUSE, key="elsewhere")

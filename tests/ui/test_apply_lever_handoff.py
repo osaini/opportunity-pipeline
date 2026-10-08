@@ -2,14 +2,11 @@
 
 The server runs in this process with the fictional Lever page (tests/fixtures/apply/lever/) and an agent that opens no browser
 (tests/apply_fake_ats.py): a Finish in browser run answers with a canned handoff, the student's own press of Submit application is the
-agent's pause of ``CANNED["handoff"]["wait"]`` seconds, and nothing reaches Lever. Lever's window is not built yet, so a fixture here marks
-it built in this process, the way the sandbox does (scripts/serve_for_testing.py), and puts everything back after each test. Every
-company, site and posting is fictional.
+agent's pause of ``CANNED["handoff"]["wait"]`` seconds, and nothing reaches Lever. Every company, site and posting is fictional.
 """
 
 from __future__ import annotations
 
-import dataclasses
 import time
 
 import httpx
@@ -20,7 +17,6 @@ from playwright.sync_api import expect
 import apply_fake_ats
 from apply_fake_ats import LEVER_COMPANY
 from conftest import OWNER_TOKEN, wait_for_results
-from opportunity_app.apply import ats as apply_ats
 from ui_helpers import AXE_OPTIONS, db, open_saved_role
 
 BEARER = {"Authorization": f"Bearer {OWNER_TOKEN}"}
@@ -34,14 +30,7 @@ NOT_SENT = "You didn't submit it in the window. Your application was not sent."
 
 
 @pytest.fixture
-def lever_window(monkeypatch):
-    """Lever's Finish in browser counts as built, in this process (the fake agent answers for the driver)."""
-    built = tuple(dataclasses.replace(spec, adapter_built=True) if spec.key == apply_ats.LEVER.key else spec for spec in apply_ats.REGISTRY)
-    monkeypatch.setattr(apply_ats, "REGISTRY", built)
-
-
-@pytest.fixture
-def canned_agent(lever_window, lever_ready, live_server, base_url):
+def canned_agent(lever_ready, live_server, base_url):
     """The canned agent's knobs back to what they were, and the app's run slot free, before the next test rewinds the database."""
     original = dict(apply_fake_ats.CANNED)
     yield apply_fake_ats.CANNED
@@ -132,6 +121,17 @@ def test_a_run_with_the_resume_choice_on_shows_the_resume_was_sent_and_a_stop_sa
     result = section.locator(".apply-result")
     expect(result.locator(".apply-result-title")).to_have_text(NOT_SENT_LEVER_HAS_IT, timeout=30_000)
     expect(result.locator(".apply-resume-sent")).to_have_count(0)    # said once, in the title
+    assert "Nothing was sent" not in result.inner_text()
+    # The result offers Finish in browser again, and it still says what happens to the résumé.
+    expect(result.get_by_role("button", name="Finish in browser")).to_be_visible()
+    expect(result.locator("[data-apply-resume-start]")).to_have_text(BY_APP)
+    with db(live_server) as conn:
+        claim = conn.execute("SELECT ats, state, after_click, note FROM application_submit_claims").fetchone()
+    assert (claim["ats"], claim["state"], claim["after_click"]) == ("lever", "needs_you", 0)
+    assert claim["note"] == NOT_SENT_LEVER_HAS_IT
+    assert [row for row in tracker(live_server) if row[1] == "applied"] == [row for row in before if row[1] == "applied"], "a stop moves nothing in the tracker"
+
+
 def test_a_file_the_student_attaches_in_the_window_is_said_to_be_with_lever_and_the_fields_it_filled_stay_in_the_turn(canned_agent, owner_page, live_server):
     handoff(canned_agent, wait=60.0, student_attaches={"changed": ["Current company", "Current location"]})
     section = open_lever(owner_page)
@@ -150,17 +150,6 @@ def test_a_file_the_student_attaches_in_the_window_is_said_to_be_with_lever_and_
     expect(section.locator(".apply-result .apply-result-title")).to_have_text(NOT_SENT_LEVER_HAS_IT, timeout=30_000)
     violations = Axe().run(owner_page, context=".apply-for-me", options=AXE_OPTIONS).get("violations", [])
     assert not violations, [(item["id"], item["help"]) for item in violations]
-
-
-    assert "Nothing was sent" not in result.inner_text()
-    # The result offers Finish in browser again, and it still says what happens to the résumé.
-    expect(result.get_by_role("button", name="Finish in browser")).to_be_visible()
-    expect(result.locator("[data-apply-resume-start]")).to_have_text(BY_APP)
-    with db(live_server) as conn:
-        claim = conn.execute("SELECT ats, state, after_click, note FROM application_submit_claims").fetchone()
-    assert (claim["ats"], claim["state"], claim["after_click"]) == ("lever", "needs_you", 0)
-    assert claim["note"] == NOT_SENT_LEVER_HAS_IT
-    assert [row for row in tracker(live_server) if row[1] == "applied"] == [row for row in before if row[1] == "applied"], "a stop moves nothing in the tracker"
 
 
 def test_a_start_after_the_resume_choice_changed_elsewhere_shows_the_new_words_and_starts_nothing(canned_agent, owner_page, base_url, live_server):

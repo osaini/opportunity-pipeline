@@ -1,12 +1,14 @@
-"""Only Finish in browser, and not yet (docs/phase5-lever-handoff-spec.md 6.1): the claim and the runner refuse every other way to apply on Lever.
+"""Only Finish in browser (docs/phase5-lever-handoff-spec.md 6.1): the claim and the runner refuse every other way to apply on Lever.
 
 A claim of any mode but a handoff is refused for Lever inside the claim transaction, and the runner refuses a rehearsal and a lookup before
-anything is read and a Finish in browser until Lever has a driver. No browser and no network.
+anything is read, and a Finish in browser too while Lever's driver is not connected (``adapter_built``). No browser and no network.
 """
 
+import dataclasses
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -15,7 +17,7 @@ import realdata_guard
 realdata_guard.install()
 
 import test_apply_runner as runner_tests
-from opportunity_app.apply import runner as apply_runner, runs as apply_runs
+from opportunity_app.apply import ats as apply_ats, runner as apply_runner, runs as apply_runs
 from opportunity_app.apply.runs import ClaimRefused
 from opportunity_app.applications.actions import OpportunityNotFoundError
 
@@ -66,9 +68,11 @@ class LeverRunnerTests(runner_tests.RunnerCase):
         self.assertIsNone(self.runner.busy(), "a refusal leaves the slot free")
         return caught.exception
 
-    def test_a_rehearsal_a_lookup_and_a_finish_in_browser_are_each_refused_before_anything_is_read(self):
+    def test_a_rehearsal_and_a_lookup_are_refused_before_anything_is_read_and_so_is_a_finish_in_browser_while_the_driver_is_not_connected(self):
         applications_before = self.counts("applications")["applications"]
-        refused = {kind: self.refuse(kind) for kind in ("rehearsal", "lookup", "handoff")}
+        unbuilt = tuple(dataclasses.replace(spec, adapter_built=False) if spec.key == "lever" else spec for spec in apply_ats.REGISTRY)
+        with mock.patch.object(apply_ats, "REGISTRY", unbuilt):
+            refused = {kind: self.refuse(kind) for kind in ("rehearsal", "lookup", "handoff")}
         self.assertEqual(
             {kind: (item.status_code, item.code, item.message) for kind, item in refused.items()},
             {"rehearsal": (409, "ats_mode", "Lever supports Finish in browser only, for now"),
@@ -78,6 +82,11 @@ class LeverRunnerTests(runner_tests.RunnerCase):
         self.assertEqual(self.pages.calls, [], "the page was not even asked for")
         self.assertEqual(self.counts("apply_runs", "application_submit_claims", "applications"),
                          {"apply_runs": 0, "application_submit_claims": 0, "applications": applications_before})
+
+    def test_with_the_driver_connected_a_rehearsal_and_a_lookup_are_still_refused_by_what_lever_supports_and_before_anything_is_read(self):
+        refused = {kind: self.refuse(kind) for kind in ("rehearsal", "lookup")}
+        self.assertEqual({kind: (item.status_code, item.code) for kind, item in refused.items()}, {"rehearsal": (409, "ats_mode"), "lookup": (409, "ats_mode")})
+        self.assertEqual(self.pages.calls, [])
 
     def test_a_lever_role_the_student_cannot_see_is_not_found_before_any_mode_is_refused(self):
         # A capture nobody owns is visible to no one. The refusal for its ATS would say the role exists and is on Lever.

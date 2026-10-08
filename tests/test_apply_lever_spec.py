@@ -71,7 +71,7 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(LEVER.supported_modes, ("handoff",))
         self.assertEqual(LEVER.claim_modes, ("handoff",))
         self.assertEqual(LEVER.switch, "apply_agent_lever")
-        self.assertFalse(LEVER.adapter_built, "the driver is LV3")
+        self.assertTrue(LEVER.adapter_built, "the driver is connected (LV4)")
         self.assertIs(LEVER.route_policy, apply_checks.LEVER_ROUTE_POLICY)
         self.assertIsInstance(LEVER.schema_client(), LeverPageClient)
 
@@ -92,9 +92,9 @@ class RegistryTests(unittest.TestCase):
     def test_a_mode_the_ats_does_not_do_is_refused_with_a_sentence_and_one_it_does_but_cannot_yet_with_another(self):
         self.assertEqual(apply_ats.mode_refusal(LEVER, "rehearse"), ("ats_mode", "Lever supports Finish in browser only, for now"))
         self.assertEqual(apply_ats.mode_refusal(LEVER, "lookup"), ("ats_mode", "Lever supports Finish in browser only, for now"))
-        self.assertEqual(apply_ats.mode_refusal(LEVER, "handoff"), ("ats_not_built", "Finish in browser for Lever postings is not available yet"))
-        built = dataclasses.replace(LEVER, adapter_built=True)
-        self.assertIsNone(apply_ats.mode_refusal(built, "handoff"))
+        self.assertIsNone(apply_ats.mode_refusal(LEVER, "handoff"))
+        unbuilt = dataclasses.replace(LEVER, adapter_built=False)
+        self.assertEqual(apply_ats.mode_refusal(unbuilt, "handoff"), ("ats_not_built", "Finish in browser for Lever postings is not available yet"))
         for mode in ("lookup", "rehearse", "handoff"):
             self.assertIsNone(apply_ats.mode_refusal(apply_ats.GREENHOUSE, mode))
 

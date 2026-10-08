@@ -2,8 +2,8 @@
 
 Lever reads a résumé as soon as it is attached (docs/phase5-lever-handoff-spec.md, L1), so a run that dies between the attach and the
 window being ready must not later say "Nothing was sent", and a result that forgets to repeat what the window said must not erase it.
-The driver does not exist yet: Lever is marked built in this process only (as the sandbox does) and the agent is the canned one. No
-browser, no network; every company and posting is fictional.
+The agent is the canned one. No browser, no network; every company and posting is fictional. (What the real driver does is in
+tests/test_apply_lever_handoff_browser.py and tests/test_apply_lever_handoff_e2e.py.)
 """
 
 import json
@@ -11,7 +11,6 @@ import sys
 import time
 import unittest
 from datetime import datetime, timedelta, timezone
-from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -21,7 +20,7 @@ import realdata_guard
 
 realdata_guard.install()
 
-from opportunity_app.apply import ats as apply_ats, policy as apply_policy, runner as apply_runner, runs as apply_runs
+from opportunity_app.apply import policy as apply_policy, runner as apply_runner, runs as apply_runs
 from opportunity_app.apply.agent_types import RESUME_PLANNED_KEY
 
 import test_apply_runner as runner_tests
@@ -74,10 +73,6 @@ class QuietReadyFactory(FakeApplyAgentFactory):
 class LeverRunCase(runner_tests.RunnerCase):
     def setUp(self):
         super().setUp()
-        built = tuple(replace(spec, adapter_built=True) if spec.key == apply_ats.LEVER.key else spec for spec in apply_ats.REGISTRY)
-        patcher = mock.patch.object(apply_ats, "REGISTRY", built)
-        patcher.start()
-        self.addCleanup(patcher.stop)
         with self.conn:
             seed_lever_role(self.conn, USER)
             for key in ("apply_agent", "apply_agent_lever", "apply_lever_resume_upload"):

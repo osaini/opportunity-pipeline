@@ -4,7 +4,7 @@ The Lever twin of ``greenhouse.py`` (docs/phase5-lever-handoff-spec.md, section 
 address of a posting's application page, and how a saved role is recognised as a Lever posting (``identify``).
 
 This is the pure, read-only half: the registry entry for Lever is in ``ats.py`` and its request policy in ``checks.py``. The
-browser side (the adapter that fills a Lever form) is ``lever_adapter.py``, reachable only in tests until LV4 (spec 12).
+browser side (the adapter that fills a Lever form) is ``lever_adapter.py``, which ``agent.ADAPTERS`` holds (spec 12, LV4).
 
 Standard library only, and no import of any other first-party module, like ``greenhouse.py``.
 """

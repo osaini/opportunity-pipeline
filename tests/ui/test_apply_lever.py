@@ -1,13 +1,17 @@
 """Apply for me's "what's missing" view on a saved Lever role (docs/phase5-lever-handoff-spec.md, milestone LV2), and its settings.
 
 The server runs in this process with the fictional Lever page (tests/fixtures/apply/lever/) served by a fake page client, so nothing here
-reaches Lever and no browser is opened by the app. There is no window action for Lever yet: the view says so, and has no button for one.
+reaches Lever and no browser is opened by the app. While Lever's window is not connected (``adapter_built`` False, which a fixture here sets for the
+whole test, as it was before milestone LV4) the view says there is no window action, and has no button for one; the view with the window is
+tests/ui/test_apply_lever_handoff.py.
 """
 
 from __future__ import annotations
 
+import dataclasses
+
 import httpx
-from opportunity_app.apply import preflight as apply_preflight
+from opportunity_app.apply import ats as apply_ats, preflight as apply_preflight
 from axe_core_python.sync_playwright import Axe
 from playwright.sync_api import expect
 
@@ -20,6 +24,13 @@ from ui_helpers import AXE_OPTIONS, db, open_saved_role
 BEARER = {"Authorization": f"Bearer {OWNER_TOKEN}"}
 
 
+@pytest.fixture
+def window_not_built(monkeypatch):
+    """Lever's Finish in browser does not count as built, in this process: the view is the read-only one."""
+    unbuilt = tuple(dataclasses.replace(spec, adapter_built=False) if spec.key == apply_ats.LEVER.key else spec for spec in apply_ats.REGISTRY)
+    monkeypatch.setattr(apply_ats, "REGISTRY", unbuilt)
+
+
 def tracker_rows(live_server):
     with db(live_server) as conn:
         return (
@@ -30,7 +41,7 @@ def tracker_rows(live_server):
         )
 
 
-def test_a_saved_lever_role_shows_what_is_missing_and_offers_no_window_action(lever_ready, owner_page, live_server):
+def test_a_saved_lever_role_shows_what_is_missing_and_offers_no_window_action(window_not_built, lever_ready, owner_page, live_server):
     before = tracker_rows(live_server)
     open_saved_role(owner_page, LEVER_COMPANY)
     section = owner_page.locator(".apply-for-me")
@@ -169,7 +180,7 @@ def test_each_list_in_the_settings_says_saved_under_its_own_form(lever_ready, ow
     assert block.locator(".apply-settings > .form-status").count() == 2, "one status per list, never one shared"
 
 
-def test_the_lever_lines_in_the_settings_follow_their_switches_without_a_reload(lever_ready, owner_page):
+def test_the_lever_lines_in_the_settings_follow_their_switches_without_a_reload(window_not_built, lever_ready, owner_page):
     owner_page.click("#profile-nav")
     wait_for_results(owner_page)
     block = owner_page.locator(".automation-apply-agent")
@@ -200,7 +211,7 @@ def test_the_lever_list_help_names_only_lists_lever_has(lever_ready, owner_page)
     expect(block.get_by_role("heading", name="Exact options for lists the Greenhouse form owns").locator("xpath=following-sibling::p[1]")).to_contain_text("such as school and location")
 
 
-def test_every_left_for_you_row_says_where_to_do_it_and_links_to_the_posting(required_location, owner_page):
+def test_every_left_for_you_row_says_where_to_do_it_and_links_to_the_posting(window_not_built, required_location, owner_page):
     open_saved_role(owner_page, "Orbital Ledger")
     section = owner_page.locator(".apply-for-me")
     expect(section).to_be_visible()
@@ -219,7 +230,7 @@ def test_every_left_for_you_row_says_where_to_do_it_and_links_to_the_posting(req
     )
 
 
-def test_the_not_offered_line_and_the_resume_note_have_room_around_them(lever_ready, owner_page):
+def test_the_not_offered_line_and_the_resume_note_have_room_around_them(window_not_built, lever_ready, owner_page):
     open_saved_role(owner_page, LEVER_COMPANY)
     section = owner_page.locator(".apply-for-me")
     expect(section.locator("[data-apply-not-offered]")).to_be_visible()
