@@ -58,6 +58,20 @@ class ExplicitWageTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(_pay(text), ("", None, None))
 
+    def test_a_dollar_sign_with_another_country_prefix_is_not_read_as_dollars(self):
+        # Found in review: "CA$30 per hour" read as $30 an hour.
+        for text in ("CA$30 per hour", "A$30 per hour", "NZ$95,000 per year", "C$25/hr"):
+            with self.subTest(text=text):
+                self.assertEqual(_pay(text), ("", None, None))
+        self.assertEqual(_pay("US$30 per hour"), ("hour", 30.0, 30.0))
+        self.assertEqual(_pay("US$95,000 per year"), ("year", 95000.0, 95000.0))
+
+    def test_an_hr_word_is_not_an_hour(self):
+        # Found in review: "$500 an HR-approved learning budget" read as $500 an hour.
+        for text in ("Perks: $500 an HR-approved learning budget.", "A $300 a HR team offsite."):
+            with self.subTest(text=text):
+                self.assertEqual(_pay(text), ("", None, None))
+
 
 class LongWhitespaceTests(unittest.TestCase):
     """Found in review: three adjacent optional spaces made the pay readers cubic in a run of whitespace after a dollar figure.
