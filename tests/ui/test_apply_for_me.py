@@ -221,7 +221,7 @@ def test_a_saved_role_that_is_not_on_greenhouse_says_so(apply_ready, owner_page,
     with db(live_server) as conn:
         actions.record_intent(conn, "job-b", "saved", user_id=USER)
     open_saved_role(owner_page, "Orbit Systems")
-    expect(owner_page.locator(".apply-for-me .apply-summary")).to_have_text("Apply for me works with Greenhouse postings only, for now")
+    expect(owner_page.locator(".apply-for-me .apply-summary")).to_have_text("Apply for me works with Greenhouse and Lever postings only, for now")
     expect(owner_page.locator(".apply-for-me button")).to_have_count(0)
 
 

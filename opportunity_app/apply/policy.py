@@ -315,7 +315,7 @@ class Sources:
     resume: dict[str, Any] = field(default_factory=dict)
     cover_letter: dict[str, Any] = field(default_factory=dict)
     mac_key: bytes = b""
-    # Lever only (L1): the student let the app attach her résumé there, knowing Lever reads it at once. Off unless the student turned it on.
+    # Lever only (L1): the student let the app attach their résumé there, knowing Lever reads it at once. Off unless the student turned it on.
     resume_upload: bool = False
 
 
