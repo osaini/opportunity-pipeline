@@ -685,6 +685,17 @@ class UnknownControlTests(unittest.TestCase):
         self.assertEqual(form.fields, ())
         self.assertEqual(form.unknown, (lever_form.UnknownControl("favourite", "input", "text", "Favourite colour", True),))
 
+    def test_an_unknown_control_whose_label_shows_the_star_is_required_though_it_has_no_attribute(self):
+        # Seen on live pages: a hidden file input never carries `required`; the star in its label is the only sign (spec 3, 2026-10-08 note).
+        form = parse_lever_form(page(
+            '<li class="application-question resume"><label><div class="application-label">Portfolio/Work sample <span class="required">&#10033;</span></div>'
+            '<input name="portfolio" type="file" tabindex="-1"></label></li>'
+            '<li class="application-question"><label><div class="application-label">Resume/CV <span class="required">&#10033;</span></div>'
+            '<input name="resume" type="file" tabindex="-1"></label></li>'
+            '<li class="application-question"><label><div class="application-label">Notes</div><input name="notes" type="text"></label></li>'))
+        self.assertEqual([(item.name, item.required) for item in form.fields], [("resume", True)])
+        self.assertEqual([(item.name, item.required) for item in form.unknown], [("portfolio", True), ("notes", False)])
+
     def test_an_optional_unknown_control_is_listed_not_required(self):
         found = parse_lever_form(page('<textarea name="extra"></textarea>')).unknown
         self.assertEqual([(item.name, item.tag, item.type, item.required) for item in found], [("extra", "textarea", "textarea", False)])

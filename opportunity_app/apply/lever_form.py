@@ -524,7 +524,7 @@ def _unknown(name: str, controls: list[_Control]) -> UnknownControl:
     kinds = sorted({control.kind for control in controls})
     return UnknownControl(
         name=name, tag=controls[0].tag, type=kinds[0] if len(kinds) == 1 else "mixed", label=_first_label(controls),
-        required=any(control.required for control in controls if control.kind != "hidden"), disabled=any(control.disabled for control in controls),
+        required=any(control.required or control.starred for control in controls if control.kind != "hidden"), disabled=any(control.disabled for control in controls),
     )
 
 
