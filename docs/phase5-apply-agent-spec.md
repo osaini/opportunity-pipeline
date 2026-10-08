@@ -2401,7 +2401,8 @@ only tightens what may be done with a question the classifier called ordinary:
   topic, or a typed signature or typed initials ("Type your initials to agree"). A select with one option is read as a tick
   box. The broad net's agreement topic is read on a select's heading and on each of its options, not only the narrow list ("I
   will comply", "I waive my right"), and a single-line text field whose heading states an agreement ("Acknowledged by (your
-  name)", "Signed by") is a signature line. Only an exact sensitive-store statement ticks or chooses it; otherwise it is left
+  name)", "Signed by") is a signature line, as is a name field whose description signs ("By typing your name, you are
+  electronically signing", "I certify that the information above is true"). Only an exact sensitive-store statement ticks or chooses it; otherwise it is left
   for the student.
 - **Every stored statement and tick-box entry is per company** (C). An acknowledgment or consent statement, and any
   work-authorization, sponsorship or 18-or-older entry whose `answer_kind` is a tick box, is typed text, or whose question or

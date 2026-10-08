@@ -328,6 +328,18 @@ tests.a_one_option_select_and_an_agreement_in_other_words_never_carry_a_reusable
     const rows = [{ id: "r", question: label, answer: "SR", company: "Acme Robotics", tags: ["reusable"] }];
     assert.equal(preTicked(loadContentScript(page).scan(profile, rows, "Orbit Systems"), "question_21"), false, label);
   }
+  // A name line whose help text is the attestation, in the wordings forms use most (apply.classify._SIGNATURE, _SIGNED_HEADING).
+  for (const help of ["By entering your full name, you are electronically signing this application.", "By typing your name, you certify that the information above is accurate.",
+    "I certify that the information in this application is true and complete.", "I hereby declare that my answers are correct."]) {
+    const page = Object.assign(pageOf({ tag: "input", type: "text", id: "question_23", name: "question_23", label: "Name of the person completing this application", ariaDescribedby: "help_23" }), { texts: { help_23: help } });
+    const rows = [{ id: "r", question: "Name of the person completing this application", answer: "Sam Rivera", company: "Acme Robotics", tags: ["reusable"] }];
+    assert.equal(preTicked(loadContentScript(page).scan(profile, rows, "Orbit Systems"), "question_23"), false, help);
+  }
+  for (const [label, options] of [["Release", ["I release the company from liability", "No"]], ["Code of conduct", ["I will follow it", "I will not"]]]) {
+    const page = pageOf({ tag: "select", id: "question_24", name: "question_24", label, options: options.map((text, index) => ({ value: String(index), label: text })) });
+    const rows = [{ id: "r", question: label, answer: options[0], company: "Acme Robotics", tags: ["reusable"] }];
+    assert.equal(preTicked(loadContentScript(page).scan(profile, rows, "Orbit Systems"), "question_24"), false, label);
+  }
   const plain = pageOf({ tag: "select", id: "question_22", name: "question_22", label: "Which team are you most interested in?", options: [{ value: "p", label: "Perception" }, { value: "c", label: "Controls" }, { value: "x", label: "Planning" }] });
   const row = [{ id: "r", question: "Which team are you most interested in?", answer: "Controls", company: "Acme Robotics", tags: ["reusable"] }];
   assert.equal(loadContentScript(plain).scan(profile, row, "Acme Robotics").fields[0].confidence, 0.9, "an ordinary choice still matches at its own company");

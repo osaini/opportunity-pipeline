@@ -547,9 +547,9 @@
     demographic: /\basian\b|\bwhite\b|\bcaucasian|\bafrican american|\bmiddle eastern/,
   };
   // An option, heading or description that agrees to, accepts, acknowledges, consents to, certifies or confirms something.
-  const AGREEMENT_OPTION = /\bagree|\baccept|\backnowledg|\bconsent|\bcertif|\battest|\bconfirm|\bi have read\b|\bi ve read\b|\bunderstand/;
+  const AGREEMENT_OPTION = /\bagree|\baccept|\backnowledg|\bconsent|\bcertif|\battest|\bconfirm|\bi have read\b|\bi ve read\b|\bunderstand|\bi (?:will |shall |do |hereby )?(?:follow|release|abide|adhere|obey|comply|waive)\b/;
   // A field that asks for a typed signature or initials is an agreement whatever else it says.
-  const SIGNATURE = /\bsignature\b|\be ?sign|\bsign here\b|\btype your (?:full )?(?:legal )?name\b|\binitials?\b|\bsign(?:ed)? (?:below|off|by)\b|\bsignator|\bcountersign|\bwet ink\b|\b(?:type|enter|print|write|input)\b.{0,60}\b(?:to|as|in) (?:agree|accept|confirm|acknowledge|consent|certify|attest)/;
+  const SIGNATURE = /\bsignature\b|\be ?sign|\bsign here\b|\btype your (?:full )?(?:legal )?name\b|\binitials?\b|\bsign(?:ed)? (?:below|off|by)\b|\bsignator|\bcountersign|\bwet ink\b|\b(?:type|enter|print|write|input)\b.{0,60}\b(?:to|as|in) (?:agree|accept|confirm|acknowledge|consent|certify|attest)|\bby (?:typing|entering|printing|writing|inputting|signing)\b|\belectronic(?:ally)? sign|\btyped name\b/;
 
   function plainWords(text) {
     return String(text ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();

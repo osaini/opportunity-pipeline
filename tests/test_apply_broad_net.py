@@ -754,6 +754,40 @@ class NoBoxOrAgreementFromTheLibraryTests(unittest.TestCase):
                     self.assertEqual((got.source.kind, got.value), ("none", None))
                     self.assertTrue(got.sensitive is not None or "agreement" in got.net_never, "left for the student, by the classifier or the net")
 
+    def test_a_name_line_whose_description_says_it_signs_is_never_filled_from_the_library(self):
+        # The heading is an ordinary "Full Name"; the attestation is in the description, in the wordings forms use most.
+        for label, description in (
+            ("Full Name", "By entering your full name, you are electronically signing this application."),
+            ("Full Name", "By typing your name, you certify that the information above is accurate."),
+            ("Applicant Name", "I certify that the information in this application is true and complete."),
+            ("Legal name", "Your typed name below is your electronic signature."),
+            ("Name", "I hereby declare that my answers are correct."),
+        ):
+            with self.subTest(label=label, description=description):
+                field = SchemaField(name="q", label=label, required=True, type="input_text", description=description, parent="Resume/CV")
+                keyed = plan(BASE + [field]).get("q").answer_key
+                for row in (answer(keyed, "Sam Rivera", COMPANY), answer(label, "Sam Rivera", COMPANY), answer(keyed, "Sam Rivera", OTHER, ["reusable"])):
+                    got = plan(BASE + [field], sources(answers=[row])).get("q")
+                    self.assertEqual((got.source.kind, got.value), ("none", None))
+                    self.assertIn("agreement", got.net_never)
+
+    def test_a_plain_name_line_with_an_ordinary_description_still_fills_at_its_own_company(self):
+        field = SchemaField(name="q", label="Preferred pronunciation of your name", required=True, type="input_text", description="Spell it the way you would like us to say it.", parent="Resume/CV")
+        got = plan(BASE + [field], sources(answers=[answer("Preferred pronunciation of your name", "Sam", COMPANY)])).get("q")
+        self.assertEqual((got.source.kind, got.value, got.net_never), ("answer", "Sam", ()))
+
+    def test_a_select_that_follows_or_releases_something_is_left_for_the_student(self):
+        for label, options in (("Release", ("I release the company from liability", "No")), ("Code of conduct", ("I will follow it", "I will not")),
+                               ("Policies", ("I will adhere to them", "I will not"))):
+            for kind in (SINGLE, MULTI):
+                with self.subTest(label=label, kind=kind):
+                    field = F("q", label, kind, options=options, parent="Resume/CV")
+                    keyed = plan(BASE + [field]).get("q").answer_key
+                    rows = [answer(keyed, options[0], COMPANY), answer(label, options[0], COMPANY)]
+                    got = plan(BASE + [field], sources(answers=rows)).get("q")
+                    self.assertEqual((got.source.kind, got.value), ("none", None))
+                    self.assertTrue({"agreement", "tick"} & set(got.net_never), "left for the student by the agreement or the tick mark")
+
     def test_ordinary_single_line_questions_and_longer_choice_lists_still_fill_at_their_own_company(self):
         for label, kind, options in (("Your favourite programming language", "input_text", ()), ("Preferred pronunciation of your name", "input_text", ()),
                                      ("Which team are you most interested in?", SINGLE, ("Perception", "Controls", "Planning")), ("Tell us about yourself", "textarea", ())):

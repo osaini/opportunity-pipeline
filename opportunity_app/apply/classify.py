@@ -409,17 +409,23 @@ _OPTION_EXTRA = {
     "demographic": re.compile(r"\basian\b|\bwhite\b|\bcaucasian|\bafrican american|\bmiddle eastern"),
 }
 # An option that agrees to, accepts, acknowledges, consents to, certifies or confirms something (spec 7.1, D9 B).
-_AGREEMENT_OPTION = re.compile(r"\bagree|\baccept|\backnowledg|\bconsent|\bcertif|\battest|\bconfirm|\bi have read\b|\bi ve read\b|\bunderstand")
+_AGREEMENT_OPTION = re.compile(
+    r"\bagree|\baccept|\backnowledg|\bconsent|\bcertif|\battest|\bconfirm|\bi have read\b|\bi ve read\b|\bunderstand"
+    r"|\bi (?:will |shall |do |hereby )?(?:follow|release|abide|adhere|obey|comply|waive)\b"
+)
 # A field that asks for a typed signature is an agreement whatever else it says.
 # Typed initials are one too, and so is any "type ... to agree" instruction.
 _SIGNATURE = re.compile(
     r"\bsignature\b|\be ?sign|\bsign here\b|\btype your (?:full )?(?:legal )?name\b|\binitials?\b"
     r"|\bsign(?:ed)? (?:below|off|by)\b|\bsignator|\bcountersign|\bwet ink\b"
     r"|\b(?:type|enter|print|write|input)\b.{0,60}\b(?:to|as|in) (?:agree|accept|confirm|acknowledge|consent|certify|attest)"
+    r"|\bby (?:typing|entering|printing|writing|inputting|signing)\b|\belectronic(?:ally)? sign|\btyped name\b"
 )
 # The words of the agreement topic that, in a single-line text field's heading, make it a signature line. Narrower than the topic: "confirm",
 # "permission", "notice" and "policy" are in plenty of plain questions.
 _SIGNED_HEADING = re.compile(r"\b(?:agree|acknowledg|consent|certif|attest|affirm|declar|accept|waive|abide)|\bhereby\b")
+# A name line whose description is the attestation ("I certify that the information above is true") is a signature line too.
+_ASKS_FOR_NAME = re.compile(r"\bname\b")
 _PAY_ATTENTION = re.compile(r"\bpay(?:s|ing)? (?:close |careful |special )?attention\b", re.IGNORECASE)
 # A choice that is Yes or No in the student's own words: two or more of yes, no, y, n among its options.
 _YES_NO_WORDS = frozenset({"yes", "no", "y", "n"})
@@ -476,6 +482,7 @@ def field_net(item: SchemaField, control: str) -> tuple[frozenset[str], tuple[st
         )
         or (control in ("text", "textarea") and _SIGNATURE.search(" ".join(choice_words)))
         or (control == "text" and _SIGNED_HEADING.search(normalized_text(item.label)))
+        or (control == "text" and _ASKS_FOR_NAME.search(normalized_text(item.label)) and _SIGNED_HEADING.search(choice_words[1]))
     ):
         marks.append("agreement")
     return frozenset(own), tuple(marks)

@@ -18,7 +18,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Apply for me | 0 | 4 | 8 | 12 |
+| Apply for me | 0 | 4 | 9 | 13 |
 | Mail, Gmail and inboxes | 0 | 4 | 6 | 10 |
 | Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
@@ -26,7 +26,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Scoring, scheduling and configuration | 1 | 2 | 6 | 9 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **29** | **31** | **61** |
+| **Total** | **1** | **29** | **32** | **62** |
 
 ## Start here: the high-severity entries
 
@@ -112,7 +112,14 @@ The entry flagged for an owner decision is
 
 ## Apply for me
 
-The first was one of three left open by PR #54 (the fail-closed net) and recorded here on 2026-10-03; the other two were fixed on 2026-10-08 and the first narrowed. Apply for me never carries an answer across companies, so it can at worst affect one company's own saved answer, and the student still presses Submit (D1 B). The next six were found while building the rehearsal engine (M5a), and the last four while building Finish in browser (M5b part 2); none was fixed there.
+The first two were among three left open by PR #54 (the fail-closed net) and recorded here on 2026-10-03; the third was fixed on 2026-10-08 and the other two narrowed. Apply for me never carries an answer across companies, so it can at worst affect one company's own saved answer, and the student still presses Submit (D1 B). The next six were found while building the rehearsal engine (M5a), and the last four while building Finish in browser (M5b part 2); none was fixed there.
+
+### Agreement-shaped choices and signatures in wordings no list has still fill from a same-company saved answer
+- **Severity:** medium (PR #54 review; narrowed on 2026-10-08)
+- **Where:** `opportunity_app/apply/classify.py` `field_net()` (`_AGREEMENT_OPTION`, `_SIGNATURE`, `_SIGNED_HEADING`); `apps/extension/apply-engine.js` `AGREEMENT_OPTION`, `SIGNATURE`
+- **What happens:** A one-option select is read as a tick box, a select whose options or heading hit the agreement topic is left for the student, and a single-line text field is a signature line when its heading, or its description beside a name heading, says it signs ("By typing your name...", "electronically signing", "I certify that..."). A select that agrees in words none of those lists has ("I honour the policy", "Done" and "Not yet" for "Please indicate your compliance") or a signature line worded in an unusual way still gets no `agreement` mark, so a saved answer the student gave at the same company for another posting fills it. Nothing carries across companies, and the student still presses Submit.
+- **Suggested fix:** Keep adding wordings from real Greenhouse questions as students meet them. A word list cannot be complete; the per-company rule is what bounds a miss.
+- **Regression suite:** tests/ unittest (`test_apply_broad_net`), node tests/extension/run_tests.mjs
 
 ### The broad never-storable net still misses wordings no list has, and a heading covers only the questions under it
 - **Severity:** medium (PR #54 review; narrowed on 2026-10-08)
