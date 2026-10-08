@@ -1,0 +1,22 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>hCaptcha (stand-in)</title></head>
+<!-- The page FakeLever serves at https://newassets.hcaptcha.com/captcha/v1/fake/hcaptcha.html: the frames of the stand-in
+     hCaptcha script (hcaptcha_api.js). The fragment says which frame this is. The challenge frame has two buttons; pressing
+     anything in it is reported to the page that holds it, so a test can see that nothing of the app's touched it. -->
+<body style="margin:0;font-family:sans-serif">
+<div id="challenge" hidden style="padding:16px">
+  <p id="prompt">Select every picture of a fictional harbor crane.</p>
+  <button type="button" id="solve">I solved it</button>
+  <button type="button" id="close">Close</button>
+</div>
+<script>
+  (function () {
+    var hash = location.hash || "";
+    if (hash.indexOf("frame=challenge") < 0) return;
+    document.getElementById("challenge").hidden = false;
+    function tell(kind) { parent.postMessage({ fakeHcaptcha: kind }, "*"); }
+    document.addEventListener("click", function () { tell("click"); }, true);
+    document.getElementById("solve").addEventListener("click", function () { tell("solve"); });
+    document.getElementById("close").addEventListener("click", function () { tell("close"); });
+  })();
+</script>
+</body></html>
