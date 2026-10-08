@@ -311,19 +311,21 @@ PRESS_BINDING = "applyStudentPress"
 PRESS_LISTENER = """(() => {
   const hosts = __HOSTS__;
   if (hosts.indexOf(location.hostname) < 0) return;
+  const filesRead = __FILE_HOSTS__.indexOf(location.hostname) >= 0;
   const submit = "form#application-form button[type='submit'], form#application-form input[type='submit'], #application_form #submit_app";
   window.addEventListener('click', (event) => {
     if (!event.isTrusted) return;
     const target = event.target;
     if (target && typeof target.closest === 'function' && target.closest(submit)) window.__BINDING__('1');
   }, true);
-  // The student choosing a file in the form's file box (a page that reads a file the moment it is attached, Lever's, sends it then). Only a trusted
-  // 'change' counts, so a script that sets a file box's files and fires its own event does not.
+  // The student choosing a file in the form's file box (a page that reads a file the moment it is attached, Lever's, sends it then; only those boards' pages
+  // are listened to, so a Greenhouse page's files are never opened here). Only a trusted 'change' counts, so a script that sets a file box's files and fires
+  // its own event does not.
   // The choice is reported at once (the page's read of the file follows it by moments); the file's SHA-256 follows when it is worked out. The bytes
   // of a file the student picks from their disk do not pass through the request rules (the browser sends them itself), so this is the only way to
   // know which file it was.
   window.addEventListener('change', (event) => {
-    if (!event.isTrusted) return;
+    if (!event.isTrusted || !filesRead) return;
     const box = event.target;
     if (!(box && box.tagName === 'INPUT' && box.type === 'file' && box.files && box.files.length && typeof box.closest === 'function' && box.closest('form#application-form'))) return;
     window.__BINDING__('file');
@@ -333,7 +335,7 @@ PRESS_LISTENER = """(() => {
       }).catch(() => window.__BINDING__('sha:'));
     } catch (error) { window.__BINDING__('sha:'); }
   }, true);
-})();""".replace("__HOSTS__", json.dumps(sorted({*BOARD_HOSTS, *LEVER_HOSTS}))).replace("__BINDING__", PRESS_BINDING)
+})();""".replace("__HOSTS__", json.dumps(sorted({*BOARD_HOSTS, *LEVER_HOSTS}))).replace("__FILE_HOSTS__", json.dumps(sorted(LEVER_HOSTS))).replace("__BINDING__", PRESS_BINDING)
 # The only DevTools calls the agent makes, and nothing else (tests/test_apply_agent_static.py reads the syntax tree for it).
 PRESS_CDP_CALLS = ("Page.enable", "Runtime.enable", "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument")
 

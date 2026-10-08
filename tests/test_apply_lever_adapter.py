@@ -5,6 +5,7 @@ is in tests/test_apply_lever_browser.py. Every company, person and address is fi
 
 import ast
 import inspect
+import json
 import re
 import sys
 import time
@@ -355,6 +356,8 @@ class StudentFileSignalTests(unittest.TestCase):
         for host in (*lever.LEVER_HOSTS, "job-boards.greenhouse.io", "boards.greenhouse.io"):
             self.assertIn(f'"{host}"', source)
         self.assertEqual(source.count("isTrusted"), 2, "each of the two kinds of event is checked for the browser's own mark")
+        reads = re.search(r"const filesRead = (\[[^\]]*\])\.indexOf", source)
+        self.assertEqual(sorted(json.loads(reads.group(1))), sorted(lever.LEVER_HOSTS), "only a board whose page reads a file at once has its files looked at")
         self.assertIn("box.type === 'file'", source)
         self.assertIn("form#application-form", source)
 
