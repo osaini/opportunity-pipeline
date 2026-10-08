@@ -584,7 +584,7 @@ web app's PATH, set `PIPELINE_MCPORTER` in `.env` to its full path.
 ## 7c. Apply for me (optional)
 
 **Apply for me** reads a saved Greenhouse role's public application form (and,
-once the student turns it on in step 7, a saved Lever role's) and
+once the student turns it on in item 7 below, a saved Lever role's) and
 shows the student what it would fill from their confirmed facts and saved
 answers, and which questions it cannot answer yet. The student answers a
 missing question once, on the role, and it is saved for that company only: Apply

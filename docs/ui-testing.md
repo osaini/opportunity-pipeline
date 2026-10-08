@@ -185,7 +185,8 @@ To explore Apply for me (the "what's missing" view on a saved Greenhouse role), 
 `PIPELINE_SANDBOX_FAKE_APPLY=1`. That makes Acme Robotics a Greenhouse role served from a
 fictional listing, gives the sandbox student a name for applications, an email and a résumé,
 and turns the switch on. It uses a fake listing and a fake agent, so no request leaves the
-machine and no browser opens.
+machine and no browser opens. The flag also seeds Harbor Demo Labs, a saved fictional Lever role served by
+`FakeLeverPageClient`, with Apply for me on Lever switched on. Its page shows the read-only check and no window action.
 
 `.mcp.json` restricts the browser to that origin via `--allowed-origins`, runs
 `--isolated` so no profile is written to disk, and saves traces to
