@@ -232,6 +232,20 @@ class LeverPlanTests(unittest.TestCase):
                     self.assertIn("the page and its description disagree", entry.problem)
                     self.assertNotIn("Apply agent settings", entry.problem)
 
+    def test_without_a_window_the_sentences_name_the_lever_page_and_never_a_window_that_does_not_exist(self):
+        # Until Lever has a Finish in browser window, "in the window" would send the student to something that cannot open.
+        extra = lever_fixture_text("variants.html").replace("</form>", '<input type="date" name="startDate" required></form>', 1)
+        schema = apply_ats.lever_parse_schema({"lever_form": lever_form.parse_lever_form(extra)})
+        src = sources(facts=FACTS, labels={"location": LOCATION})
+        for name, company in (("many_cards.html", "Orbital Ledger"), ("cards_files_consent.html", "Quillfeather Pets"), ("demo_eeo_survey.html", LEVER_COMPANY)):
+            plan = build_plan(schema_of(name) + [field for field in schema if field.name == "startDate"], None, src, company, "handoff", ats_name="Lever", ats="lever", window=False)
+            said = [item.problem + " " + item.note for item in plan.fields]
+            self.assertTrue(any("on Lever's application page" in text for text in said), name)
+            for text in said:
+                self.assertNotIn("window", text, name)
+        with_window = build_plan(schema_of("many_cards.html"), None, src, "Orbital Ledger", "handoff", ats_name="Lever", ats="lever")
+        self.assertIn("in the window", " ".join(item.problem + " " + item.note for item in with_window.fields))
+
     def test_the_plan_hash_is_stable_and_holds_no_value(self):
         first, second = lever_plan("demo_eeo_survey.html", LEVER_COMPANY), lever_plan("demo_eeo_survey.html", LEVER_COMPANY)
         self.assertEqual(first.plan_hash, second.plan_hash)

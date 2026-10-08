@@ -49,10 +49,12 @@ def test_a_saved_lever_role_shows_what_is_missing_and_offers_no_window_action(le
     expect(section.locator(".apply-group")).to_have_text("Left for you: the app leaves these to you on the Lever form.")
     company = section.locator('[data-apply-key="org"]')
     expect(company.locator("strong")).to_have_text("Current company")
-    expect(company).to_contain_text("The app has no source for your current company. Type it in the window")
+    expect(company).to_contain_text("The app has no source for your current company. Type it on Lever's application page")
+    expect(company.get_by_role("link", name="Open the posting on Lever")).to_have_attribute("href", f"{LEVER_URL}/apply")
     expect(company.locator("textarea, select, input, button")).to_have_count(0)
     # The résumé is the student's to attach, and the sentence says why.
-    expect(section.locator(".apply-ats-note")).to_contain_text("you attach it yourself in the window")
+    expect(section.locator(".apply-ats-note")).to_contain_text("you attach it yourself on Lever's application page")
+    expect(section.get_by_text("in the window")).to_have_count(0)
     expect(section.locator(".apply-ats-note")).to_contain_text("Lever reads it as soon as it is attached")
     # Plainly: nothing can be started on Lever yet, and there is no button that looks as if it could.
     expect(section.locator("[data-apply-not-offered]")).to_have_text("Finish in browser for Lever postings is not available yet")
@@ -92,6 +94,7 @@ def test_a_required_lever_location_is_saved_for_lever_and_never_looked_up(requir
     expect(section).to_be_visible()
     location = section.locator('[data-apply-key="location"]')
     expect(location).to_contain_text("Choose your current location")
+    expect(location.get_by_role("link", name="Open the posting on Lever")).to_have_attribute("href", f"{LEVER_URL}/apply")
     # Lever's list is only read from its own form, which comes later: the type-it-yourself box has no Look up options beside it.
     expect(location.get_by_role("button", name="Save this option")).to_be_visible()
     expect(location.get_by_role("button", name="Look up options")).to_have_count(0)

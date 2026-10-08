@@ -663,6 +663,12 @@ class _Context:
     repeated: dict[str, list[str]]
     uploads_on_attach: bool
     ats: str = ATS_GREENHOUSE
+    window: bool = True  # whether there is a Finish in browser window for the student to do the rest in (not yet, on Lever)
+
+    @property
+    def there(self) -> str:
+        """Where the student does what the app leaves: in the window when there is one, else on the ATS's own application page."""
+        return "in the window" if self.window else f"on {lever.DISPLAY_NAME}'s application page"
 
 
 def _answer_key(item: SchemaField, repeated: Mapping[str, list[str]]) -> tuple[str, bool]:
@@ -744,17 +750,17 @@ def _plan_lever_file(item: SchemaField, entry: PlanField, ctx: _Context) -> Plan
     """Lever's files (spec 6.5, 6.6, 6.9), or None when the file is the résumé and the student let the app attach it (the ordinary plan then goes on).
 
     Lever reads a résumé the moment it is attached, which sends it before Submit. So the app attaches it only when the student said so
-    (L1, ``Sources.resume_upload``, off by default); otherwise it is the student's to attach in the window. Any other file field is
+    (L1, ``Sources.resume_upload``, off by default); otherwise it is the student's to attach themselves. Any other file field is
     never filled: the app attaches no file the student did not choose, and a Lever cover letter is not wired yet.
     """
     if item.name == "resume":
         if ctx.sources.resume_upload:
             return None
         entry.problem_kind = "window"
-        entry.problem = "Attach your résumé in the window. The app doesn't attach it on Lever, because Lever reads it as soon as it is attached"
+        entry.problem = f"Attach your résumé {ctx.there}. The app doesn't attach it on Lever, because Lever reads it as soon as it is attached"
         return entry
     entry.problem_kind = "window"
-    entry.problem = f'The app attaches no file for "{item.label}" on Lever. Attach it in the window if you want to'
+    entry.problem = f'The app attaches no file for "{item.label}" on Lever. Attach it {ctx.there} if you want to'
     return entry
 
 
@@ -826,7 +832,7 @@ def _stored_value(
 def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Context, *, follows: bool = False) -> PlanField:
     words = CATEGORY_WORDS.get(category, "a personal question")
     sources = ctx.sources
-    if ctx.ats == ATS_LEVER and _lever_not_read(item, entry):
+    if ctx.ats == ATS_LEVER and _lever_not_read(item, entry, ctx):
         return entry  # a control the app can never fill is not a stored answer to ask for, whatever its label sounds like
     if ctx.ats == ATS_LEVER and (item.name == lever.EEO_DISABILITY or item.name in lever.EEO_SIGNATURE_FIELDS):
         # Any answer to Lever's disability question, the decline included, makes the page require a typed signature and a date, and those are the
@@ -907,20 +913,20 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
 
 
 _LEVER_LINKS = {"linkedin": "LinkedIn address", "github": "GitHub address", "portfolio": "website address"}
-# Fixed Lever fields with no source in the app: empty unless the student types them in the window. The words say what the student does.
+# Fixed Lever fields with no source in the app: empty unless the student types them themselves. The words say what the student does, and where.
 _LEVER_WINDOW = {
-    "org": "The app has no source for your current company. Type it in the window",
-    "comments": "The app has nothing saved for additional information. Type it in the window if you want to add something",
-    "opportunityLocationId": "The app can't tell which office you mean. Choose it in the window",
+    "org": "The app has no source for your current company. Type it {there}",
+    "comments": "The app has nothing saved for additional information. Type it {there} if you want to add something",
+    "opportunityLocationId": "The app can't tell which office you mean. Choose it {there}",
 }
 
 
-def _lever_not_read(item: SchemaField, entry: PlanField) -> bool:
+def _lever_not_read(item: SchemaField, entry: PlanField, ctx: _Context) -> bool:
     """True, with the window problem set, when ``item`` is a Lever question the app does not read (an unreadable one or a control it has no family for)."""
     if item.type not in (lever.UNREADABLE_TYPE, lever.UNKNOWN_TYPE):
         return False
     entry.problem_kind = "window"
-    entry.problem = f"Lever's form has a question the app doesn't read: {item.label} ({item.description}). Answer it in the window"
+    entry.problem = f"Lever's form has a question the app doesn't read: {item.label} ({item.description}). Answer it {ctx.there}"
     return True
 
 
@@ -928,10 +934,10 @@ def _plan_lever(item: SchemaField, entry: PlanField, ctx: _Context) -> bool:
     """Lever's fixed fields (docs/phase5-lever-handoff-spec.md 6.6). True when the field was settled here; False to go on with the ordinary rules.
 
     Every value is a confirmed fact or the option the student confirmed: nothing is read from the résumé, and nothing is guessed. A field
-    the app has no source for is the student's to type in the window (``window``), required or not.
+    the app has no source for is the student's to type (``window``), required or not, in the window or, while there is none, on Lever's own page.
     """
     facts, name = ctx.sources.facts, item.name
-    if _lever_not_read(item, entry):
+    if _lever_not_read(item, entry, ctx):
         return True
     if name == "name":
         full = profile_value_for(facts, "name_parts.full")
@@ -949,15 +955,15 @@ def _plan_lever(item: SchemaField, entry: PlanField, ctx: _Context) -> bool:
         entry.source, entry.value = Source("ats_label", "location", label="Option you confirmed"), label
         return True
     if name in _LEVER_WINDOW:
-        entry.problem_kind, entry.problem = "window", _LEVER_WINDOW[name]
+        entry.problem_kind, entry.problem = "window", _LEVER_WINDOW[name].format(there=ctx.there)
         return True
     if name.startswith("residentialLocation["):
-        entry.problem_kind, entry.problem = "window", "The app never fills a home address on Lever. Type it in the window"
+        entry.problem_kind, entry.problem = "window", f"The app never fills a home address on Lever. Type it {ctx.there}"
         return True
     if name.startswith("urls["):
         kind = _PROFILE_KEYS.get(question_key(item.label), "")
         if not kind:
-            entry.problem_kind, entry.problem = "window", f'The app has no source for "{item.label}". Type it in the window'
+            entry.problem_kind, entry.problem = "window", f'The app has no source for "{item.label}". Type it {ctx.there}'
             return True
         ref = f"contact.{kind}"
         value = profile_value_for(facts, ref)
@@ -1077,6 +1083,7 @@ def _page_never(scan: Iterable[Any] | None) -> frozenset[str]:
 def build_plan(
     schema: Iterable[SchemaField], scan: Iterable[Any] | None, sources: Sources, company: str, mode: str, *,
     ats_name: str, canonical_url: str = "", adapter_version: str = "", uploads_on_attach: bool = False, ats: str = ATS_GREENHOUSE,
+    window: bool = True,
 ) -> Plan:
     """Apply section 7 to every field of the form.
 
@@ -1099,7 +1106,7 @@ def build_plan(
     for item in fields:
         if item.section == "custom":
             filed[question_key(texts[item.name][0])] = filed.get(question_key(texts[item.name][0]), 0) + 1
-    ctx = _Context(sources, company, mode, repeated, uploads_on_attach, ats)
+    ctx = _Context(sources, company, mode, repeated, uploads_on_attach, ats, window)
     entries: list[PlanField] = []
     problems: list[Problem] = []
     # What each question is, by label, for the follow-ups filed under it. A follow-up's own entry is what it

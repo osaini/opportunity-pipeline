@@ -74,7 +74,8 @@ class LeverCheckTests(PolicyCase):
         self.assertEqual(result["eligibility"]["handoff"]["ticks"], [])
 
     def test_the_resume_sentence_follows_the_students_choice_and_it_starts_off(self):
-        self.assertIn("you attach it yourself in the window", self.lever_check()["notes"][0])
+        self.assertIn("you attach it yourself on Lever's application page", self.lever_check()["notes"][0])
+        self.assertNotIn("window", " ".join(self.lever_check()["notes"]))
         self.switch("apply_lever_resume_upload", "on")
         notes = self.lever_check()["notes"]
         self.assertIn("sent to Lever before you press Submit", notes[0])
@@ -144,6 +145,14 @@ class LeverCheckTests(PolicyCase):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM answer_library").fetchone()[0], 0, "nothing was saved without the student's word")
         saved = apply_preflight.answer_missing(self.conn, USER, LEVER_ROLE_ID, posting_confirmed=True, **kwargs)
         self.assertTrue(saved["answer_id"])
+
+    def test_no_sentence_of_the_check_sends_the_student_to_a_window_that_cannot_open_yet(self):
+        self.many_cards()
+        result = self.lever_check()
+        said = [item["message"] for item in result["problems"]] + result["notes"] + [item.get("note", "") for item in result["fields"]]
+        self.assertTrue(any("on Lever's application page" in text for text in said))
+        for text in said:
+            self.assertNotIn("in the window", text)
 
     def test_the_location_is_chosen_for_lever_and_a_greenhouse_choice_is_not_borrowed(self):
         self.many_cards()

@@ -1605,6 +1605,12 @@
           row.appendChild(element("p", "profile-help", problem.message));
           // A kind of question the student could let the app answer says where, so it is not mistaken for a never.
           if (problem.action?.allowable) row.appendChild(element("p", "profile-help", "You can let the app answer this kind of question, once you add the answer yourself, in Apply for me settings under Automation."));
+          // A Lever question the app leaves to the student, or a location to choose, points at the posting where Lever's own form is.
+          if (result.ats === "lever" && ["window", "label_needed"].includes(problem.kind) && result.posting?.url) {
+            const link = element("p", "profile-help");
+            link.appendChild(externalLink(result.posting.url, "Open the posting on Lever"));
+            row.appendChild(link);
+          }
           const control = applyProblemAction({ ...problem, atsName: result.ats_name, opportunityId: item.id, opportunityLabel: [result.company, result.title].filter(Boolean).join(" — "), postingConfirmed: () => postingConfirmed, lookups }, result.company, (fresh, message) => {
             if (fresh) paint(fresh, message);
             else load(message);

@@ -119,7 +119,7 @@ def _listing(
     return listing, "", False
 
 
-LEVER_RESUME_YOURS = ("Your résumé: you attach it yourself in the window, and the app does not attach it on Lever. "
+LEVER_RESUME_YOURS = ("Your résumé: you attach it yourself {there}, and the app does not attach it on Lever. "
                       "Lever reads it as soon as it is attached")
 LEVER_RESUME_ATTACHED = ("Your résumé: the app attaches it itself, because you let it in Apply agent settings. "
                          "Lever reads it as soon as it is attached, so it is sent to Lever before you press Submit")
@@ -331,9 +331,11 @@ def _prepare(
     plan = apply_policy.build_plan(
         schema, None, sources, company, mode,
         ats_name=ats.display_name, canonical_url=result["canonical_url"], adapter_version=ats.adapter_version, ats=ats.key,
+        window=ats.adapter_built,
     )
     if ats.key == apply_lever.ATS_LEVER:
-        result["notes"] = [LEVER_RESUME_ATTACHED if upload else LEVER_RESUME_YOURS]
+        there = "in the window" if ats.adapter_built else "on Lever's application page"
+        result["notes"] = [LEVER_RESUME_ATTACHED if upload else LEVER_RESUME_YOURS.format(there=there)]
     return result, plan, sources, schema
 
 
