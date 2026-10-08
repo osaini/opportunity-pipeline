@@ -88,6 +88,20 @@ class LeverRunnerTests(runner_tests.RunnerCase):
         self.assertEqual({kind: (item.status_code, item.code) for kind, item in refused.items()}, {"rehearsal": (409, "ats_mode"), "lookup": (409, "ats_mode")})
         self.assertEqual(self.pages.calls, [])
 
+    def test_with_the_driver_connected_a_finish_in_browser_still_needs_the_lever_switch_and_writes_nothing(self):
+        applications_before = self.counts("applications")["applications"]
+        refused = self.refuse("handoff")
+        self.assertEqual(refused.message, "Apply for me works with Lever postings once you turn it on in Apply agent settings")
+        self.assertEqual(self.pages.calls, [], "the page was not asked for")
+        self.assertEqual(self.counts("apply_runs", "application_submit_claims", "applications"),
+                         {"apply_runs": 0, "application_submit_claims": 0, "applications": applications_before})
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, 'apply_agent_lever', 'on', '2026-10-08T00:00:00+00:00')", (USER,),
+            )
+        run_id = self.start(kind="handoff", opportunity_id=LEVER_ROLE_ID, page_client=self.pages)
+        self.assertEqual(self.finish(run_id)["kind"], "handoff", "with the switch on the start goes on to a run")
+
     def test_a_lever_role_the_student_cannot_see_is_not_found_before_any_mode_is_refused(self):
         # A capture nobody owns is visible to no one. The refusal for its ATS would say the role exists and is on Lever.
         with self.conn:
