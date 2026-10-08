@@ -1,0 +1,50 @@
+{
+  "checked_on": "2026-10-08",
+  "note": "Seen on the apply pages of two public Lever postings on two boards (a Lever demo board and one company board), opened read-only with headless Chromium that aborted every request but GET. Both behaved the same, no employer is named here, and nothing was typed but a generic city name into the Location field. Every entry has a confirmed flag: true means it was seen on those pages, false means the spec pins it and no page showed it (the EU host, the upload path). The hCaptcha and Cloudflare requests below were all made by the page by itself, at load, before anyone pressed anything.",
+  "document_hosts": [
+    {"host": "jobs.lever.co", "confirmed": true},
+    {"host": "jobs.eu.lever.co", "confirmed": false}
+  ],
+  "static_asset_hosts": [
+    {"host": "jobs.lever.co", "path_prefixes": ["/js/", "/img/"], "types": ["script", "image"], "confirmed": true},
+    {"host": "cdn.lever.co", "path_prefixes": ["/fonts/"], "types": ["font"], "confirmed": true},
+    {"host": "lever-client-logos.s3.amazonaws.com", "path_prefixes": ["/"], "types": ["image"], "confirmed": true}
+  ],
+  "static_asset_note": "jobs.lever.co serves its own scripts (application.js, parseResume.js, retrieveLocations.js, jquery, debounce, cookieconsent, bug-snag.js) and its logo. cdn.lever.co served only fonts. The S3 bucket served the company's logo (one picture per board). jobs.eu.lever.co is expected to serve the same paths and was not opened.",
+  "lookup_endpoints": [
+    {"host": "jobs.lever.co", "path_prefix": "/searchLocations", "kind": "location", "method": "GET", "receives": "the text typed into the Location field (query parameter text), asked after typing (the page waits 500 ms)", "reply_fixture": "search_locations_reply.json", "confirmed": true},
+    {"host": "jobs.eu.lever.co", "path_prefix": "/searchLocations", "kind": "location", "method": "GET", "receives": "the text typed into the Location field (query parameter text)", "reply_fixture": "search_locations_reply.json", "confirmed": false}
+  ],
+  "upload_endpoints": [
+    {"host": "jobs.lever.co", "path": "/parseResume", "method": "POST", "kind": "resume", "note": "Not exercised: nothing is attached in a recording. Pinned from the page's own script (parseResume.js) and the spec (section 7).", "confirmed": false},
+    {"host": "jobs.eu.lever.co", "path": "/parseResume", "method": "POST", "kind": "resume", "confirmed": false}
+  ],
+  "captcha_endpoints": [
+    {"host": "js.hcaptcha.com", "path_prefix": "/1/", "methods": ["GET"], "kind": "script", "note": "api.js and secure-api.js; without them the Submit button does nothing (spec 3.10)", "confirmed": true},
+    {"host": "newassets.hcaptcha.com", "path_prefix": "/captcha/v1/", "methods": ["GET"], "kind": "frame", "note": "the invisible widget's frames (hcaptcha.html, hcaptcha-enclave.html), loaded as sub-frame documents at page load", "confirmed": true},
+    {"host": "api.hcaptcha.com", "path_prefix": "/", "methods": ["POST"], "kind": "config", "note": "POST /checksiteconfig, made by the page at load; the recording aborted it", "confirmed": true},
+    {"host": "api2.hcaptcha.com", "path_prefix": "/", "methods": ["POST"], "kind": "config", "note": "POST /checksiteconfig, made by the page at load; the recording aborted it. Not in the checked-in list (checks.py CAPTCHA_ENDPOINTS)", "confirmed": true},
+    {"host": "hcaptcha.com", "path_prefix": "/", "methods": ["POST"], "kind": "config", "note": "POST /checksiteconfig, made by the page at load; the recording aborted it", "confirmed": true}
+  ],
+  "captcha_shard_pattern": "[0-9a-f]{12}\\.w\\.hcaptcha\\.com",
+  "captcha_shard_note": "Twelve-hex-digit sub-hosts of w.hcaptcha.com each answered one GET /logo.png (a fetch) from the widget's frames; four per page, a different set every load.",
+  "cloudflare": {
+    "hosts": ["jobs.lever.co", "jobs.eu.lever.co"],
+    "get_paths": [
+      {"path": "/cdn-cgi/challenge-platform/scripts/jsd/main.js", "type": "script", "confirmed": true}
+    ],
+    "post_path_prefixes": [
+      {"prefix": "/cdn-cgi/challenge-platform/h/g/jsd/oneshot/", "type": "xhr", "note": "one beacon POST per page at load; the rest of the path is a per-page token and is not recorded here", "confirmed": true}
+    ],
+    "note": "Cloudflare's detection script is on the Lever host itself, not on challenges.cloudflare.com. The pages were served with no interstitial."
+  },
+  "refused_hosts": [
+    {"host": "www.googletagmanager.com", "types": ["script"], "listed_in_spec": true, "confirmed": true},
+    {"host": "www.linkedin.com", "types": ["script", "xhr"], "listed_in_spec": false, "confirmed": true, "note": "'Apply with LinkedIn' widget (awliV3.js); seen on the company board only, not on the demo board. Its POST was aborted"},
+    {"host": "platform.linkedin.com", "types": ["script"], "listed_in_spec": false, "confirmed": true, "note": "same widget"},
+    {"host": "google-analytics.com", "types": [], "listed_in_spec": true, "confirmed": false, "note": "named in the spec, not seen at load"},
+    {"host": "bugsnag.com", "types": [], "listed_in_spec": true, "confirmed": false, "note": "named in the spec; no Bugsnag host was requested at load (bug-snag.js is served by the Lever host and loads quietly)"}
+  ],
+  "websockets_seen": [],
+  "subframe_hosts_seen": ["newassets.hcaptcha.com"]
+}

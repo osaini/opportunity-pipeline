@@ -1,0 +1,13 @@
+{
+  "checked_on": "2026-10-08",
+  "note": "The shape of what a Lever apply page's own GET /searchLocations?text=... answers, read on two public postings on two boards with a generic city name typed into the Location field. Every value here is fictional; only the keys, the value types and the content type are as read. The real answer was a JSON array of four objects, each with a place name (city, state or region, country) and a 40-character hexadecimal id. The page reads the name for its list and writes the chosen object, as JSON, into the hidden selectedLocation field.",
+  "request": {"method": "GET", "host": "jobs.lever.co", "path": "/searchLocations", "query_keys": ["text"]},
+  "status": 200,
+  "content_type": "application/json; charset=utf-8",
+  "body": [
+    {"name": "Exampleville, EX, USA", "id": "0000000000000000000000000000000000000001"},
+    {"name": "Exampleville, EY, USA", "id": "0000000000000000000000000000000000000002"},
+    {"name": "Exampleville, EZ, USA", "id": "0000000000000000000000000000000000000003"},
+    {"name": "Exampleville, EW, USA", "id": "0000000000000000000000000000000000000004"}
+  ]
+}
