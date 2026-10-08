@@ -148,6 +148,7 @@ class RoutePolicy:
     submit_content_types: tuple[str, ...] = ()        # the submit POST must carry one of these content types; empty means any
     bind_submit_host: bool = False                    # the submit POST must go to the posting's own host (``RouteState.board_host``); with none bound, nothing is one
     security_code_posts: bool = True                  # one more POST to the submit path may pass for an emailed code (Greenhouse's); False where the ATS emails none (Lever, Q5)
+    no_files_before_press: bool = False               # a write to a CAPTCHA endpoint or the bot check carries no file of any kind in the fill or before the student's first press (Lever's hCaptcha runs on Submit)
     outcome_table: Callable[..., Any] | None = None   # this ATS's own rows of the outcome table, which ``decide_outcome`` hands over to; None means the shared one
 
     def is_submit_request(self, host: str, path: str, submit_path: str, board_host: str = "") -> bool:
@@ -585,7 +586,7 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
                 return abort("code_post_before_press", "A request that would send the security code was refused because you had not pressed Submit")
             return Allow("security_code", code_post=True)
         return abort("second_submit_post", "A second submit request was refused")
-    if (_endpoint_matches(captcha_endpoints, host, path) or policy.is_challenge_request(host, path)) and file_leaving(request, phase, state):
+    if (_endpoint_matches(captcha_endpoints, host, path) or policy.is_challenge_request(host, path)) and file_leaving(request, phase, state, policy):
         # The attached file is in the input, and a page's script can read it and send it anywhere a write is let through. A compressed file holds none of
         # the student's words, so the value guard cannot tell. Nothing the fill lets through to these addresses is a file, and neither is anything before the
         # student's first press (hCaptcha runs on Submit, so it asks nothing of these addresses until then); the planned file's own bytes never go, in any phase.
@@ -787,16 +788,19 @@ def carries_planned_file(request: RouteRequest, state: RouteState) -> bool:
     return parts is not None and any(hashlib.sha256(part.data).hexdigest() == wanted for part in parts)
 
 
-def file_leaving(request: RouteRequest, phase: str, state: RouteState) -> bool:
+def file_leaving(request: RouteRequest, phase: str, state: RouteState, policy: RoutePolicy) -> bool:
     """Whether a write to an address that is let through for its own sake (a CAPTCHA endpoint, the page's bot check) is a file leaving.
 
-    The planned file's own bytes: in every phase. A body ``is_upload`` calls a file, or one whose declared type is none a form, a script's JSON or a beacon
-    writes (not text, URL-encoded or JSON; a body with no type is left alone): in the app's fill, and in the student's turn until their first press.
-    After the press the page's widget is running and a false reading would close the turn in the middle of it, so only the planned file is looked for.
+    The planned file's own bytes: in every phase. A body ``is_upload`` calls a file: in the app's fill. For a policy with ``no_files_before_press`` (Lever's:
+    hCaptcha runs only on Submit) also a body whose declared type is none a form, a script's JSON or a beacon writes (not text, URL-encoded or JSON; a body
+    with no type is left alone), and both readings in the student's turn until their first press. After the press the widget is running and a false reading
+    would close the turn in the middle of it, so only the planned file is looked for. Another ATS's widget (reCAPTCHA posts protobuf) keeps its answers.
     """
     if carries_planned_file(request, state):
         return True
-    if phase == PHASE_FILL or (phase == PHASE_STUDENT and not state.last_press_at):
+    if phase == PHASE_FILL and is_upload(request):
+        return True
+    if policy.no_files_before_press and (phase == PHASE_FILL or (phase == PHASE_STUDENT and not state.last_press_at)):
         kind = _content_type(request)
         return is_upload(request) or bool(request.body and kind and not kind.startswith(_PLAIN_BODY_TYPES) and not re.match(r"application/[\w.+-]*\+json", kind))
     return False
@@ -1167,6 +1171,7 @@ LEVER_ROUTE_POLICY = RoutePolicy(
     submit_content_types=("multipart/form-data",),
     bind_submit_host=True,
     security_code_posts=False,
+    no_files_before_press=True,
     outcome_table=lever_outcome,
 )
 

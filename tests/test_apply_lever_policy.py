@@ -157,6 +157,7 @@ class PolicyValuesTests(Cases):
         # Bugsnag's own host is bugs.lever.co (a lever.co host, named exactly), and the "Apply with LinkedIn" widget some boards load posts to LinkedIn.
         self.assertEqual(set(POLICY.telemetry_hosts), {"googletagmanager.com", "google-analytics.com", "bugsnag.com", "bugs.lever.co", "linkedin.com"})
         self.assertIs(POLICY.outcome_table, checks.lever_outcome)
+        self.assertTrue(POLICY.no_files_before_press)
 
     def test_greenhouse_has_none_of_it(self):
         greenhouse = checks.GREENHOUSE_ROUTE_POLICY
@@ -164,6 +165,21 @@ class PolicyValuesTests(Cases):
                          ((), "", (), False, None))
         self.assertIs(type(greenhouse.telemetry_hosts), frozenset)
         self.assertFalse(greenhouse.is_challenge_request("boards.greenhouse.io", "/cdn-cgi/challenge-platform/x"))
+        self.assertFalse(greenhouse.no_files_before_press)
+
+    def test_greenhouses_captcha_writes_keep_the_answers_they_had_the_stricter_file_rules_are_lever_s(self):
+        # reCAPTCHA's own requests are protobuf; the rule that refuses a body of an odd declared type, and the one that refuses a file in the student's turn
+        # before their press, are read from the policy and belong to the ATS whose widget was recorded (Lever's).
+        gh = checks.GREENHOUSE_ROUTE_POLICY
+        protobuf = request("POST", "www.recaptcha.net", "/recaptcha/enterprise/reload", body=bytes([10, 2, 97, 98]), headers={"Content-Type": "application/x-protobuf"})
+        file_form = request("POST", "www.recaptcha.net", "/recaptcha/enterprise/x", body=multipart(("file", "a.pdf", "application/pdf", PLANNED)), headers=form_headers())
+        st = lambda: RouteState(submit_path="/applications", values=dict(VALUES))
+        for phase, facts, expected in (
+            (FILL, protobuf, "captcha"), (STUDENT, protobuf, "captcha"), (STUDENT, file_form, "captcha"), (FILL, file_form, "upload_elsewhere"),
+        ):
+            with self.subTest(phase=phase, path=facts.url):
+                decision = route_decision("handoff", phase, facts, st(), gh)
+                self.assertEqual(decision.rule, expected)
 
     def test_a_domain_set_holds_the_domain_and_every_subdomain_and_nothing_that_only_ends_the_same(self):
         telemetry = POLICY.telemetry_hosts
