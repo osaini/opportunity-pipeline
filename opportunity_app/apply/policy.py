@@ -826,6 +826,8 @@ def _stored_value(
 def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Context, *, follows: bool = False) -> PlanField:
     words = CATEGORY_WORDS.get(category, "a personal question")
     sources = ctx.sources
+    if ctx.ats == ATS_LEVER and _lever_not_read(item, entry):
+        return entry  # a control the app can never fill is not a stored answer to ask for, whatever its label sounds like
     if ctx.ats == ATS_LEVER and (item.name == lever.EEO_DISABILITY or item.name in lever.EEO_SIGNATURE_FIELDS):
         # Any answer to Lever's disability question, the decline included, makes the page require a typed signature and a date, and those are the
         # student's own act: the app would be leaving a required signature it had just caused. So the whole question is the student's (spec 6.6).
@@ -913,6 +915,15 @@ _LEVER_WINDOW = {
 }
 
 
+def _lever_not_read(item: SchemaField, entry: PlanField) -> bool:
+    """True, with the window problem set, when ``item`` is a Lever question the app does not read (an unreadable one or a control it has no family for)."""
+    if item.type not in (lever.UNREADABLE_TYPE, lever.UNKNOWN_TYPE):
+        return False
+    entry.problem_kind = "window"
+    entry.problem = f"Lever's form has a question the app doesn't read: {item.label} ({item.description}). Answer it in the window"
+    return True
+
+
 def _plan_lever(item: SchemaField, entry: PlanField, ctx: _Context) -> bool:
     """Lever's fixed fields (docs/phase5-lever-handoff-spec.md 6.6). True when the field was settled here; False to go on with the ordinary rules.
 
@@ -920,9 +931,7 @@ def _plan_lever(item: SchemaField, entry: PlanField, ctx: _Context) -> bool:
     the app has no source for is the student's to type in the window (``window``), required or not.
     """
     facts, name = ctx.sources.facts, item.name
-    if item.type in (lever.UNREADABLE_TYPE, lever.UNKNOWN_TYPE):
-        entry.problem_kind = "window"
-        entry.problem = f"Lever's form has a question the app doesn't read: {item.label} ({item.description}). Answer it in the window"
+    if _lever_not_read(item, entry):
         return True
     if name == "name":
         full = profile_value_for(facts, "name_parts.full")

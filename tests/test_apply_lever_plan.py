@@ -14,8 +14,8 @@ import realdata_guard
 
 realdata_guard.install()
 
-from opportunity_app.apply import ats as apply_ats, lever_form
-from opportunity_app.apply.policy import build_plan
+from opportunity_app.apply import ats as apply_ats, lever, lever_form
+from opportunity_app.apply.policy import SchemaField, build_plan
 
 from apply_fake_ats import LEVER_COMPANY, lever_fixture_text
 from helpers_apply import Store, answer, entry, sources
@@ -217,6 +217,20 @@ class LeverPlanTests(unittest.TestCase):
         start = row(plan, "startDate")
         self.assertEqual((start.required, start.problem_kind, start.disposition), (True, "window", "left_for_you"))
         self.assertIn("Lever's form has a question the app doesn't read", start.problem)
+
+    def test_an_unreadable_or_unknown_control_with_a_sensitive_sounding_label_keeps_the_reason_and_asks_for_no_stored_answer(self):
+        # The app can never fill these controls, so telling the student to store a salary or sponsorship answer for them would be wrong.
+        for kind in (lever.UNREADABLE_TYPE, lever.UNKNOWN_TYPE):
+            for label in ("What is your desired salary?", "Will you now or in the future require visa sponsorship?", "Gender"):
+                with self.subTest(kind=kind, label=label):
+                    field = SchemaField(name="cards[x][field0]", label=label, required=True, type=kind, section="standard", description="the page and its description disagree")
+                    src = sources(facts=FACTS, labels={"location": LOCATION}, allowed=("salary", "sponsorship", "gender"))
+                    plan = build_plan([field], None, src, "Fixture Co", "handoff", ats_name="Lever", ats="lever")
+                    (entry,) = plan.fields
+                    self.assertEqual((entry.problem_kind, entry.disposition), ("window", "left_for_you"))
+                    self.assertIn("Lever's form has a question the app doesn't read", entry.problem)
+                    self.assertIn("the page and its description disagree", entry.problem)
+                    self.assertNotIn("Apply agent settings", entry.problem)
 
     def test_the_plan_hash_is_stable_and_holds_no_value(self):
         first, second = lever_plan("demo_eeo_survey.html", LEVER_COMPANY), lever_plan("demo_eeo_survey.html", LEVER_COMPANY)
