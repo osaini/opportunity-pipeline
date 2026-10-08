@@ -405,7 +405,7 @@ class RehearsalTests(AgentCase):
         agent = fakes.RecordingAgent(fake=FakeGreenhouse("confirm"), mode="rehearse", adapter=GreenhouseAdapter(), timeouts=fakes.TEST_TIMEOUTS, lookup_endpoints=())
         with agent:
             result = agent.run(FakePlan([]), page_url=LEGACY_JOB_URL, schema=[], files={}, replan=lambda scan, uploads: FakePlan([]))
-        self.assertEqual((result.outcome, result.reasons), ("needs_you", [apply_agent.LEGACY]))
+        self.assertEqual((result.outcome, result.reasons), ("needs_you", [apply_agent.LEGACY.format(ats="Greenhouse")]))
 
     def test_a_run_stopped_after_the_first_field_sends_nothing_and_takes_no_picture(self):
         holder = {}
@@ -498,7 +498,7 @@ class RehearsalTests(AgentCase):
 
     def test_a_form_that_sends_the_applicant_to_another_posting_is_not_rehearsed_as_this_one(self):
         run = self.go("redirect_other_posting")
-        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [apply_agent.DIFFERENT_POSTING]))
+        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [apply_agent.DIFFERENT_POSTING.format(ats="Greenhouse")]))
         self.assertEqual(run.result.screenshots[0]["step"], "needs-you")
 
     def test_an_offsite_popup_is_refused_and_stops_the_run_without_calling_it_the_postings_destination(self):
@@ -1246,7 +1246,7 @@ class LookupTests(AgentCase):
     def test_with_no_pinned_endpoint_the_service_is_not_asked(self):
         run = self.lookup(lookup_endpoints=())
         self.assertEqual(run.result.options, {"location": []})
-        self.assertEqual(run.result.reasons, [apply_agent.NO_OPTIONS, apply_agent.NO_ENDPOINT])
+        self.assertEqual(run.result.reasons, [apply_agent.NO_OPTIONS, apply_agent.NO_ENDPOINT.format(ats="Greenhouse")])
         self.assertEqual(self.reached(run), [("GET", "job-boards.greenhouse.io", JOB_PATH)])
         self.assertTrue(self.refused(run, rule="value_guard"))
 
@@ -1806,7 +1806,7 @@ class HandoffTests(HandoffCase):
         run = self.handoff("security_code", student="complete_and_submit", link=link, on_progress=where,
                            timeouts=replace(fakes.HANDOFF_TIMEOUTS, code_read_s=3, security_code_s=3))
         result = run.result
-        self.assertEqual((result.outcome, result.reasons), ("needs_you", [apply_checks.SECURITY_CODE_NOTE]), "nobody pressed Submit with the code")
+        self.assertEqual((result.outcome, result.reasons), ("needs_you", [apply_checks.SECURITY_CODE_NOTE.format(ats="Greenhouse")]), "nobody pressed Submit with the code")
         self.assertEqual(result.evidence["security_code"]["typed"], True)
         final = [shot for shot in result.screenshots if shot["step"] == "final"]
         self.assertEqual(len(final), 1, "the run ended with the code on the page and took no final picture to check")
@@ -1914,7 +1914,7 @@ class HandoffTests(HandoffCase):
     def test_nobody_types_the_code(self):
         run = self.handoff("security_code", timeouts=replace(fakes.HANDOFF_TIMEOUTS, code_read_s=1, security_code_s=2))
         self.assertEqual((run.result.outcome, run.result.after_click, run.result.handed_over), ("needs_you", True, True))
-        self.assertEqual(run.result.reasons, [apply_checks.SECURITY_CODE_NOTE])
+        self.assertEqual(run.result.reasons, [apply_checks.SECURITY_CODE_NOTE.format(ats="Greenhouse")])
         self.assertEqual(self.submit_posts(run), 1)
 
     def test_a_press_during_the_final_picture_is_aborted_and_cannot_contradict_the_outcome(self):
@@ -1939,7 +1939,7 @@ class HandoffTests(HandoffCase):
         self.assertEqual(pressed, ["final"], "the press during the final picture was never made")
         self.assertEqual(self.submit_posts(run), 1, "a code POST was continued during the final picture")
         self.assertTrue(self.refused(run, rule="closing"), "the press during the picture was not aborted by name")
-        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [apply_checks.SECURITY_CODE_NOTE]))
+        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [apply_checks.SECURITY_CODE_NOTE.format(ats="Greenhouse")]))
 
     def test_a_code_the_boxes_did_not_keep_is_not_reported_as_typed(self):
         # A widget that clears what it was given on change: the boxes are empty after the app typed, so the student must be told to type.
@@ -1978,7 +1978,7 @@ class HandoffTests(HandoffCase):
         run = self.handoff("security_code", link=link, on_progress=failing_box,
                            timeouts=replace(fakes.HANDOFF_TIMEOUTS, code_read_s=3, security_code_s=2))
         self.assertEqual(link.results, [(1, False, "typing_failed")], "an exception while typing left the parent without the app's word")
-        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [apply_checks.SECURITY_CODE_NOTE]),
+        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [apply_checks.SECURITY_CODE_NOTE.format(ats="Greenhouse")]),
                          "the window was closed mid-application instead of left to the student")
         self.assertIn("code_yours", run.steps)
 
@@ -1999,7 +1999,7 @@ class HandoffTests(HandoffCase):
         # The reader's answer is slower than the window the agent gives it: the student's turn begins, and the ask is dropped.
         link = fakes.FakeLink(((60.0, {"status": "found", "code": CODE}),))
         run = self.handoff("security_code", link=link, timeouts=replace(fakes.HANDOFF_TIMEOUTS, code_read_s=1, security_code_s=2))
-        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [apply_checks.SECURITY_CODE_NOTE]))
+        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [apply_checks.SECURITY_CODE_NOTE.format(ats="Greenhouse")]))
         self.assertEqual(link.asks, [1])
         self.assertEqual(link.abandoned, [1], "the agent stopped waiting for its ask and did not say so")
         self.assertEqual(link.results, [], "nothing was typed")
@@ -2036,7 +2036,7 @@ class HandoffTests(HandoffCase):
         run = self.handoff("security_code", hook=student, link=link, beat=beat, timeouts=replace(fakes.HANDOFF_TIMEOUTS, code_read_s=2, security_code_s=3))
         self.assertLess(time.monotonic() - started, 40)
         self.assertEqual((run.result.outcome, run.result.after_click), ("needs_you", True), run.result.reasons)
-        self.assertEqual(run.result.reasons, [apply_checks.SECURITY_CODE_NOTE], "an exception was reported as the outcome")
+        self.assertEqual(run.result.reasons, [apply_checks.SECURITY_CODE_NOTE.format(ats="Greenhouse")], "an exception was reported as the outcome")
         self.assertTrue(run.result.evidence["parent_gone"])
         self.assertLessEqual(len(link.asks), 1, "the agent asked for a code after the parent was gone")
         self.assertIn("code_yours", run.steps)
@@ -2174,14 +2174,14 @@ class HandoffTests(HandoffCase):
     def test_a_server_error_after_the_press_is_unconfirmed(self):
         run = self.handoff("server_500")
         self.assertEqual((run.result.outcome, run.result.after_click, run.result.handed_over), ("unconfirmed", True, True))
-        self.assertEqual(run.result.reasons, [apply_checks.UNCONFIRMED_NOTE])
+        self.assertEqual(run.result.reasons, [apply_checks.UNCONFIRMED_NOTE.format(ats="Greenhouse")])
         self.assertFalse(run.result.confirmation_seen)
 
     def test_the_page_closing_right_after_the_press_is_unconfirmed(self):
         run = self.handoff(student="press_and_close")
         self.assertEqual((run.result.outcome, run.result.after_click, run.result.handed_over), ("unconfirmed", True, True))
         self.assertNotEqual(run.result.outcome, "failed")
-        self.assertEqual(run.result.reasons, [apply_checks.UNCONFIRMED_NOTE])
+        self.assertEqual(run.result.reasons, [apply_checks.UNCONFIRMED_NOTE.format(ats="Greenhouse")])
 
     def letter_handoff(self, *, student="do_nothing", files=None, check_file="default", seen=None, **more):
         """A Finish in browser run on a form that requires a cover letter, with an approved one to attach. ``seen`` collects the page at the student's turn."""
@@ -2299,7 +2299,7 @@ class HandoffTests(HandoffCase):
         started = time.monotonic()
         run = self.handoff("challenge", timeouts=replace(fakes.HANDOFF_TIMEOUTS, code_read_s=1, security_code_s=2))
         self.assertEqual((run.result.outcome, run.result.after_click, run.result.handed_over), ("needs_you", True, True))
-        self.assertEqual(run.result.reasons, [apply_checks.CHALLENGE_NOTE])
+        self.assertEqual(run.result.reasons, [apply_checks.CHALLENGE_NOTE.format(ats="Greenhouse")])
         self.assertIn("challenge", run.steps)
         self.assertTrue(run.result.evidence["challenge"])
         self.assertGreaterEqual(time.monotonic() - started, 3, "the app did not wait for the student to finish the check")

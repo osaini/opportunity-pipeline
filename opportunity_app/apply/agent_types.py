@@ -22,25 +22,31 @@ BUILT_MODES = ("lookup", "rehearse", "handoff")
 OUTCOMES = ("looked_up", "rehearsed", "submitted", "unconfirmed", "needs_you", "failed")
 ISOLATIONS = ("process", "thread")
 
-# The steps a run reports, in order, with their words (apply_runs.progress_json). The agent fills {n} and {question}.
+# The steps a run reports, in order, with their words (apply_runs.progress_json). ``progress_text`` fills {ats}, and the agent {n}, {question} and {host}.
 PROGRESS_STEPS = {
     "start": "Starting the browser",
-    "open": "Opening the Greenhouse form",
+    "open": "Opening the {ats} form",
     "read": "Reading the form",
     "lookup": "Looking up options for {question}",
     "fill": "Filling {n} fields",
     "check": "Checking every required field",
     "picture": "Taking a picture of the filled form",
     "your_turn": "Your turn: complete the form in the window, then press Submit application there",
-    "submitting": "Submitting to Greenhouse…",
-    "security_code": ("Greenhouse emailed you a security code. The app is looking for it in your Gmail; "
+    "submitting": "Submitting to {ats}…",
+    "security_code": ("{ats} emailed you a security code. The app is looking for it in your Gmail; "
                       "you can also type it into the window yourself"),
     "form_elsewhere": ("The form tried to send a request to {host}, which the app doesn't recognize, so the app stopped that request. "
                        "If the form shows an error, fix it and press Submit application again, or press Stop and apply from the posting instead"),
     "code_typed": "The app typed the security code from your email. Press Submit application in the window",
-    "code_yours": "Type the security code Greenhouse emailed you into the window, then press Submit application",
-    "challenge": "Greenhouse showed a check in the window. Finish it there",
+    "code_yours": "Type the security code {ats} emailed you into the window, then press Submit application",
+    "challenge": "{ats} showed a check in the window. Finish it there",
 }
+
+
+def progress_text(step: str, ats_name: str, **words: Any) -> str:
+    """The sentence for a progress step, naming the ATS (its display name) and filling the step's own words."""
+    return PROGRESS_STEPS[step].format(ats=ats_name, **words)
+
 MAX_LOOKUP_OPTIONS = 20
 # The one sentence for a run the student stopped. The agent says it, the runner stops a run with it, and the runner's summary
 # relies on it ending in the same "No application was sent." the other failure sentences end in, so there is one copy.
@@ -96,7 +102,7 @@ HANDOFF_HIDDEN = ('The form has a hidden field where the app expected "{question
                   "it. Nothing was sent. Apply from the posting instead.")
 WINDOW_CLOSED = "You closed the window. No application was sent."
 WINDOW_UNCONFIRMED = ("The app couldn't confirm the Chromium window closed, so it can't be sure nothing was sent. "
-                      "Check your email for a confirmation from Greenhouse.")
+                      "Check your email for a confirmation from {ats}.")
 YOUR_TURN = "The form is filled in the Chromium window. Complete the fields below, then press Submit application there."
 YOUR_TURN_NONE_LEFT = "The form is filled in the Chromium window. Check the form, then press Submit application there."
 LEFT_FIELD = 'The app could not fill "{question}". Fill it in yourself.'

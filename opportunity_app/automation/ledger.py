@@ -68,6 +68,7 @@ from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 from ..apply.claims import claim_held
+from ..apply.greenhouse import DISPLAY_NAME as GREENHOUSE_NAME
 from ..core.database import is_unique_violation
 from ..outreach.config import sender_account
 from ..core.schema import PAUSE_NEVER_CHANGED
@@ -190,7 +191,7 @@ FEATURES: dict[str, Feature] = {
         # Phase 5: fill a Greenhouse application in a window and stop before Submit. No shadow: every application
         # needs the student's own press (docs/phase5-apply-agent-spec.md 5.6), so there is nothing to observe first.
         Feature("apply_agent", "Apply for me",
-                "Fill a Greenhouse application from your confirmed facts and saved answers, show you the result, and send it only "
+                f"Fill a {GREENHOUSE_NAME} application from your confirmed facts and saved answers, show you the result, and send it only "
                 "when you press Submit", "applications", "external"),
         # Phase 2: changes that stay inside the app, each with an Undo (student/resume_variants.py,
         # automation/internal.py, automation/triage.py).
@@ -581,7 +582,7 @@ def in_flight(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = 
         })
     for row in conn.execute(
         """
-        SELECT c.application_id, c.token, c.instance, c.heartbeat_at, c.mode, c.handed_over_at, o.company
+        SELECT c.application_id, c.token, c.instance, c.heartbeat_at, c.mode, c.handed_over_at, c.ats, o.company
         FROM application_submit_claims c LEFT JOIN opportunities o ON o.id=c.opportunity_id
         WHERE c.user_id=? AND c.state='clicking' ORDER BY c.handed_over_at
         """,
@@ -590,7 +591,7 @@ def in_flight(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = 
         if claim_held(row, now=now):
             items.append({
                 "source": "apply_claim", "target_id": row["application_id"], "company": row["company"] or "",
-                "kind": row["mode"], "action": "application", "label": "", "at": row["handed_over_at"],
+                "kind": row["mode"], "action": "application", "label": "", "at": row["handed_over_at"], "ats": row["ats"],
             })
     for row in conn.execute(
         """
@@ -651,7 +652,7 @@ def unconfirmed(conn: sqlite3.Connection, user_id: str, *, now: datetime | None 
         })
     for row in conn.execute(
         """
-        SELECT c.application_id, c.token, c.instance, c.heartbeat_at, c.mode, c.state, c.handed_over_at, c.updated_at, o.company
+        SELECT c.application_id, c.token, c.instance, c.heartbeat_at, c.mode, c.state, c.handed_over_at, c.updated_at, c.ats, o.company
         FROM application_submit_claims c LEFT JOIN opportunities o ON o.id=c.opportunity_id
         WHERE c.user_id=? AND (c.state IN ('unconfirmed', 'clicking') OR (c.state IN ('needs_you', 'failed') AND c.after_click=1))
         ORDER BY c.updated_at
@@ -662,7 +663,7 @@ def unconfirmed(conn: sqlite3.Connection, user_id: str, *, now: datetime | None 
             continue
         items.append({
             "target_id": row["application_id"], "company": row["company"] or "", "kind": row["mode"],
-            "action": "application", "at": row["handed_over_at"] or row["updated_at"],
+            "action": "application", "at": row["handed_over_at"] or row["updated_at"], "ats": row["ats"],
         })
     return items
 

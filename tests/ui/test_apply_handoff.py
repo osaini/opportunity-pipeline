@@ -504,7 +504,7 @@ def test_a_role_that_was_rehearsed_still_shows_its_rehearsal_after_many_lookups(
     with db(live_server) as conn:
         def make(kind, stamp, outcome):
             run_id = apply_runs.create_run(
-                conn, user_id=USER, opportunity_id=opportunity, kind=kind, started_by="student", ats="greenhouse", board_token=apply_fake_ats.BOARD_TOKEN,
+                conn, user_id=USER, opportunity_id=opportunity, kind=kind, started_by="student", ats="greenhouse", adapter_version="greenhouse-1", board_token=apply_fake_ats.BOARD_TOKEN,
                 page_url=apply_fake_ats.JOB_URL, company="acme robotics", deadline_seconds=300, now=stamp,
             )
             apply_runs.finish_run(conn, run_id, outcome=outcome, clean=False, now=stamp)

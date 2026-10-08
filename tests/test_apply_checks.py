@@ -6,6 +6,7 @@ observations these functions read are gathered correctly.
 """
 
 import base64
+import functools
 import json
 import re
 import sys
@@ -18,6 +19,7 @@ from urllib.parse import quote
 from opportunity_app.apply import checks as apply_checks
 from opportunity_app.apply.checks import (
     CAPTCHA_ENDPOINTS,
+    GREENHOUSE_ROUTE_POLICY as POLICY,
     looks_like_a_send,
     PHASE_AFTER_HAND_OVER,
     PHASE_AFTER_INPUT,
@@ -33,11 +35,9 @@ from opportunity_app.apply.checks import (
     RouteRequest,
     RouteState,
     SeenRequest,
-    check_required,
     clean_rehearsal,
     decide_outcome,
     is_upload,
-    join,
     leaked_field,
     question_key,
     route_decision,
@@ -45,6 +45,10 @@ from opportunity_app.apply.checks import (
 )
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from helpers_apply import FakePlan, planned  # noqa: E402  (also installs tests/realdata_guard.py)
+
+# The two functions that name the ATS in a problem's sentence: everything here is about Greenhouse's.
+join = functools.partial(apply_checks.join, ats_name="Greenhouse")
+check_required = functools.partial(apply_checks.check_required, ats_name="Greenhouse")
 
 TOKEN, JOB = "examplerobotics", "4000000001"
 SUBMIT_PATH = f"/{TOKEN}/jobs/{JOB}"
@@ -73,7 +77,7 @@ class DecideOutcomeTests(unittest.TestCase):
         return seen(post(status), main_path=CONFIRMATION_PATH, form_present=False, navigated=True, **overrides)
 
     def test_a_303_then_the_confirmation_path_with_the_form_gone_is_submitted(self):
-        outcome = decide_outcome(self.confirmed())
+        outcome = decide_outcome(self.confirmed(), POLICY)
         self.assertEqual((outcome.outcome, outcome.after_click, outcome.resolved_by), ("submitted", 1, "page"))
         self.assertTrue(outcome.settled)
         self.assertEqual(outcome.evidence["submit_status"], 303)
@@ -81,133 +85,133 @@ class DecideOutcomeTests(unittest.TestCase):
         self.assertEqual(outcome.detail, {})
 
     def test_a_2xx_answer_counts_the_same_as_a_redirect(self):
-        self.assertEqual(decide_outcome(self.confirmed(200)).outcome, "submitted")
+        self.assertEqual(decide_outcome(self.confirmed(200), POLICY).outcome, "submitted")
 
     def test_the_boards_own_confirmation_path_matches_even_when_the_loader_named_another(self):
         for path in (f"/{TOKEN}/jobs/{JOB}/confirmation", f"/{TOKEN}/jobs/{JOB}/confirmation/"):
             with self.subTest(path=path):
                 obs = seen(post(303), main_path=path, form_present=False, confirmation_path="/somewhere/else")
-                self.assertEqual(decide_outcome(obs).outcome, "submitted")
+                self.assertEqual(decide_outcome(obs, POLICY).outcome, "submitted")
 
     def test_the_embed_confirmation_needs_the_same_board_and_job(self):
         good = seen(post(303), main_path="/embed/job_app/confirmation", main_query=f"for={TOKEN}&token={JOB}", form_present=False,
                     confirmation_path="")
-        self.assertEqual(decide_outcome(good).outcome, "submitted")
+        self.assertEqual(decide_outcome(good, POLICY).outcome, "submitted")
         for query in (f"for=other&token={JOB}", f"for={TOKEN}&token=1", ""):
             with self.subTest(query=query):
                 bad = seen(post(303), main_path="/embed/job_app/confirmation", main_query=query, form_present=False, confirmation_path="")
-                self.assertEqual(decide_outcome(bad).outcome, "unconfirmed")
+                self.assertEqual(decide_outcome(bad, POLICY).outcome, "unconfirmed")
 
     def test_the_confirmation_path_with_the_form_still_present_is_unconfirmed(self):
         obs = seen(post(303), main_path=CONFIRMATION_PATH, form_present=True, navigated=True)
-        outcome = decide_outcome(obs)
+        outcome = decide_outcome(obs, POLICY)
         self.assertEqual((outcome.outcome, outcome.after_click), ("unconfirmed", 1))
         self.assertIn("Look for its email", outcome.note)
 
     def test_a_thank_you_page_at_the_same_address_with_the_form_present_is_unconfirmed(self):
         # The employer edits that page's wording, so the words prove nothing: the path and the form decide.
         obs = seen(post(200), main_path=SUBMIT_PATH, form_present=True, navigated=True)
-        self.assertEqual(decide_outcome(obs).outcome, "unconfirmed")
+        self.assertEqual(decide_outcome(obs, POLICY).outcome, "unconfirmed")
 
     def test_a_server_error_is_unconfirmed(self):
-        outcome = decide_outcome(seen(post(500)))
+        outcome = decide_outcome(seen(post(500)), POLICY)
         self.assertEqual((outcome.outcome, outcome.after_click), ("unconfirmed", 1))
         self.assertFalse(outcome.settled)
 
     def test_a_post_that_never_answered_is_unconfirmed(self):
-        self.assertEqual(decide_outcome(seen(post(None))).outcome, "unconfirmed")
+        self.assertEqual(decide_outcome(seen(post(None)), POLICY).outcome, "unconfirmed")
 
     def test_a_redirect_without_a_confirmation_page_is_unconfirmed(self):
-        self.assertEqual(decide_outcome(seen(post(303), main_path=SUBMIT_PATH, navigated=True)).outcome, "unconfirmed")
+        self.assertEqual(decide_outcome(seen(post(303), main_path=SUBMIT_PATH, navigated=True), POLICY).outcome, "unconfirmed")
 
     def test_a_navigation_to_the_confirmation_path_without_a_submit_post_is_unconfirmed(self):
         obs = seen(main_path=CONFIRMATION_PATH, form_present=False, navigated=True)
-        outcome = decide_outcome(obs)
+        outcome = decide_outcome(obs, POLICY)
         self.assertEqual((outcome.outcome, outcome.after_click), ("unconfirmed", 1))
 
     def test_a_post_to_the_submit_path_on_another_host_is_not_the_submit(self):
         obs = seen(post(303, host="example.test"), main_path=CONFIRMATION_PATH, form_present=False, navigated=True)
-        self.assertEqual(decide_outcome(obs).outcome, "unconfirmed")
+        self.assertEqual(decide_outcome(obs, POLICY).outcome, "unconfirmed")
 
     def test_a_post_the_route_aborted_is_not_a_submit_that_passed(self):
         obs = seen(post(None, passed=False), main_path=CONFIRMATION_PATH, form_present=False, navigated=True)
-        self.assertEqual(decide_outcome(obs).outcome, "unconfirmed")
+        self.assertEqual(decide_outcome(obs, POLICY).outcome, "unconfirmed")
 
     def test_without_a_loader_submit_path_nothing_can_be_the_submit(self):
         obs = seen(post(303), main_path=CONFIRMATION_PATH, form_present=False, submit_path="")
-        self.assertNotEqual(decide_outcome(obs).outcome, "submitted")
+        self.assertNotEqual(decide_outcome(obs, POLICY).outcome, "submitted")
 
     def test_no_submit_post_and_no_navigation_is_failed_with_nothing_sent(self):
-        outcome = decide_outcome(seen(first_field_error="Email"))
+        outcome = decide_outcome(seen(first_field_error="Email"), POLICY)
         self.assertEqual((outcome.outcome, outcome.after_click), ("failed", 0))
         self.assertIn("nothing was sent", outcome.note.lower())
         self.assertEqual(outcome.note, 'The form did not send, so nothing was sent. Greenhouse marked "Email" as wrong')
         self.assertFalse(outcome.settled)
-        self.assertEqual(decide_outcome(seen()).outcome, "failed")
+        self.assertEqual(decide_outcome(seen(), POLICY).outcome, "failed")
 
     def test_a_post_to_another_path_that_the_route_aborted_says_so(self):
         other = post(None, path=f"{SUBMIT_PATH}/apply-v2", passed=False)
-        outcome = decide_outcome(seen(other))
+        outcome = decide_outcome(seen(other), POLICY)
         self.assertEqual((outcome.outcome, outcome.after_click), ("failed", 0))
         self.assertIn("address the app doesn't recognize", outcome.note)
         self.assertIn("Nothing was sent", outcome.note)
 
     def test_an_aborted_upload_to_another_host_says_the_same(self):
-        outcome = decide_outcome(seen(post(None, method="PUT", host="example-uploads.s3.amazonaws.com", path="/resume", passed=False)))
+        outcome = decide_outcome(seen(post(None, method="PUT", host="example-uploads.s3.amazonaws.com", path="/resume", passed=False)), POLICY)
         self.assertEqual(outcome.after_click, 0)
         self.assertIn("address the app doesn't recognize", outcome.note)
 
     def test_an_aborted_second_submit_does_not_spoil_a_submission(self):
         obs = seen(post(303), post(None, passed=False), main_path=CONFIRMATION_PATH, form_present=False)
-        self.assertEqual(decide_outcome(obs).outcome, "submitted")
+        self.assertEqual(decide_outcome(obs, POLICY).outcome, "submitted")
 
     def test_the_security_code_waits_for_the_student(self):
         for obs in (seen(post(428)), seen(security_code_visible=True), seen(post(428), security_code_visible=True)):
             with self.subTest(obs=repr(obs)[:80]):
-                outcome = decide_outcome(obs)
+                outcome = decide_outcome(obs, POLICY)
                 self.assertEqual((outcome.outcome, outcome.after_click), ("waiting", 1))
                 self.assertEqual(outcome.detail, {"waiting": "security_code"})
 
     def test_a_code_never_entered_is_needs_you_once_the_wait_is_over(self):
-        outcome = decide_outcome(seen(post(428), security_code_visible=True), code_wait_over=True)
+        outcome = decide_outcome(seen(post(428), security_code_visible=True), POLICY, code_wait_over=True)
         self.assertEqual((outcome.outcome, outcome.after_click), ("needs_you", 1))
 
     def test_a_confirmation_after_the_code_is_submitted_with_the_code_recorded(self):
         obs = seen(post(428), post(303), main_path=CONFIRMATION_PATH, form_present=False, navigated=True)
-        outcome = decide_outcome(obs, code_wait_over=True)
+        outcome = decide_outcome(obs, POLICY, code_wait_over=True)
         self.assertEqual((outcome.outcome, outcome.detail), ("submitted", {"security_code": True}))
 
     def test_a_second_answer_that_is_not_a_prompt_ends_the_wait(self):
         # 428, the student's code, then a 500: no longer waiting for a code.
-        self.assertEqual(decide_outcome(seen(post(428), post(500))).outcome, "unconfirmed")
+        self.assertEqual(decide_outcome(seen(post(428), post(500)), POLICY).outcome, "unconfirmed")
 
     def test_a_code_post_that_has_no_answer_is_not_a_second_prompt(self):
         # The boxes stay on the page while the code POST is on its way: one answer, never two prompts.
         in_flight = seen(post(428), post(None), security_code_visible=True)
-        self.assertEqual(decide_outcome(in_flight).outcome, "waiting")
-        self.assertFalse(apply_checks.new_code_prompt(in_flight))
+        self.assertEqual(decide_outcome(in_flight, POLICY).outcome, "waiting")
+        self.assertFalse(apply_checks.new_code_prompt(in_flight, POLICY))
         accepted = seen(post(428), post(200), security_code_visible=True)
-        self.assertEqual(decide_outcome(accepted).outcome, "waiting")
-        self.assertFalse(apply_checks.new_code_prompt(accepted), "an accepted code is the confirmation page's to come, not a prompt")
-        self.assertFalse(apply_checks.new_code_prompt(seen()), "no submit POST, no prompt")
-        self.assertFalse(apply_checks.new_code_prompt(seen(post(428), security_code_visible=True)), "the first 428 is the prompt being answered")
+        self.assertEqual(decide_outcome(accepted, POLICY).outcome, "waiting")
+        self.assertFalse(apply_checks.new_code_prompt(accepted, POLICY), "an accepted code is the confirmation page's to come, not a prompt")
+        self.assertFalse(apply_checks.new_code_prompt(seen(), POLICY), "no submit POST, no prompt")
+        self.assertFalse(apply_checks.new_code_prompt(seen(post(428), security_code_visible=True), POLICY), "the first 428 is the prompt being answered")
 
     def test_a_new_prompt_is_a_new_428_or_the_boxes_again_after_a_refusal(self):
-        self.assertTrue(apply_checks.new_code_prompt(seen(post(428), post(428), security_code_visible=True)))
-        self.assertTrue(apply_checks.new_code_prompt(seen(post(428), post(428))))
-        self.assertTrue(apply_checks.new_code_prompt(seen(post(428), post(422), security_code_visible=True)))
-        self.assertFalse(apply_checks.new_code_prompt(seen(post(428), post(422))), "a refusal with no boxes is not a prompt")
-        self.assertFalse(apply_checks.new_code_prompt(seen(post(428), post(None, passed=False), security_code_visible=True)),
+        self.assertTrue(apply_checks.new_code_prompt(seen(post(428), post(428), security_code_visible=True), POLICY))
+        self.assertTrue(apply_checks.new_code_prompt(seen(post(428), post(428)), POLICY))
+        self.assertTrue(apply_checks.new_code_prompt(seen(post(428), post(422), security_code_visible=True), POLICY))
+        self.assertFalse(apply_checks.new_code_prompt(seen(post(428), post(422)), POLICY), "a refusal with no boxes is not a prompt")
+        self.assertFalse(apply_checks.new_code_prompt(seen(post(428), post(None, passed=False), security_code_visible=True), POLICY),
                          "a POST the route refused has no answer to read")
 
     def test_a_code_post_with_no_answer_when_the_wait_is_over_may_have_been_sent(self):
         for last in (None, 200, 303):
             with self.subTest(status=last):
-                outcome = decide_outcome(seen(post(428), post(last), security_code_visible=True), code_wait_over=True)
-                self.assertEqual((outcome.outcome, outcome.after_click, outcome.note), ("unconfirmed", 1, apply_checks.UNCONFIRMED_NOTE))
+                outcome = decide_outcome(seen(post(428), post(last), security_code_visible=True), POLICY, code_wait_over=True)
+                self.assertEqual((outcome.outcome, outcome.after_click, outcome.note), ("unconfirmed", 1, apply_checks.UNCONFIRMED_NOTE.format(ats="Greenhouse")))
         # A second 428 is a real prompt the student did not answer, and a code never pressed is the note that says so.
         for obs in (seen(post(428), post(428), security_code_visible=True), seen(post(428), security_code_visible=True)):
-            self.assertEqual(decide_outcome(obs, code_wait_over=True).outcome, "needs_you")
+            self.assertEqual(decide_outcome(obs, POLICY, code_wait_over=True).outcome, "needs_you")
 
     def test_a_5xx_answer_to_the_code_post_is_never_a_new_prompt_and_may_have_been_sent(self):
         # An edge proxy may answer 502, 503 or 504 after the origin took the code. The boxes stay on the page after a 5xx.
@@ -215,53 +219,53 @@ class DecideOutcomeTests(unittest.TestCase):
             for boxes in (True, False):
                 obs = seen(post(428), post(status), security_code_visible=boxes)
                 with self.subTest(status=status, boxes=boxes):
-                    self.assertFalse(apply_checks.new_code_prompt(obs), "a second application POST would be allowed after one that may have been received")
+                    self.assertFalse(apply_checks.new_code_prompt(obs, POLICY), "a second application POST would be allowed after one that may have been received")
                     for over in (False, True):
-                        outcome = decide_outcome(obs, code_wait_over=over)
-                        self.assertEqual((outcome.outcome, outcome.after_click, outcome.note), ("unconfirmed", 1, apply_checks.UNCONFIRMED_NOTE))
+                        outcome = decide_outcome(obs, POLICY, code_wait_over=over)
+                        self.assertEqual((outcome.outcome, outcome.after_click, outcome.note), ("unconfirmed", 1, apply_checks.UNCONFIRMED_NOTE.format(ats="Greenhouse")))
 
     def test_a_refused_code_is_called_refused_not_unpressed(self):
         for last in (428, 422):
             with self.subTest(status=last):
-                outcome = decide_outcome(seen(post(428), post(last), security_code_visible=True), code_wait_over=True)
-                self.assertEqual((outcome.outcome, outcome.note), ("needs_you", apply_checks.CODE_REFUSED_NOTE))
+                outcome = decide_outcome(seen(post(428), post(last), security_code_visible=True), POLICY, code_wait_over=True)
+                self.assertEqual((outcome.outcome, outcome.note), ("needs_you", apply_checks.CODE_REFUSED_NOTE.format(ats="Greenhouse")))
                 self.assertNotIn("was not pressed after it", outcome.note)
         # The first prompt, never answered: Submit really was not pressed after it.
-        self.assertEqual(decide_outcome(seen(post(428), security_code_visible=True), code_wait_over=True).note, apply_checks.SECURITY_CODE_NOTE)
+        self.assertEqual(decide_outcome(seen(post(428), security_code_visible=True), POLICY, code_wait_over=True).note, apply_checks.SECURITY_CODE_NOTE.format(ats="Greenhouse"))
 
     def test_a_challenge_frame_is_needs_you_with_the_click_made(self):
-        outcome = decide_outcome(seen(challenge_frame=True))
+        outcome = decide_outcome(seen(challenge_frame=True), POLICY)
         self.assertEqual((outcome.outcome, outcome.after_click), ("needs_you", 1))
 
     def test_a_refusal_with_the_form_still_present_is_failed_after_the_click(self):
-        outcome = decide_outcome(seen(post(422), first_field_error="Email"))
+        outcome = decide_outcome(seen(post(422), first_field_error="Email"), POLICY)
         self.assertEqual((outcome.outcome, outcome.after_click), ("failed", 1))
         self.assertEqual(outcome.note, 'Greenhouse refused the form (HTTP 422). Greenhouse marked "Email" as wrong')
         self.assertTrue(outcome.settled)
         # No named field, no clause: the note never carries text from the page.
-        self.assertEqual(decide_outcome(seen(post(422))).note, "Greenhouse refused the form (HTTP 422)")
+        self.assertEqual(decide_outcome(seen(post(422)), POLICY).note, "Greenhouse refused the form (HTTP 422)")
 
     def test_the_two_notes_that_wait_on_the_student_say_what_was_not_done(self):
         self.assertEqual(
-            apply_checks.SECURITY_CODE_NOTE,
+            apply_checks.SECURITY_CODE_NOTE.format(ats="Greenhouse"),
             "Greenhouse asked for the emailed security code, and Submit application was not pressed after it. Look for Greenhouse's email",
         )
-        self.assertEqual(apply_checks.CHALLENGE_NOTE, "Greenhouse showed a check that wasn't finished. Look for Greenhouse's email")
-        self.assertEqual(decide_outcome(seen(post(428), security_code_visible=True), code_wait_over=True).note, apply_checks.SECURITY_CODE_NOTE)
-        self.assertEqual(decide_outcome(seen(challenge_frame=True)).note, apply_checks.CHALLENGE_NOTE)
+        self.assertEqual(apply_checks.CHALLENGE_NOTE.format(ats="Greenhouse"), "Greenhouse showed a check that wasn't finished. Look for Greenhouse's email")
+        self.assertEqual(decide_outcome(seen(post(428), security_code_visible=True), POLICY, code_wait_over=True).note, apply_checks.SECURITY_CODE_NOTE.format(ats="Greenhouse"))
+        self.assertEqual(decide_outcome(seen(challenge_frame=True), POLICY).note, apply_checks.CHALLENGE_NOTE.format(ats="Greenhouse"))
 
     def test_a_4xx_with_the_form_gone_is_not_called_a_refusal(self):
-        self.assertEqual(decide_outcome(seen(post(422), form_present=False, navigated=True)).outcome, "unconfirmed")
+        self.assertEqual(decide_outcome(seen(post(422), form_present=False, navigated=True), POLICY).outcome, "unconfirmed")
 
     def test_the_first_matching_row_wins(self):
         # A confirmation beats a challenge frame that is still in the DOM.
         obs = self.confirmed(challenge_frame=True)
-        self.assertEqual(decide_outcome(obs).outcome, "submitted")
+        self.assertEqual(decide_outcome(obs, POLICY).outcome, "submitted")
         # The code prompt beats the challenge frame.
-        self.assertEqual(decide_outcome(seen(post(428), challenge_frame=True)).outcome, "waiting")
+        self.assertEqual(decide_outcome(seen(post(428), challenge_frame=True), POLICY).outcome, "waiting")
 
     def test_an_outcome_carries_no_page_wording_of_its_own(self):
-        outcome = decide_outcome(seen(post(200), main_path=SUBMIT_PATH, form_present=True))
+        outcome = decide_outcome(seen(post(200), main_path=SUBMIT_PATH, form_present=True), POLICY)
         self.assertNotIn("Thank you", outcome.note)
 
 
@@ -292,7 +296,7 @@ class RouteDecisionRulesTests(unittest.TestCase):
                               ("boards-api.greenhouse.io", False), ("careers.example-robotics.test", False), ("greenhouse.io", False)):
             for mode, phase in (("rehearse", PHASE_BEFORE_INPUT), ("submit", PHASE_FILL), ("handoff", PHASE_STUDENT)):
                 with self.subTest(host=host, mode=mode):
-                    decision = route_decision(mode, phase, request(url=f"https://{host}/x", is_navigation=True, resource_type="document"), state())
+                    decision = route_decision(mode, phase, request(url=f"https://{host}/x", is_navigation=True, resource_type="document"), state(), POLICY)
                     if allowed:
                         self.assertIsInstance(decision, Allow)
                     else:
@@ -301,17 +305,17 @@ class RouteDecisionRulesTests(unittest.TestCase):
 
     def test_only_a_main_frame_navigation_is_held_to_the_board_hosts(self):
         # A script or an image from another host is not a navigation; before the first input it may load.
-        self.assertIsInstance(route_decision("rehearse", PHASE_BEFORE_INPUT, request(url="https://cdn.example-robotics.test/a.js", resource_type="script"), state()), Allow)
+        self.assertIsInstance(route_decision("rehearse", PHASE_BEFORE_INPUT, request(url="https://cdn.example-robotics.test/a.js", resource_type="script"), state(), POLICY), Allow)
 
     def test_websockets_are_refused_in_every_mode_and_phase(self):
         for mode, phases in apply_checks.PHASES.items():
             for phase in phases:
                 with self.subTest(mode=mode, phase=phase):
-                    decision = route_decision(mode, phase, request(url="wss://socket.example-robotics.test/live", is_websocket=True), state())
+                    decision = route_decision(mode, phase, request(url="wss://socket.example-robotics.test/live", is_websocket=True), state(), POLICY)
                     self.assertEqual(decision.rule, "websocket")
 
     def test_a_non_public_address_is_refused(self):
-        decision = route_decision("rehearse", PHASE_BEFORE_INPUT, request(url="http://127.0.0.1:8000/", public=False), state())
+        decision = route_decision("rehearse", PHASE_BEFORE_INPUT, request(url="http://127.0.0.1:8000/", public=False), state(), POLICY)
         self.assertEqual(decision.rule, "non_public_address")
 
     def test_a_request_with_no_public_fact_is_refused_so_the_rule_fails_closed(self):
@@ -319,18 +323,18 @@ class RouteDecisionRulesTests(unittest.TestCase):
             with self.subTest(mode=mode):
                 unset = RouteRequest(method="GET", url="http://127.0.0.1:8000/api/v1/applications")
                 self.assertIsNone(unset.public)
-                self.assertEqual(route_decision(mode, phase, unset, state()).rule, "non_public_address")
-                self.assertEqual(route_decision(mode, phase, RouteRequest("GET", "https://job-boards.greenhouse.io/x"), state()).rule, "non_public_address")
-                self.assertIsInstance(route_decision(mode, phase, RouteRequest("GET", "https://job-boards.greenhouse.io/x", public=True), state()), Allow)
+                self.assertEqual(route_decision(mode, phase, unset, state(), POLICY).rule, "non_public_address")
+                self.assertEqual(route_decision(mode, phase, RouteRequest("GET", "https://job-boards.greenhouse.io/x"), state(), POLICY).rule, "non_public_address")
+                self.assertIsInstance(route_decision(mode, phase, RouteRequest("GET", "https://job-boards.greenhouse.io/x", public=True), state(), POLICY), Allow)
 
     def test_an_unknown_mode_or_phase_is_refused(self):
-        self.assertEqual(route_decision("unattended", PHASE_FILL, request(), state()).rule, "unknown_phase")
-        self.assertEqual(route_decision("submit", PHASE_BEFORE_INPUT, request(), state()).rule, "unknown_phase")
-        self.assertEqual(route_decision("rehearse", PHASE_STUDENT, request(), state()).rule, "unknown_phase")
-        self.assertEqual(route_decision("submit", PHASE_STUDENT, request("POST", SUBMIT_URL), state()).rule, "unknown_phase")
+        self.assertEqual(route_decision("unattended", PHASE_FILL, request(), state(), POLICY).rule, "unknown_phase")
+        self.assertEqual(route_decision("submit", PHASE_BEFORE_INPUT, request(), state(), POLICY).rule, "unknown_phase")
+        self.assertEqual(route_decision("rehearse", PHASE_STUDENT, request(), state(), POLICY).rule, "unknown_phase")
+        self.assertEqual(route_decision("submit", PHASE_STUDENT, request("POST", SUBMIT_URL), state(), POLICY).rule, "unknown_phase")
 
     def test_the_abort_record_names_the_method_host_rule_and_field_never_the_url_or_body(self):
-        decision = route_decision("rehearse", PHASE_AFTER_INPUT, request(url=f"{BEACON}{EMAIL}", resource_type="image"), state())
+        decision = route_decision("rehearse", PHASE_AFTER_INPUT, request(url=f"{BEACON}{EMAIL}", resource_type="image"), state(), POLICY)
         self.assertEqual(decision.rule, "value_guard")
         self.assertEqual(decision.record("get"), {"method": "GET", "host": "pixel.example-robotics.test", "rule": "value_guard", "field_key": "email"})
         self.assertNotIn(EMAIL, repr(decision.record("get")))
@@ -339,7 +343,7 @@ class RouteDecisionRulesTests(unittest.TestCase):
 
 class ValueGuardTests(unittest.TestCase):
     def guard(self, req, mode="rehearse", phase=PHASE_AFTER_INPUT, **state_args):
-        return route_decision(mode, phase, req, state(**state_args))
+        return route_decision(mode, phase, req, state(**state_args), POLICY)
 
     def test_a_planned_value_is_found_raw_encoded_and_case_folded(self):
         for label, url in (
@@ -379,7 +383,7 @@ class ValueGuardTests(unittest.TestCase):
         self.assertEqual(apply_checks.safe_host("xn--zo-ija.evil.example", {"first_name": "Sam Rivera"}), "xn--zo-ija.evil.example")
         self.assertEqual(apply_checks.safe_host("xn--zo-ija.evil.example", {}), "xn--zo-ija.evil.example")
         decision = route_decision("rehearse", PHASE_AFTER_INPUT, request(url="https://xn--rene-dpa.collector.example/p.gif", resource_type="image", is_navigation=True),
-                                  state(values={"first_name": "Ren\u00e9e"}))
+                                  state(values={"first_name": "Ren\u00e9e"}), POLICY)
         self.assertEqual((decision.rule, decision.host), ("offsite_navigation", apply_checks.HOST_WITHHELD))
 
     def test_a_planned_value_in_a_header_or_a_body_is_found(self):
@@ -404,7 +408,7 @@ class ValueGuardTests(unittest.TestCase):
             ("crlf body", request("POST", "https://www.google.com/recaptcha/api2/reload", body=essay.replace("\n", "\r\n"))),
         ):
             with self.subTest(label):
-                found = route_decision("rehearse" if req.method == "GET" else "submit", PHASE_AFTER_INPUT if req.method == "GET" else PHASE_FILL, req, state(values=values))
+                found = route_decision("rehearse" if req.method == "GET" else "submit", PHASE_AFTER_INPUT if req.method == "GET" else PHASE_FILL, req, state(values=values), POLICY)
                 self.assertEqual(found.rule, "value_guard")
         # The two probes that got through before, by name.
         self.assertEqual(leaked_field(request("POST", "https://www.google.com/recaptcha/api2/reload", body=json.dumps({"v": essay})), {"essay": essay}), "essay")
@@ -508,23 +512,23 @@ class LookupAndRehearseTableTests(unittest.TestCase):
         for mode in ("lookup", "rehearse"):
             for method in ("GET", "HEAD", "OPTIONS"):
                 with self.subTest(mode=mode, method=method):
-                    self.assertIsInstance(route_decision(mode, PHASE_BEFORE_INPUT, request(method), state()), Allow)
+                    self.assertIsInstance(route_decision(mode, PHASE_BEFORE_INPUT, request(method), state(), POLICY), Allow)
             for method in ("POST", "PUT", "PATCH", "DELETE"):
                 with self.subTest(mode=mode, method=method):
-                    decision = route_decision(mode, PHASE_BEFORE_INPUT, request(method, "https://analytics.example-robotics.test/collect"), state())
+                    decision = route_decision(mode, PHASE_BEFORE_INPUT, request(method, "https://analytics.example-robotics.test/collect"), state(), POLICY)
                     self.assertEqual(decision.rule, "non_get")
 
     def test_a_rehearsal_refuses_captcha_endpoints_that_a_submit_would_allow(self):
         url = "https://www.google.com/recaptcha/api2/reload?k=fixture"
         for phase in (PHASE_BEFORE_INPUT, PHASE_AFTER_INPUT):
-            self.assertIsInstance(route_decision("rehearse", phase, request("POST", url), state()), Abort)
-        self.assertEqual(route_decision("submit", PHASE_FILL, request("POST", url), state()), Allow("captcha"))
+            self.assertIsInstance(route_decision("rehearse", phase, request("POST", url), state(), POLICY), Abort)
+        self.assertEqual(route_decision("submit", PHASE_FILL, request("POST", url), state(), POLICY), Allow("captcha"))
 
     def test_after_the_first_input_static_assets_on_greenhouses_static_hosts_pass(self):
         for host in ("job-boards.cdn.greenhouse.io", "recruiting.cdn.greenhouse.io", "s2-recruiting.cdn.greenhouse.io", "s7-recruiting.cdn.greenhouse.io"):
             for resource in ("image", "font", "stylesheet", "script", "media"):
                 with self.subTest(host=host, resource=resource):
-                    decision = route_decision("rehearse", PHASE_AFTER_INPUT, request(url=f"https://{host}/assets/a.bin", resource_type=resource), state())
+                    decision = route_decision("rehearse", PHASE_AFTER_INPUT, request(url=f"https://{host}/assets/a.bin", resource_type=resource), state(), POLICY)
                     self.assertEqual(decision, Allow("static_asset"))
 
     def test_a_static_asset_request_to_any_other_greenhouse_host_is_refused(self):
@@ -533,9 +537,9 @@ class LookupAndRehearseTableTests(unittest.TestCase):
                      "job-boards.cdn.greenhouse.io.example.test", "sx-recruiting.cdn.greenhouse.io", "s1234-recruiting.cdn.greenhouse.io"):
             with self.subTest(host=host):
                 url = f"https://{host}/i?e=ue&ue_px=" + base64.b64encode(f'{{"e":"{EMAIL}"}}'.encode()).decode()
-                decision = route_decision("rehearse", PHASE_AFTER_INPUT, request(url=url, resource_type="image"), state(values={"email": EMAIL}))
+                decision = route_decision("rehearse", PHASE_AFTER_INPUT, request(url=url, resource_type="image"), state(values={"email": EMAIL}), POLICY)
                 self.assertIsInstance(decision, Abort)
-                clear = route_decision("rehearse", PHASE_AFTER_INPUT, request(url=f"https://{host}/i.gif", resource_type="image"), state())
+                clear = route_decision("rehearse", PHASE_AFTER_INPUT, request(url=f"https://{host}/i.gif", resource_type="image"), state(), POLICY)
                 self.assertEqual(clear.rule, "after_first_input")
 
     def test_after_the_first_input_every_other_get_is_refused(self):
@@ -551,28 +555,28 @@ class LookupAndRehearseTableTests(unittest.TestCase):
         )
         for label, url, resource in cases:
             with self.subTest(label):
-                decision = route_decision("rehearse", PHASE_AFTER_INPUT, request(url=url, resource_type=resource), state(typing_key="city", typing_lookup="location"))
+                decision = route_decision("rehearse", PHASE_AFTER_INPUT, request(url=url, resource_type=resource), state(typing_key="city", typing_lookup="location"), POLICY)
                 self.assertEqual(decision.rule, "after_first_input")
 
     def test_after_the_first_input_every_other_method_is_refused_on_any_host(self):
         for url in ("https://boards.greenhouse.io" + SUBMIT_PATH, "https://job-boards.greenhouse.io/x", "https://www.google.com/recaptcha/api2/reload"):
             for method in ("POST", "PUT", "HEAD", "OPTIONS"):
                 with self.subTest(url=url, method=method):
-                    self.assertIsInstance(route_decision("rehearse", PHASE_AFTER_INPUT, request(method, url), state()), Abort)
+                    self.assertIsInstance(route_decision("rehearse", PHASE_AFTER_INPUT, request(method, url), state(), POLICY), Abort)
 
     def test_a_rehearsal_never_lets_a_submit_post_through(self):
         for phase in (PHASE_BEFORE_INPUT, PHASE_AFTER_INPUT):
-            decision = route_decision("rehearse", phase, request("POST", SUBMIT_URL), state())
+            decision = route_decision("rehearse", phase, request("POST", SUBMIT_URL), state(), POLICY)
             self.assertIsInstance(decision, Abort)
 
     def test_the_lookup_pass_needs_an_endpoint_that_is_pinned(self):
         url = "https://boards-api.greenhouse.io/fake-lookup/location?q=Spr"
         req = request(url=url, resource_type="fetch")
-        self.assertEqual(route_decision("lookup", PHASE_AFTER_INPUT, req, state(typing_key="city", typing_lookup="location")), Allow("lookup"))
-        self.assertEqual(route_decision("lookup", PHASE_AFTER_INPUT, req, state(typing_key="city", typing_lookup="location", lookup_endpoints=())).rule, "after_first_input")
+        self.assertEqual(route_decision("lookup", PHASE_AFTER_INPUT, req, state(typing_key="city", typing_lookup="location"), POLICY), Allow("lookup"))
+        self.assertEqual(route_decision("lookup", PHASE_AFTER_INPUT, req, state(typing_key="city", typing_lookup="location", lookup_endpoints=()), POLICY).rule, "after_first_input")
         # The shipped list names Greenhouse's own lookup hosts, not the fictional fixture endpoint, so the fake's path is not let through by default.
         self.assertTrue(apply_checks.GREENHOUSE_LOOKUP_ENDPOINTS)
-        self.assertEqual(route_decision("lookup", PHASE_AFTER_INPUT, req, RouteState(submit_path=SUBMIT_PATH, typing_key="city", typing_lookup="location")).rule, "after_first_input")
+        self.assertEqual(route_decision("lookup", PHASE_AFTER_INPUT, req, RouteState(submit_path=SUBMIT_PATH, typing_key="city", typing_lookup="location"), POLICY).rule, "after_first_input")
 
     def test_a_lookup_endpoint_is_an_exact_host_and_a_path_prefix(self):
         for url, allowed in (
@@ -585,7 +589,7 @@ class LookupAndRehearseTableTests(unittest.TestCase):
         ):
             with self.subTest(url=url):
                 decision = route_decision("rehearse", PHASE_AFTER_INPUT, request(url=url, resource_type="fetch"),
-                                          state(typing_key="city", typing_lookup="location", lookup_endpoints=(LOOKUP_LOCATION, LOOKUP_SCHOOL)))
+                                          state(typing_key="city", typing_lookup="location", lookup_endpoints=(LOOKUP_LOCATION, LOOKUP_SCHOOL)), POLICY)
                 self.assertEqual(isinstance(decision, Allow), allowed)
 
     def test_a_lookup_passes_only_for_the_kind_the_typed_field_uses(self):
@@ -595,7 +599,7 @@ class LookupAndRehearseTableTests(unittest.TestCase):
         for typing_lookup, allowed in (("location", location), ("school", school)):
             for label, req in (("location", location), ("school", school)):
                 with self.subTest(typing_lookup=typing_lookup, request=label):
-                    decision = route_decision("rehearse", PHASE_AFTER_INPUT, req, state(typing_key="field", typing_lookup=typing_lookup, lookup_endpoints=endpoints))
+                    decision = route_decision("rehearse", PHASE_AFTER_INPUT, req, state(typing_key="field", typing_lookup=typing_lookup, lookup_endpoints=endpoints), POLICY)
                     if req is allowed:
                         self.assertEqual(decision, Allow("lookup"))
                     else:
@@ -608,7 +612,7 @@ class LookupAndRehearseTableTests(unittest.TestCase):
             for mode in ("lookup", "rehearse"):
                 with self.subTest(url=url, mode=mode):
                     decision = route_decision(mode, PHASE_AFTER_INPUT, request(url=url, resource_type="fetch"),
-                                              state(typing_key="first_name", typing_lookup="", lookup_endpoints=endpoints))
+                                              state(typing_key="first_name", typing_lookup="", lookup_endpoints=endpoints), POLICY)
                     self.assertEqual(decision.rule, "after_first_input")
 
     def test_an_endpoint_with_no_kind_serves_no_field(self):
@@ -616,14 +620,14 @@ class LookupAndRehearseTableTests(unittest.TestCase):
         req = request(url="https://boards-api.greenhouse.io/fake-lookup/location?q=a", resource_type="fetch")
         for typing_lookup in ("", "location"):
             with self.subTest(typing_lookup=typing_lookup):
-                decision = route_decision("rehearse", PHASE_AFTER_INPUT, req, state(typing_key="city", typing_lookup=typing_lookup, lookup_endpoints=(anonymous,)))
+                decision = route_decision("rehearse", PHASE_AFTER_INPUT, req, state(typing_key="city", typing_lookup=typing_lookup, lookup_endpoints=(anonymous,)), POLICY)
                 self.assertEqual(decision.rule, "after_first_input")
 
     def test_a_field_typed_with_another_kinds_endpoint_loses_the_value_guard_exemption(self):
         # first_name is being typed and its (non-)lookup is not the location endpoint, so its text is guarded on that endpoint too.
         url = "https://boards-api.greenhouse.io/fake-lookup/location?q=Samantha"
         decision = route_decision("rehearse", PHASE_AFTER_INPUT, request(url=url, resource_type="fetch"),
-                                  state(typing_key="first_name", typing_lookup="", lookup_endpoints=(LOOKUP_LOCATION, LOOKUP_SCHOOL)))
+                                  state(typing_key="first_name", typing_lookup="", lookup_endpoints=(LOOKUP_LOCATION, LOOKUP_SCHOOL)), POLICY)
         self.assertEqual((decision.rule, decision.field_key), ("value_guard", "first_name"))
 
 
@@ -632,7 +636,7 @@ class SubmitAndHandoffTableTests(unittest.TestCase):
 
     def test_before_hand_over_gets_pass_and_nothing_that_could_carry_the_application_does(self):
         for mode in ("submit", "handoff"):
-            self.assertIsInstance(route_decision(mode, PHASE_FILL, request("GET"), state()), Allow)
+            self.assertIsInstance(route_decision(mode, PHASE_FILL, request("GET"), state(), POLICY), Allow)
             for method, url in (
                 ("POST", SUBMIT_URL),                                            # a requestSubmit, an Enter key in a typeahead
                 ("POST", "https://boards.greenhouse.io/examplerobotics/jobs/1/other"),
@@ -641,83 +645,83 @@ class SubmitAndHandoffTableTests(unittest.TestCase):
                 ("PATCH", "https://job-boards.greenhouse.io/x"),
             ):
                 with self.subTest(mode=mode, method=method, url=url):
-                    self.assertIsInstance(route_decision(mode, PHASE_FILL, request(method, url), state()), Abort)
+                    self.assertIsInstance(route_decision(mode, PHASE_FILL, request(method, url), state(), POLICY), Abort)
 
     def test_the_submit_post_before_hand_over_is_refused_by_name(self):
         for mode in ("submit", "handoff"):
-            decision = route_decision(mode, PHASE_FILL, request("POST", SUBMIT_URL), state())
+            decision = route_decision(mode, PHASE_FILL, request("POST", SUBMIT_URL), state(), POLICY)
             self.assertEqual(decision.rule, "before_hand_over")
 
     def test_before_hand_over_a_captcha_endpoint_passes_only_without_a_planned_value(self):
         url = "https://www.google.com/recaptcha/api2/reload?k=fixture"
         for mode in ("submit", "handoff"):
-            self.assertEqual(route_decision(mode, PHASE_FILL, request("POST", url, body="c=abc"), state()), Allow("captcha"))
-            self.assertEqual(route_decision(mode, PHASE_FILL, request("POST", url, body=EMAIL), state()).rule, "value_guard")
+            self.assertEqual(route_decision(mode, PHASE_FILL, request("POST", url, body="c=abc"), state(), POLICY), Allow("captcha"))
+            self.assertEqual(route_decision(mode, PHASE_FILL, request("POST", url, body=EMAIL), state(), POLICY).rule, "value_guard")
 
     def test_the_captcha_endpoint_list_is_exact_hosts_and_prefixes(self):
         self.assertTrue(CAPTCHA_ENDPOINTS)
         for endpoint in CAPTCHA_ENDPOINTS:
             with self.subTest(endpoint=endpoint.host):
-                decision = route_decision("submit", PHASE_FILL, request("POST", f"https://{endpoint.host}{endpoint.path_prefix}x"), state())
+                decision = route_decision("submit", PHASE_FILL, request("POST", f"https://{endpoint.host}{endpoint.path_prefix}x"), state(), POLICY)
                 self.assertEqual(decision, Allow("captcha"))
         for url in ("https://www.google.com/maps", "https://www.google.com.example.test/recaptcha/x", "https://evil-recaptcha.example.test/recaptcha/x"):
             with self.subTest(url=url):
-                self.assertIsInstance(route_decision("submit", PHASE_FILL, request("POST", url), state()), Abort)
+                self.assertIsInstance(route_decision("submit", PHASE_FILL, request("POST", url), state(), POLICY), Abort)
 
     def test_a_handoff_students_first_submit_asks_for_the_hand_over(self):
-        decision = route_decision("handoff", PHASE_STUDENT, request("POST", SUBMIT_URL, body="x=1"), state())
+        decision = route_decision("handoff", PHASE_STUDENT, request("POST", SUBMIT_URL, body="x=1"), state(), POLICY)
         self.assertEqual(decision, Allow("hand_over", requires_hand_over=True, submit_post=True))
 
     def test_in_the_students_turn_everything_else_is_still_held_back(self):
         for method, url in (("POST", "https://boards.greenhouse.io/examplerobotics/jobs/1/other"), ("POST", "https://analytics.example-robotics.test/c"),
                             ("PUT", "https://example-robotics-uploads.s3.amazonaws.com/resume")):
             with self.subTest(url=url):
-                self.assertIsInstance(route_decision("handoff", PHASE_STUDENT, request(method, url), state()), Abort)
+                self.assertIsInstance(route_decision("handoff", PHASE_STUDENT, request(method, url), state(), POLICY), Abort)
         # Only the submit path on the submit host counts.
-        wrong_host = route_decision("handoff", PHASE_STUDENT, request("POST", f"https://job-boards.greenhouse.io{SUBMIT_PATH}"), state())
+        wrong_host = route_decision("handoff", PHASE_STUDENT, request("POST", f"https://job-boards.greenhouse.io{SUBMIT_PATH}"), state(), POLICY)
         self.assertIsInstance(wrong_host, Abort)
 
     def test_a_second_press_of_submit_after_the_first_passed_is_refused(self):
-        decision = route_decision("handoff", PHASE_STUDENT, request("POST", SUBMIT_URL), state(submit_posts_passed=1))
+        decision = route_decision("handoff", PHASE_STUDENT, request("POST", SUBMIT_URL), state(submit_posts_passed=1), POLICY)
         self.assertEqual(decision.rule, "second_submit_post")
 
     def test_with_no_loader_submit_path_no_request_is_the_submit_post(self):
         for phase in (PHASE_STUDENT, PHASE_AFTER_HAND_OVER):
-            decision = route_decision("handoff", phase, request("POST", SUBMIT_URL), state(submit_path=""))
+            decision = route_decision("handoff", phase, request("POST", SUBMIT_URL), state(submit_path=""), POLICY)
             self.assertIsInstance(decision, Abort)
 
     def test_after_hand_over_exactly_one_submit_post_passes(self):
         for mode in ("submit", "handoff"):
             run = state()
-            first = route_decision(mode, PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run)
+            first = route_decision(mode, PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run, POLICY)
             self.assertEqual(first, Allow("submit", submit_post=True))
             run.record(first)
-            second = route_decision(mode, PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run)
+            second = route_decision(mode, PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run, POLICY)
             self.assertEqual(second.rule, "second_submit_post")
 
     def test_one_more_post_passes_only_after_a_security_code_prompt_and_once_per_prompt(self):
         run = state()
-        run.record(route_decision("submit", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run))
-        self.assertEqual(route_decision("submit", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run).rule, "second_submit_post")
+        run.record(route_decision("submit", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run, POLICY))
+        self.assertEqual(route_decision("submit", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run, POLICY).rule, "second_submit_post")
         run.note_security_code_prompt()                # Greenhouse answered 428
-        code = route_decision("submit", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run)
+        code = route_decision("submit", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run, POLICY)
         self.assertEqual(code, Allow("security_code", code_post=True))
         run.record(code)
-        self.assertEqual(route_decision("submit", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run).rule, "second_submit_post")
+        self.assertEqual(route_decision("submit", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run, POLICY).rule, "second_submit_post")
         run.note_security_code_prompt()                # a second prompt allows a second code
-        self.assertIsInstance(route_decision("submit", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run), Allow)
+        self.assertIsInstance(route_decision("submit", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run, POLICY), Allow)
 
     def test_after_hand_over_every_other_non_get_is_refused_and_a_captcha_post_passes(self):
         for method, url in (("POST", "https://boards.greenhouse.io/examplerobotics/jobs/4000000001/apply-v2"), ("POST", "https://analytics.example-robotics.test/collect"),
                             ("PUT", "https://example-robotics-uploads.s3.amazonaws.com/resume"), ("DELETE", "https://job-boards.greenhouse.io/x")):
             with self.subTest(url=url):
-                self.assertIsInstance(route_decision("submit", PHASE_AFTER_HAND_OVER, request(method, url), state(submit_posts_passed=1)), Abort)
-        self.assertEqual(route_decision("submit", PHASE_AFTER_HAND_OVER, request("POST", "https://www.google.com/recaptcha/api2/reload"), state()),
+                self.assertIsInstance(route_decision("submit", PHASE_AFTER_HAND_OVER, request(method, url), state(submit_posts_passed=1), POLICY), Abort)
+        self.assertEqual(route_decision("submit", PHASE_AFTER_HAND_OVER, request("POST", "https://www.google.com/recaptcha/api2/reload"), state(), POLICY),
                          Allow("captcha"))
-        self.assertEqual(route_decision("submit", PHASE_AFTER_HAND_OVER, request("POST", f"https://boards.greenhouse.io{SUBMIT_PATH}/apply-v2"), state()).rule, "other_non_get")
+        self.assertEqual(route_decision("submit", PHASE_AFTER_HAND_OVER, request("POST", f"https://boards.greenhouse.io{SUBMIT_PATH}/apply-v2"), state(), POLICY).rule, "other_non_get")
 
     def test_gets_pass_after_hand_over(self):
-        self.assertIsInstance(route_decision("submit", PHASE_AFTER_HAND_OVER, request("GET", CONFIRMATION_PATH_URL), state()), Allow)
+        self.assertIsInstance(route_decision("submit", PHASE_AFTER_HAND_OVER, request("GET", CONFIRMATION_PATH_URL), state(), POLICY), Allow)
 
     def test_s3_uploads_are_refused_in_every_phase_while_the_flag_is_off(self):
         self.assertIs(apply_checks.S3_UPLOAD_ENABLED, False)
@@ -725,7 +729,7 @@ class SubmitAndHandoffTableTests(unittest.TestCase):
         for mode, phases in apply_checks.PHASES.items():
             for phase in phases:
                 with self.subTest(mode=mode, phase=phase):
-                    decision = route_decision(mode, phase, request("PUT", url), state(submit_posts_passed=1))
+                    decision = route_decision(mode, phase, request("PUT", url), state(submit_posts_passed=1), POLICY)
                     self.assertEqual(decision.rule, "s3_upload")
 
     def test_record_counts_only_what_passed(self):
@@ -755,7 +759,7 @@ class TelemetryAndCodeGuardTests(unittest.TestCase):
             for phase in phases:
                 for method in ("GET", "POST", "PUT", "OPTIONS"):
                     with self.subTest(mode=mode, phase=phase, method=method):
-                        decision = route_decision(mode, phase, request(method, TELEMETRY_URL + "?e=pv"), state(submit_posts_passed=1))
+                        decision = route_decision(mode, phase, request(method, TELEMETRY_URL + "?e=pv"), state(submit_posts_passed=1), POLICY)
                         self.assertEqual(decision.rule, "telemetry")
                         self.assertEqual(decision.host, "c.spl.greenhouse.io")
                         self.assertEqual(decision.record(method), {"method": method, "host": "c.spl.greenhouse.io", "rule": "telemetry"})
@@ -763,28 +767,28 @@ class TelemetryAndCodeGuardTests(unittest.TestCase):
     def test_a_telemetry_host_is_the_exact_host_only(self):
         for url in ("https://spl.greenhouse.io/x", "https://c.spl.greenhouse.io.example.test/x", "https://greenhouse.io/x"):
             with self.subTest(url=url):
-                self.assertNotEqual(getattr(route_decision("handoff", PHASE_STUDENT, request("GET", url), state()), "rule", ""), "telemetry")
+                self.assertNotEqual(getattr(route_decision("handoff", PHASE_STUDENT, request("GET", url), state(), POLICY), "rule", ""), "telemetry")
 
     def test_a_submit_post_while_the_app_types_the_code_is_refused_without_spending_the_prompt(self):
         run = state()
-        run.record(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run))
+        run.record(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run, POLICY))
         run.note_security_code_prompt()
         run.code_typing_until = float("inf")
         self.assertTrue(run.code_typing)
-        refused = route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run)
+        refused = route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run, POLICY)
         self.assertEqual(refused.rule, "code_post_while_typing")
         self.assertEqual((run.code_posts_passed, run.security_code_prompts), (0, 1))
         # A refusal is not recorded as a pass. With the guard over and no code typed by the app, the next POST is the prompt's one.
         run.code_typing_until = 0.0
         self.assertFalse(run.code_typing)
-        allowed = route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run)
+        allowed = route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run, POLICY)
         self.assertEqual(allowed, Allow("security_code", code_post=True))
         run.record(allowed)
         self.assertEqual(run.code_posts_passed, 1)
 
     def test_once_the_app_typed_the_code_the_code_post_waits_for_the_students_press_however_long_it_takes(self):
         run = state()
-        run.record(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run))
+        run.record(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run, POLICY))
         run.note_security_code_prompt()
         run.code_typing_until = float("inf")
         run.note_student_press()                              # a press while the app types is not the press that counts
@@ -792,19 +796,19 @@ class TelemetryAndCodeGuardTests(unittest.TestCase):
         run.code_typing_until = 0.0
         run.require_code_press()
         for _ in range(3):                                    # a widget that retries: refused each time, nothing spent
-            refused = route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run)
+            refused = route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run, POLICY)
             self.assertEqual(refused.rule, "code_post_before_press")
             self.assertEqual((run.code_posts_passed, run.security_code_prompts), (0, 1))
         run.note_student_press()
-        allowed = route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run)
+        allowed = route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run, POLICY)
         self.assertEqual(allowed, Allow("security_code", code_post=True))
         run.record(allowed)
         self.assertEqual((run.code_press_required, run.code_pressed), (True, False), "the press was used up; the rule stays on")
-        self.assertEqual(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run).rule, "second_submit_post")
+        self.assertEqual(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run, POLICY).rule, "second_submit_post")
         run.note_security_code_prompt()                       # the code is asked for again: the retry has no new press, so it is refused
-        self.assertEqual(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run).rule, "code_post_before_press")
+        self.assertEqual(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run, POLICY).rule, "code_post_before_press")
         run.note_student_press()
-        self.assertEqual(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run), Allow("security_code", code_post=True))
+        self.assertEqual(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run, POLICY), Allow("security_code", code_post=True))
 
     def test_a_press_is_forgotten_when_the_app_starts_typing_again_and_does_not_count_before_the_app_typed(self):
         run = state()
@@ -818,14 +822,14 @@ class TelemetryAndCodeGuardTests(unittest.TestCase):
 
     def test_a_code_the_student_typed_needs_no_press_from_the_guard(self):
         run = state()
-        run.record(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run))
+        run.record(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run, POLICY))
         run.note_security_code_prompt()
-        self.assertEqual(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run), Allow("security_code", code_post=True))
+        self.assertEqual(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run, POLICY), Allow("security_code", code_post=True))
 
     def test_the_guard_covers_only_the_submit_post(self):
         run = state(code_typing_until=float("inf"))
-        self.assertIsInstance(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("GET"), run), Allow)
-        self.assertEqual(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", "https://boards.greenhouse.io/x/other"), run).rule, "other_non_get")
+        self.assertIsInstance(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("GET"), run, POLICY), Allow)
+        self.assertEqual(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", "https://boards.greenhouse.io/x/other"), run, POLICY).rule, "other_non_get")
 
     def test_the_code_guard_is_off_unless_the_agent_turned_it_on(self):
         self.assertFalse(RouteState().code_typing)
@@ -848,14 +852,14 @@ class StudentSubmitElsewhereAndUploadTests(unittest.TestCase):
         )
         for asked, expected in cases:
             with self.subTest(method=asked.method, url=asked.url):
-                self.assertEqual(student_submit_elsewhere(asked, state()), expected)
+                self.assertEqual(student_submit_elsewhere(asked, state(), POLICY), expected)
 
     def test_a_send_after_the_students_press_to_an_address_the_app_does_not_recognize_looks_like_the_form_sending(self):
         FORM = {"content-type": "application/x-www-form-urlencoded"}
         run = state()
         other = "https://apply.example-robotics.test/submit"
         # No press seen: nothing says this request has to do with Submit.
-        self.assertFalse(looks_like_a_send(request("POST", other, headers=MULTIPART, body=WITH_FILE), run))
+        self.assertFalse(looks_like_a_send(request("POST", other, headers=MULTIPART, body=WITH_FILE), run, POLICY))
         run.note_student_press()
         cases = (
             (request("POST", other, headers=MULTIPART, body=WITHOUT_FILE), True),
@@ -870,9 +874,9 @@ class StudentSubmitElsewhereAndUploadTests(unittest.TestCase):
         )
         for asked, expected in cases:
             with self.subTest(method=asked.method, url=asked.url):
-                self.assertEqual(looks_like_a_send(asked, run), expected)
+                self.assertEqual(looks_like_a_send(asked, run, POLICY), expected)
         run.last_press_at = time.monotonic() - apply_checks.SEND_AFTER_PRESS_S - 1
-        self.assertFalse(looks_like_a_send(request("POST", other, headers=MULTIPART, body=WITHOUT_FILE), run), "a press long ago explains nothing")
+        self.assertFalse(looks_like_a_send(request("POST", other, headers=MULTIPART, body=WITHOUT_FILE), run, POLICY), "a press long ago explains nothing")
 
     def test_is_upload_table(self):
         cases = (
@@ -940,7 +944,7 @@ class TheFormHostsAreTheSubmitHostsFamily(unittest.TestCase):
 # The handoff phases belong to the table tests above: a student's Submit during a code typing is a refusal, never a hand-over.
 class StudentPhaseAndCodeTypingTests(unittest.TestCase):
     def test_a_submit_in_the_students_turn_is_still_a_hand_over_when_no_code_is_being_typed(self):
-        decision = route_decision("handoff", PHASE_STUDENT, request("POST", SUBMIT_URL), state())
+        decision = route_decision("handoff", PHASE_STUDENT, request("POST", SUBMIT_URL), state(), POLICY)
         self.assertEqual(decision, Allow("hand_over", requires_hand_over=True, submit_post=True))
 
 

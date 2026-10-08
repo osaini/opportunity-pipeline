@@ -348,7 +348,7 @@ class PlanHashTests(unittest.TestCase):
         base = self.build()
         again = build_plan(self.FIELDS, None, sources(answers=[answer("Why do you want to work at Example Robotics?", "I build robot arms"),
                                                                 answer("Which team are you most interested in?", "Controls")]),
-                           COMPANY, "submit", canonical_url="https://job-boards.greenhouse.io/x/jobs/1", adapter_version="greenhouse-2")
+                           COMPANY, "submit", ats_name="Greenhouse", canonical_url="https://job-boards.greenhouse.io/x/jobs/1", adapter_version="greenhouse-2")
         self.assertNotEqual(base.plan_hash, again.plan_hash, "an adapter that changed means rehearsing again")
         self.assertNotEqual(plan_hash(base, "https://job-boards.greenhouse.io/x/jobs/2", "greenhouse-1"), base.plan_hash)
         handoff = self.build(mode="handoff")
@@ -1333,8 +1333,8 @@ class CheckWritesNothingTests(PolicyCase):
         self.conn.commit()
         changes = self.conn.total_changes
         closed = FakeSchemaClient(closed=True)
-        self.assertEqual(self.run_check(client=closed)["message"], apply_preflight.NOT_FOUND)
-        self.assertEqual(self.run_check(client=raising())["message"], apply_preflight.NO_ANSWER)
+        self.assertEqual(self.run_check(client=closed)["message"], "The app couldn't find this posting on Greenhouse. It may be closed")
+        self.assertEqual(self.run_check(client=raising())["message"], "Greenhouse did not answer. Try again later")
         self.assertEqual(self.conn.total_changes, changes)
 
     def test_the_answer_holds_no_value(self):
@@ -1359,7 +1359,7 @@ class CheckWritesNothingTests(PolicyCase):
     def test_a_role_that_is_not_greenhouse_is_unavailable_and_a_role_that_is_not_the_students_is_not_found(self):
         self.opportunity("plain-1")
         self.assertEqual(self.run_check("plain-1")["status"], "unavailable")
-        self.assertEqual(self.run_check("plain-1")["message"], apply_preflight.NOT_GREENHOUSE)
+        self.assertEqual(self.run_check("plain-1")["message"], "Apply for me works with Greenhouse postings only, for now")
         with self.assertRaises(actions.OpportunityNotFoundError):
             self.run_check("no-such-role")
 

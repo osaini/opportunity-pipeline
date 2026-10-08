@@ -1194,7 +1194,7 @@ class ViewTests(RunnerCase):
 
     def make(self, kind="rehearsal", **documents):
         run_id = apply_runs.create_run(
-            self.conn, user_id=USER, opportunity_id=ACME, kind=kind, started_by="student", ats="greenhouse", board_token="examplerobotics",
+            self.conn, user_id=USER, opportunity_id=ACME, kind=kind, started_by="student", ats="greenhouse", adapter_version="greenhouse-1", board_token="examplerobotics",
             page_url=JOB_URL, company="acme", deadline_seconds=300,
         )
         outcome = documents.pop("outcome", "")
@@ -1363,7 +1363,7 @@ class ViewTests(RunnerCase):
         # A tracker that reports the Submit click is refused as the form sending elsewhere, but the form's own submission then goes through.
         plan = self.plan()
         seen = {"host": "events.example-analytics.test"}
-        for outcome, reasons in (("submitted", []), ("unconfirmed", [apply_checks.UNCONFIRMED_NOTE])):
+        for outcome, reasons in (("submitted", []), ("unconfirmed", [apply_checks.UNCONFIRMED_NOTE.format(ats="Greenhouse")])):
             with self.subTest(outcome=outcome):
                 view = self.make("handoff", outcome=outcome, plan=plan, reasons=reasons, evidence={"handoff_end": "posted", "elsewhere_seen": seen})
                 self.assertEqual(view["reasons"], reasons)

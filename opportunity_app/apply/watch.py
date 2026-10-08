@@ -44,6 +44,7 @@ from ..core.timestamps import parse_app_instant
 from ..integrations.gmail_client import connection_state
 from ..mail.gmail_connection import connector_row
 from ..student import preparation
+from .ats import name_of
 from .claims import UNCONFIRMED_UNWRITTEN, claim_held
 from .greenhouse import ATS_GREENHOUSE, is_greenhouse_sender
 
@@ -60,7 +61,9 @@ STRONG_TIERS = ("job_id", "company_title")
 NOT_A_CONFIRMATION = ("none", "ambiguous")
 # 8.8: the statistics' "recent" window is the last this-many submissions whose watch finished.
 RECENT_WINDOW = 10
-ATS_NAMES = {ATS_GREENHOUSE: "Greenhouse"}
+# The notices' sentences; {ats} is the ATS's display name (apply.ats.name_of of the claim's ats).
+EMAIL_AFTER_RELEASE = "{ats} confirmed an application to {company} by email, after an attempt was marked as not sent. Check it."
+EMAIL_CONFIRMED = "{ats} confirmed your application to {company} by email"
 # The same strings runs._SETTLED_BY and the timeline words use.
 WATCH_SOURCE_EMAIL = "apply_agent:confirmation_email"
 WATCH_SOURCE_APP = "apply_agent:watch"
@@ -423,7 +426,7 @@ def _held_back(conn: sqlite3.Connection, user_id: str, claim: dict[str, Any], st
         company = claim["company_name"] or "the company"
         automation.notice(
             conn, user_id, event_key=f"apply-email-after-release:{claim['token']}", level="warning",
-            title=f"Greenhouse confirmed an application to {company} by email, after an attempt was marked as not sent. Check it.",
+            title=EMAIL_AFTER_RELEASE.format(ats=name_of(claim["ats"]), company=company),
         )
     return False
 
@@ -478,7 +481,7 @@ def _resolve_by_email(
     company = claim["company_name"] or "the company"
     automation.notice(
         conn, user_id, event_key=f"apply-email-confirmed:{claim['token']}", level="info",
-        title=f"Greenhouse confirmed your application to {company} by email",
+        title=EMAIL_CONFIRMED.format(ats=name_of(claim["ats"]), company=company),
     )
     apply_runs.record_stage(conn, claim["token"], user_id=user_id, now=now)
     return True
@@ -611,7 +614,7 @@ def card_state(row: Any, now: datetime | None = None) -> dict[str, Any]:
     return {
         "token": row["token"], "mode": row["mode"], "state": state, "verification": verification, "run_id": str(row["run_id"] or ""),
         "stage_policy": row["stage_policy"], "stage_recorded": bool(row["stage_recorded"]), "resolved_by": row["resolved_by"],
-        "ats": ats, "ats_name": ATS_NAMES.get(ats, ats.title() if isinstance(ats, str) else ""),
+        "ats": ats, "ats_name": name_of(ats),
         "company": row["company_name"] or "", "application_stage": row["application_stage"], "note": note,
         "status": status, "submitted_at": row["submitted_at"], "watch_until": row["watch_until"],
         "email_received_at": detail.get("email_received_at") or (row["verified_at"] if verification == "email_confirmed" else None),
@@ -704,7 +707,7 @@ def ats_statistics(conn: sqlite3.Connection, user_id: str, ats: str = ATS_GREENH
         "WHERE user_id=? AND ats=? AND handed_over_at IS NOT NULL ORDER BY handed_over_at DESC",
         (user_id, ats),
     ).fetchall()
-    name = ATS_NAMES.get(ats, ats.title())
+    name = name_of(ats)
     total = {"handed_over": len(rows), "submitted": 0, "email_confirmed": 0, "no_email_24h": 0, "watching": 0, "watch_paused": 0,
              "not_watched": 0, "security_code_prompts": 0, "security_code_typed": 0}
     recent = {"window": RECENT_WINDOW, "finished": 0, "no_email_24h": 0, "security_code_prompts": 0}

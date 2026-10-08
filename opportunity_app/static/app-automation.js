@@ -10,7 +10,7 @@
 
   // From app-ui.js.
   const {
-    CLOCK_FORMAT, announce, applicationPicker, autoSaveSelect, chip, element, formatDate, formatDateTime, humanizeKey,
+    CLOCK_FORMAT, announce, applicationPicker, atsName, autoSaveSelect, chip, element, formatDate, formatDateTime, humanizeKey,
     optionElement, plural, showError, timeAgo,
   } = App;
 
@@ -247,7 +247,7 @@
     if (item?.action !== "send" && item?.action !== "form" && item?.action !== "application") return null;
     const form = item.action === "form";
     const application = item.action === "application";
-    const how = application ? "handed to Greenhouse" : form ? "submission started" : item.source === "scheduled_send" ? "handed to Gmail" : "sending started";
+    const how = application ? `handed to ${atsName(item)}` : form ? "submission started" : item.source === "scheduled_send" ? "handed to Gmail" : "sending started";
     const when = automationWhen(item.at);
     const to = item.company ? ` to ${item.company}` : "";
     return {
@@ -293,7 +293,8 @@
       return `A Gmail draft${item.company ? ` for ${item.company}` : ""} may have been saved without the app recording it${started}. Check your Gmail Drafts; a draft sends nothing.`;
     }
     if (item.action === "application") {
-      return `The application${to} may or may not have reached Greenhouse${started}. Look for Greenhouse's confirmation email or check the company's page, then say whether it went through.`;
+      const ats = atsName(item);
+      return `The application${to} may or may not have reached ${ats}${started}. Look for ${ats}'s confirmation email or check the company's page, then say whether it went through.`;
     }
     const form = item.action === "form";
     const what = form ? "The contact form message" : item.kind === "follow_up" ? "The follow-up" : item.kind === "thank_you" ? "The thank-you" : "The email";
@@ -1199,7 +1200,7 @@
   // event recorded. Nothing automatic is ever labelled as the student's own.
   // An automatic change reads "Automatic" until its action is looked up
   // (labelAutomaticChanges), which can tell one the student approved.
-  function changeAuthor(source) {
+  function changeAuthor(source, ats = atsName()) {
     const value = typeof source === "string" ? source : "";
     if (!value || value === "user") return "You";
     if (value.startsWith("automation-undo:")) return "Undone by you";
@@ -1210,7 +1211,7 @@
     if (value === "application_import") return "Imported";
     if (value === "apply_agent:confirmation_email") return "The confirmation email";
     if (value === "apply_agent:student_confirmed") return "You confirmed";
-    if (value === "apply_agent:confirmation_page") return "Greenhouse's confirmation page";
+    if (value === "apply_agent:confirmation_page") return `${ats}'s confirmation page`;
     if (value === "apply_agent:watch") return "The app, on its own";
     return humanizeKey(value.split(":")[0]);
   }

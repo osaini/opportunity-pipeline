@@ -32,9 +32,17 @@ from ..applications.actions import OpportunityNotFoundError
 from .schema_client import SchemaClient, SchemaUnavailable
 from .checks import question_key
 
-NOT_GREENHOUSE = "Apply for me works with Greenhouse postings only, for now"
-NOT_FOUND = "The app couldn't find this posting on Greenhouse. It may be closed"
-NO_ANSWER = "Greenhouse did not answer. Try again later"
+# {ats} is the ATS's display name (apply.ats.name_of), filled where the sentence is said.
+NOT_FOUND = "The app couldn't find this posting on {ats}. It may be closed"
+NO_ANSWER = "{ats} did not answer. Try again later"
+DUPLICATE_TICK = "I know Apply for me handed an application to {company} to {ats} on {date} (it may not have gone through). Apply anyway."
+LEFT_FOR_YOU = ". {count} more {is_are} left for you to answer on the {ats} form"
+YOURS_TO_ANSWER = "The app has everything it can fill. {count} question{s_are} yours to answer on the {ats} form"
+
+
+def not_supported() -> str:
+    """What the check says about a role no registered ATS recognises."""
+    return f"Apply for me works with {apply_ats.supported_names()} postings only, for now"
 SCHEMA_CACHE_SECONDS = 3600.0
 # What each field's own words can hold, so a saved answer is not a whole document.
 MAX_ANSWER_CHARS = 10_000
@@ -47,17 +55,18 @@ class AnswerRefused(ValueError):
 class SchemaCache:
     """The parsed listings the check has fetched, kept in memory for an hour so opening a role does not refetch.
 
-    A run always fetches fresh; only the check reads this. Only a listing that came back is kept: a 404 or an
-    error is asked about again.
+    A listing is kept under (ATS, board token, job id): a token is the name of a board within its ATS, so the same token and job id on
+    another ATS is another posting. A run always fetches fresh; only the check reads this. Only a listing that came back is kept: a 404
+    or an error is asked about again.
     """
 
     def __init__(self, ttl: float = SCHEMA_CACHE_SECONDS, clock: Any = time.monotonic) -> None:
         self._ttl = ttl
         self._clock = clock
-        self._items: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+        self._items: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
         self._lock = threading.Lock()
 
-    def get(self, key: tuple[str, str]) -> dict[str, Any] | None:
+    def get(self, key: tuple[str, str, str]) -> dict[str, Any] | None:
         with self._lock:
             held = self._items.get(key)
             if held is None or self._clock() - held[0] >= self._ttl:
@@ -65,7 +74,7 @@ class SchemaCache:
                 return None
             return copy.deepcopy(held[1])
 
-    def put(self, key: tuple[str, str], listing: dict[str, Any]) -> None:
+    def put(self, key: tuple[str, str, str], listing: dict[str, Any]) -> None:
         with self._lock:
             self._items[key] = (self._clock(), copy.deepcopy(listing))
 
@@ -89,21 +98,21 @@ def require_opportunity(conn: sqlite3.Connection, user_id: str, opportunity_id: 
 
 
 def _listing(
-    client: SchemaClient, cache: SchemaCache | None, token: str, job_id: str,
+    client: SchemaClient, cache: SchemaCache | None, ats: str, token: str, job_id: str,
 ) -> tuple[dict[str, Any] | None, str, bool]:
     """(the listing, a sentence when there is none, whether it came from the cache)."""
     if cache is not None:
-        held = cache.get((token, job_id))
+        held = cache.get((ats, token, job_id))
         if held is not None:
             return held, "", True
     try:
         listing = client.fetch(token, job_id)
     except SchemaUnavailable:
-        return None, NO_ANSWER, False
+        return None, NO_ANSWER.format(ats=apply_ats.name_of(ats)), False
     if listing is None:
-        return None, NOT_FOUND, False
+        return None, NOT_FOUND.format(ats=apply_ats.name_of(ats)), False
     if cache is not None:
-        cache.put((token, job_id), listing)
+        cache.put((ats, token, job_id), listing)
     return listing, "", False
 
 
@@ -253,8 +262,8 @@ def _prepare(
     company = str(opportunity["company"] or "")
     result: dict[str, Any] = {
         "opportunity_id": opportunity_id, "title": str(opportunity["title"] or ""), "company": company, "ats": "", "status": "unavailable",
-        "message": NOT_GREENHOUSE, "problems": [], "asks": [], "fields": [], "optional_sensitive": [], "counts": {}, "eligibility": {}, "application": {"exists": False, "stage": ""},
-        "checked_at": moment.isoformat(timespec="seconds"), "from_cache": False,
+        "message": not_supported(), "problems": [], "asks": [], "fields": [], "optional_sensitive": [], "counts": {}, "eligibility": {}, "application": {"exists": False, "stage": ""},
+        "checked_at": moment.isoformat(timespec="seconds"), "from_cache": False, "ats_name": "",
         "posting": {"title": "", "company": "", "url": "", "differs": False, "difference": ""},
     }
     found = apply_ats.identify(conn, opportunity_id)
@@ -262,7 +271,7 @@ def _prepare(
         return result, None, None, None
     ats, ident = found
     token, job = ident
-    result.update(ats=ats.key, board_token=token, job_id=job, canonical_url=ats.canonical_url(token, job))
+    result.update(ats=ats.key, ats_name=ats.display_name, board_token=token, job_id=job, canonical_url=ats.canonical_url(token, job))
     application = conn.execute("SELECT stage FROM applications WHERE opportunity_id=? AND user_id=?", (opportunity_id, user_id)).fetchone()
     if application is not None:
         result["application"] = {"exists": True, "stage": str(application["stage"])}
@@ -270,12 +279,12 @@ def _prepare(
     result["asks"] = asks
     if block is not None:
         return {**result, "status": "failed", "message": block.message}, None, None, None
-    listing, sentence, cached = _listing(client, cache, token, job)
+    listing, sentence, cached = _listing(client, cache, ats.key, token, job)
     if listing is None:
         return {**result, "status": "failed", "message": sentence}, None, None, None
     result["from_cache"] = cached
     # Which posting was read, so the student can see it, and whether it looks like the role they saved (source integrity).
-    difference = apply_policy.posting_difference(company, str(opportunity["title"] or ""), listing)
+    difference = apply_policy.posting_difference(company, str(opportunity["title"] or ""), listing, ats_name=ats.display_name)
     result["posting"] = {
         "title": str(listing.get("title") or ""), "company": str(listing.get("company_name") or ""), "url": result["canonical_url"],
         "differs": bool(difference), "difference": difference,
@@ -284,7 +293,7 @@ def _prepare(
     schema = ats.parse_schema(listing)
     plan = apply_policy.build_plan(
         schema, None, sources, company, mode,
-        canonical_url=result["canonical_url"], adapter_version=ats.adapter_version,
+        ats_name=ats.display_name, canonical_url=result["canonical_url"], adapter_version=ats.adapter_version,
     )
     return result, plan, sources, schema
 
@@ -309,7 +318,7 @@ def _eligibility(
     rehearsal = apply_runs.rehearsal_block(conn, user_id, moment)
     rows: dict[str, dict[str, Any]] = {"rehearse": {"allowed": not rehearsal, "needs_tick": False, "reason": rehearsal or ""}}
     for name, mode in (("handoff", "handoff"), ("submit", "one_click")):
-        block = apply_runs.limit_check(conn, user_id, company_words, token, mode, moment)
+        block = apply_runs.limit_check(conn, user_id, company_words, result["ats"], token, mode, moment)
         blocked = block is not None and block.kind == "failed"
         ticked = tick or (block is not None and block.kind == "ask")
         rows[name] = {
@@ -322,9 +331,9 @@ def _eligibility(
             ticks = [{"code": item["code"], "label": item["message"]} for item in result["asks"]]
             if block is not None and block.kind == "ask" and block.code == apply_runs.ASK_COMPANY_LIMIT:
                 ticks.append({"code": block.code, "label": (
-                    # Worded from what the record shows: the claim counts from the hand-over, and an attempt Greenhouse refused, one that
+                    # Worded from what the record shows: the claim counts from the hand-over, and an attempt the ATS refused, one that
                     # ended unconfirmed or one the student released still counts, so it is never stated as an application made.
-                    f"I know Apply for me handed an application to {result['company']} to Greenhouse on {block.date} (it may not have gone through). Apply anyway."
+                    DUPLICATE_TICK.format(company=result["company"], ats=apply_ats.name_of(result["ats"]), date=block.date)
                 )})
             rows[name]["ticks"] = [] if blocked else ticks
     met, count, needed = apply_runs.gate(conn, user_id, apply_greenhouse.ATS_GREENHOUSE)
@@ -370,11 +379,11 @@ def check(
         count = len(open_here)
         message = f"{count} question{'s' if count != 1 else ''} need{'' if count != 1 else 's'} an answer first"
         if yours:
-            message += f". {len(yours)} more {'is' if len(yours) == 1 else 'are'} left for you to answer on the Greenhouse form"
+            message += LEFT_FOR_YOU.format(count=len(yours), is_are="is" if len(yours) == 1 else "are", ats=apply_ats.name_of(result["ats"]))
         result.update(status="needs_you", message=message)
     elif yours:
         count = len(yours)
-        result.update(status="needs_you", message=f"The app has everything it can fill. {count} question{'s are' if count != 1 else ' is'} yours to answer on the Greenhouse form")
+        result.update(status="needs_you", message=YOURS_TO_ANSWER.format(count=count, s_are="s are" if count != 1 else " is", ats=apply_ats.name_of(result["ats"])))
     elif result["posting"]["differs"]:
         result.update(status="needs_you", message=f"Check the posting first. {result['posting']['difference']}")
     else:

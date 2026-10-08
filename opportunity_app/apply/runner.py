@@ -59,14 +59,14 @@ from uuid import uuid4
 from pipeline_core.identity import employer_key
 
 from . import (
-    checks as apply_checks, claims as apply_claims, greenhouse as apply_greenhouse, policy as apply_policy, preflight as apply_preflight,
+    ats as apply_ats, checks as apply_checks, claims as apply_claims, policy as apply_policy, preflight as apply_preflight,
     runs as apply_runs, security_code as apply_security_code, watch as apply_watch,
 )
 from .agent_types import (
     HANDOFF_NOT_SUBMITTED, ISOLATIONS, MODE_FOR_KIND, OP_CANCEL, OP_ERROR, OP_FILE_CHECK, OP_FILE_CHECK_REPLY, OP_FRONT, OP_HAND_OVER, OP_HAND_OVER_REPLY, OP_HANDOFF_READY,
     OP_HEARTBEAT, OP_PROGRESS, OP_REPLAN, OP_REPLAN_REPLY, OP_RESULT, OP_SECURITY_CODE, OP_SECURITY_CODE_REPLY, OP_SECURITY_CODE_RESULT,
-    OUTCOMES, PROGRESS_STEPS, STOPPED, WINDOW_CLOSED, WINDOW_UNCONFIRMED, YOUR_TURN, YOUR_TURN_NONE_LEFT, AgentJob, ApplyTimeouts,
-    FilePayload, LookupRequest, RunResult,
+    OUTCOMES, STOPPED, WINDOW_CLOSED, WINDOW_UNCONFIRMED, YOUR_TURN, YOUR_TURN_NONE_LEFT, AgentJob, ApplyTimeouts,
+    FilePayload, LookupRequest, RunResult, progress_text,
 )
 from .checks import UNCONFIRMED_NOTE
 from .claims import HELD_HEARTBEAT
@@ -1121,7 +1121,7 @@ class ApplyRunner:
             )
             result = inputs.result
             if inputs.plan is None or inputs.schema is None or result["status"] in ("unavailable", "failed"):
-                raise RunRefused(409, str(result.get("message") or apply_preflight.NOT_GREENHOUSE))
+                raise RunRefused(409, str(result.get("message") or apply_preflight.not_supported()))
             posting = result.get("posting") if isinstance(result.get("posting"), dict) else {}
             if kind in ("rehearsal", "handoff") and posting.get("differs") and not posting_confirmed:
                 # Source integrity: a form for another posting or employer is not filled for the student without their word. Finish in
@@ -1163,7 +1163,7 @@ class ApplyRunner:
             files = {} if kind == "lookup" else self._files(conn, user_id, inputs.plan, resume_root)
             run_id = apply_runs.create_run(
                 conn, user_id=user_id, opportunity_id=opportunity_id, kind=kind, started_by="student", ats=ats,
-                board_token=str(result["board_token"]), page_url=page_url, company=employer_key(str(result["company"])),
+                adapter_version=apply_ats.spec_for(ats).adapter_version, board_token=str(result["board_token"]), page_url=page_url, company=employer_key(str(result["company"])),
                 deadline_seconds=int(deadline), run_id=run_id or None, application_id=taken["application_id"] if handoff else None,
                 claim_token=token, now=now,
             )
@@ -1293,15 +1293,17 @@ class ApplyRunner:
         outcome = Supervised(None, stop=STOP_ERROR, error="NotStarted")
         supervising = False
         try:
-            _guard(lambda: note("start", PROGRESS_STEPS["start"]))
+            _guard(lambda: note("start", progress_text("start", apply_ats.name_of(work.job.ats))))
             sources = apply_policy.sources_for(
                 conn, user_id, work.opportunity_id, company=work.company, storage_root=work.resume_root, key=apply_policy.mac_key(work.apply_root),
             )
 
+            spec = apply_ats.spec_for(work.job.ats)
+
             def planner(scan: list[dict[str, Any]], uploads_on_attach: bool) -> Any:
                 return apply_policy.build_plan(
                     apply_policy.with_page_labels(work.schema, scan), scan, sources, work.company, "handoff" if handoff else "rehearse",
-                    canonical_url=work.page_url, adapter_version=apply_greenhouse.ADAPTER_VERSION, uploads_on_attach=uploads_on_attach,
+                    ats_name=spec.display_name, canonical_url=work.page_url, adapter_version=spec.adapter_version, uploads_on_attach=uploads_on_attach,
                 )
 
             def check_file(_key: str, ref: str, sha256: str) -> bool:
@@ -1464,10 +1466,11 @@ class ApplyRunner:
                     settlement = handoff_settlement(
                         result, stop=outcome.stop, shutting_down=shutting_down, claim_state="claimed", cancel_requested=False,
                         handed_over=False, closed_confirmed=outcome.closed_confirmed,
-                        minutes=round(work.deadline_s / 60), not_started=outcome.error == "NotStarted",
+                        minutes=round(work.deadline_s / 60), not_started=outcome.error == "NotStarted", ats_name=apply_ats.name_of(work.job.ats),
                     )
                 else:
-                    settlement = Settlement("unconfirmed", "unconfirmed", UNCONFIRMED_NOTE, [UNCONFIRMED_NOTE], True, row=6)
+                    unconfirmed = UNCONFIRMED_NOTE.format(ats=apply_ats.name_of(work.job.ats))
+                    settlement = Settlement("unconfirmed", "unconfirmed", unconfirmed, [unconfirmed], True, row=6)
                 self._keep_unconfirmed(work, settlement)
                 self._finish_run_only(conn, work, settlement.outcome if settlement.outcome in OUTCOMES else "failed", {"reasons": settlement.reasons})
                 return settlement.outcome
@@ -1477,7 +1480,7 @@ class ApplyRunner:
                 result, stop=outcome.stop, shutting_down=shutting_down, claim_state=claim_state,
                 cancel_requested=bool(row["cancel_requested"]) if row is not None else False,
                 handed_over=bool(row is not None and row["handed_over_at"]), closed_confirmed=outcome.closed_confirmed,
-                minutes=round(work.deadline_s / 60), not_started=outcome.error == "NotStarted",
+                minutes=round(work.deadline_s / 60), not_started=outcome.error == "NotStarted", ats_name=apply_ats.name_of(work.job.ats),
             )
             if settlement.integrity_error:
                 LOGGER.error("A Finish in browser run came back handed over while its claim was not (run %s)", work.run_id)
@@ -1630,9 +1633,11 @@ class Settlement:
 
 def handoff_settlement(
     result: RunResult | None, *, stop: str, shutting_down: bool, claim_state: str, cancel_requested: bool, handed_over: bool,
-    closed_confirmed: bool, minutes: int, not_started: bool = False,
+    closed_confirmed: bool, minutes: int, ats_name: str, not_started: bool = False,
 ) -> Settlement:
     """The 5.3 table, first row that matches wins. Pure: every input is a fact read after the child (and its browser) ended.
+
+    ``ats_name`` is how the notes it writes itself name the ATS.
 
     After the hand-over nothing is called "not sent" except row 5, from the route's own record that the POST was aborted;
     before it, "not sent" is only said once the window is confirmed closed (row 7 first).
@@ -1640,6 +1645,7 @@ def handoff_settlement(
     evidence = result.evidence if result is not None and isinstance(result.evidence, dict) else {}
     notes = [item for item in (result.reasons if result is not None else []) if item]
     first = notes[0] if notes else ""
+    unconfirmed = UNCONFIRMED_NOTE.format(ats=ats_name)
     if claim_state not in ("claimed", "clicking"):
         if result is not None and result.outcome == "submitted" and result.confirmation_seen and claim_state == "unconfirmed":
             # Row 1: the confirmation page is stronger evidence than a recovery that could only say it may have been sent.
@@ -1650,7 +1656,7 @@ def handoff_settlement(
         if (claim_state == "unconfirmed" or handed_over) and outcome in ("needs_you", "failed") and _says_not_sent(notes or [CHILD_DIED]):
             # The claim says the application may have been sent (a recovery moved it, or the student's press was handed over): the
             # child's own "nothing was sent" must not be the run's sentence beside it.
-            return Settlement("", "unconfirmed", UNCONFIRMED_NOTE, [UNCONFIRMED_NOTE], True, row=2)
+            return Settlement("", "unconfirmed", unconfirmed, [unconfirmed], True, row=2)
         return Settlement("", outcome, first, notes or [CHILD_DIED], False, row=2)
     sent = claim_state == "clicking" or handed_over
     if sent:
@@ -1662,16 +1668,17 @@ def handoff_settlement(
             if result.outcome == "failed" and not result.after_click and evidence.get("submit_continued") is False:
                 return Settlement("failed", "failed", first, notes, False, expected_states=(claim_state,), row=5)
         # Row 6: anything else once the claim was handed over. Never a sentence of the child's: it may say nothing was sent.
-        return Settlement("unconfirmed", "unconfirmed", UNCONFIRMED_NOTE, [UNCONFIRMED_NOTE], True, expected_states=(claim_state,), row=6)
+        return Settlement("unconfirmed", "unconfirmed", unconfirmed, [unconfirmed], True, expected_states=(claim_state,), row=6)
     # The claim is still 'claimed': the application was never handed over.
     if not closed_confirmed:
-        return Settlement("unconfirmed", "unconfirmed", WINDOW_UNCONFIRMED, [WINDOW_UNCONFIRMED], True, expected_states=("claimed",), row=7)
+        window = WINDOW_UNCONFIRMED.format(ats=ats_name)
+        return Settlement("unconfirmed", "unconfirmed", window, [window], True, expected_states=("claimed",), row=7)
     passed = result is not None and (
         result.handed_over or evidence.get("submit_continued") is True
         or any(item.get("passed") and str(item.get("method") or "").upper() not in ("", "GET", "HEAD", "OPTIONS") for item in result.requests if isinstance(item, dict))
     )
     if passed:
-        return Settlement("unconfirmed", "unconfirmed", UNCONFIRMED_NOTE, [UNCONFIRMED_NOTE], True, notify=True, expected_states=("claimed",), integrity_error=True, row=8)
+        return Settlement("unconfirmed", "unconfirmed", unconfirmed, [unconfirmed], True, notify=True, expected_states=("claimed",), integrity_error=True, row=8)
     if cancel_requested:
         return Settlement("needs_you", "needs_you", HANDOFF_NOT_SUBMITTED, [HANDOFF_NOT_SUBMITTED], False, notify=False,
                           stopped_by="student", expected_states=("claimed",), row=9)
@@ -1840,22 +1847,23 @@ def _summary(
     posting: Mapping[str, Any] | None = None,
     *, phase: str = "", nothing_left: bool = False, claim: Mapping[str, Any] | None = None, after_click: bool = False,
 ) -> str:
+    name = apply_ats.name_of(str(row["ats"]))
     if row["status"] == "running":
         if stalled:
             return "The app stopped during this run"
         if row["kind"] == "handoff" and phase == "your_turn":
             return YOUR_TURN_NONE_LEFT if nothing_left else YOUR_TURN
         if row["kind"] == "handoff" and phase == "form_elsewhere":
-            return str(progress[-1].get("text") or "") if progress else PROGRESS_STEPS["your_turn"]   # it names the host the agent saw
+            return str(progress[-1].get("text") or "") if progress else progress_text("your_turn", name)   # it names the host the agent saw
         if row["kind"] == "handoff" and phase in _HANDOFF_PHASES:
-            return PROGRESS_STEPS[phase]
-        return str(progress[-1].get("text") or "") if progress else PROGRESS_STEPS["start"]
+            return progress_text(phase, name)
+        return str(progress[-1].get("text") or "") if progress else progress_text("start", name)
     outcome = str(row["outcome"] or "")
     first = reasons[0] if reasons else "The run did not finish"
     if row["kind"] == "handoff":
         if outcome == "submitted":
             ask = bool(claim and claim.get("ask_mark_applied"))
-            return "Greenhouse showed its confirmation page. Mark as applied?" if ask else "Greenhouse showed its confirmation page."
+            return f"{name} showed its confirmation page. Mark as applied?" if ask else f"{name} showed its confirmation page."
         if outcome == "unconfirmed":
             return first
         # A stopped or failed handoff says "not sent" only when it was never handed over, and not twice.
@@ -1864,7 +1872,7 @@ def _summary(
         count = sum(len(items) for items in options.values() if isinstance(items, list))
         if not count:
             return "No options came back for what you typed. Try fewer letters, or check the spelling."
-        return f"Greenhouse listed {_plural(count, 'option')} for what you typed. Pick the one that is yours."
+        return f"{name} listed {_plural(count, 'option')} for what you typed. Pick the one that is yours."
     if outcome == "rehearsed":
         # The listing the form came from, when the run recorded it: the saved role's own words only when they are the same posting.
         if posting and (posting.get("title") or posting.get("company")):
@@ -1879,11 +1887,12 @@ def _summary(
 def _measured(row: Mapping[str, Any], evidence: Mapping[str, Any], refused: list[Any]) -> str:
     if row["outcome"] != "rehearsed":
         return ""
+    name = apply_ats.name_of(str(row["ats"]))
     total = evidence.get("refused_total")
     count = total if isinstance(total, int) and not isinstance(total, bool) else len(refused)
     text = (
         f"During the rehearsal the app blocked {_plural(count, 'request')} that could have submitted the form or carried a filled-in answer, "
-        "to Greenhouse or anywhere else. Sensitive answers were not put in the page; they go in only if you choose Finish in browser, "
+        f"to {name} or anywhere else. Sensitive answers were not put in the page; they go in only if you choose Finish in browser, "
         "before you press Submit application."
     )
     asked = [item for item in evidence.get("lookups") or [] if isinstance(item, dict) and (item.get("question") or item.get("key"))]
@@ -1891,9 +1900,9 @@ def _measured(row: Mapping[str, Any], evidence: Mapping[str, Any], refused: list
     typed = [str(item.get("question") or item.get("key")) for item in asked if item.get("typed", True)]
     listed = [str(item.get("question") or item.get("key")) for item in asked if not item.get("typed", True)]
     if typed:
-        text += f" To find the options for {_list_words(typed)}, the app sent the text typed into those fields to Greenhouse's lookup service."
+        text += f" To find the options for {_list_words(typed)}, the app sent the text typed into those fields to {name}'s lookup service."
     if listed:
-        text += f" For {_list_words(listed)}, the app fetched Greenhouse's whole list; nothing you typed went with it."
+        text += f" For {_list_words(listed)}, the app fetched {name}'s whole list; nothing you typed went with it."
     # The closing clause is about what went to a lookup service: with no lookup it has nothing to say "else" to (10.4.1).
     if typed or listed:
         text += " The app saw nothing else you entered leave the browser."

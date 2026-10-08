@@ -763,7 +763,7 @@ class RunApiCase(ApplyApiCase):
         with self.conn:
             self.conn.execute("INSERT INTO users(id, email, display_name, role, created_at, updated_at) VALUES('student-b', 'b@example.com', 'B', 'student', ?, ?)", (stamp, stamp))
         return apply_runs.create_run(
-            self.conn, user_id="student-b", opportunity_id=ACME, kind="rehearsal", started_by="student", ats="greenhouse", board_token="b",
+            self.conn, user_id="student-b", opportunity_id=ACME, kind="rehearsal", started_by="student", ats="greenhouse", adapter_version="greenhouse-1", board_token="b",
             page_url=JOB_URL, company="acme", deadline_seconds=300,
         )
 
@@ -1151,7 +1151,7 @@ class RunMarkTests(RunApiCase):
         from datetime import datetime, timedelta, timezone
 
         run_id = apply_runs.create_run(
-            self.conn, user_id=USER, opportunity_id=ACME, kind="rehearsal", started_by="student", ats="greenhouse", board_token="b",
+            self.conn, user_id=USER, opportunity_id=ACME, kind="rehearsal", started_by="student", ats="greenhouse", adapter_version="greenhouse-1", board_token="b",
             page_url=JOB_URL, company="acme", deadline_seconds=300,
         )
 
@@ -1186,7 +1186,7 @@ class RunMarkTests(RunApiCase):
 
     def test_a_run_this_app_is_not_running_cannot_be_stopped_from_here(self):
         run_id = apply_runs.create_run(
-            self.conn, user_id=USER, opportunity_id=ACME, kind="rehearsal", started_by="student", ats="greenhouse", board_token="b",
+            self.conn, user_id=USER, opportunity_id=ACME, kind="rehearsal", started_by="student", ats="greenhouse", adapter_version="greenhouse-1", board_token="b",
             page_url=JOB_URL, company="acme", deadline_seconds=300,
         )
         response = self.send("POST", f"{self.BASE}/runs/{run_id}/cancel")

@@ -4,9 +4,9 @@
 browser. Its key (the value of ``apply_claims.ats`` and ``apply_runs.ats``), its name in a sentence, the adapter's
 version, the modes it supports, how a saved role is recognised as one of its postings (``identify``), where the posting
 lives (``canonical_url``), the client that reads its listing, how that listing becomes the form's fields
-(``parse_schema``), and whether a mail sender is its own (``is_confirmation_sender``). Greenhouse is the only one
-registered. The request policy (which hosts a page may reach, what counts as the submit POST) is not here yet: the
-modules that read it still use their Greenhouse constants (docs/phase5-lever-handoff-spec.md, 5.2 item 3).
+(``parse_schema``), whether a mail sender is its own (``is_confirmation_sender``), and its request policy
+(``route_policy``: which hosts a page may reach, what counts as the submit POST and as the confirmation page; the rules in
+``checks`` read it as an argument). Greenhouse is the only one registered (docs/phase5-lever-handoff-spec.md, 5.2).
 
 ``AtsAdapter`` is the set of methods ``ApplyAgent`` calls on a site's form, so the agent is typed to a shape and not to
 Greenhouse. The adapters themselves live beside the agent (``agent.py``), which is a higher layer than this file.
@@ -20,6 +20,7 @@ from typing import Any, Callable, Mapping, Protocol
 
 from . import greenhouse
 from .agent_types import BUILT_MODES
+from .checks import GREENHOUSE_ROUTE_POLICY, RoutePolicy
 from .policy import SchemaField, parse_schema as greenhouse_parse_schema
 from .schema_client import SchemaClient, default_schema_client_factory
 
@@ -37,6 +38,7 @@ class AtsSpec:
     schema_client: Callable[[], SchemaClient]                             # a new client that reads the posting's listing
     parse_schema: Callable[[Mapping[str, Any]], list[SchemaField]]        # the listing -> the fields the form has
     is_confirmation_sender: Callable[[str], bool]                         # a sender domain is the ATS's own
+    route_policy: RoutePolicy                                             # the hosts, endpoints and submit and confirmation rules of its form
 
 
 GREENHOUSE = AtsSpec(
@@ -49,6 +51,7 @@ GREENHOUSE = AtsSpec(
     schema_client=default_schema_client_factory,
     parse_schema=greenhouse_parse_schema,
     is_confirmation_sender=greenhouse.is_greenhouse_sender,
+    route_policy=GREENHOUSE_ROUTE_POLICY,
 )
 
 # In the order identify tries them. The first to recognise a role is the role's ATS.
@@ -70,6 +73,20 @@ def spec_for(key: str) -> AtsSpec:
     raise UnknownAts(key)
 
 
+def name_of(key: str) -> str:
+    """How a sentence names the ATS with this key: its spec's display name, or, for a row of an ATS this build no longer registers, the key in title case."""
+    for spec in REGISTRY:
+        if spec.key == key:
+            return spec.display_name
+    return key.title() if isinstance(key, str) else ""
+
+
+def supported_names() -> str:
+    """The display names of the registered ATSs as words: "Greenhouse", "Greenhouse and Lever", "A, B and C"."""
+    names = [spec.display_name for spec in REGISTRY]
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1] if names else ""
+
+
 def identify(conn: sqlite3.Connection, opportunity_id: str) -> tuple[AtsSpec, tuple[str, str]] | None:
     """The ATS a saved role is posted on and its (board token, job id), or None when no registered ATS recognises it."""
     for spec in REGISTRY:
@@ -86,12 +103,26 @@ class AtsAdapter(Protocol):
     The agent also calls ``fill_react_select`` and ``react_values`` when ``is_react_select`` says a control is one; those
     two are an optional capability of an adapter, not part of this shape, and the agent does not yet check for them.
     There is no ``submit_control``: the student presses Submit, and nothing ever called one.
+
+    ``ats`` is the key of the spec the adapter is for (``AtsSpec.key``); the agent reads its request policy from there.
+    ``form_page_kind`` is what ``detect_page`` answers for a form the app fills. ``posting_ids``, ``lookup_token`` and
+    ``confirmation_ids`` read the posting's address for the agent (the same-posting check, the lookup endpoints' ``{token}``, the
+    confirmation rule). ``uploads_on_attach`` means the board uploads a file to a storage address as it is attached (the app cannot
+    tell that upload from the application, so a handoff on such a board is refused); ``reads_on_attach`` means the page reads the
+    file as it is attached (it leaves at once, and the student's setting governs whether the app attaches one).
     """
+
+    ats: str
+    form_page_kind: str
 
     def form_frame(self, page: Any) -> Any: ...
     def detect_page(self, page: Any) -> str: ...
     def loader_paths(self, html: str) -> tuple[str, str, str]: ...
     def uploads_on_attach(self, frame: Any) -> bool: ...
+    def reads_on_attach(self, frame: Any) -> bool: ...
+    def posting_ids(self, url: str) -> tuple[str, str]: ...
+    def lookup_token(self, url: str) -> str: ...
+    def confirmation_ids(self, url: str) -> tuple[str, str]: ...
     def security_code_prompt(self, frame: Any) -> bool: ...
     def security_code_inputs(self, frame: Any) -> list[Any] | None: ...
     def captcha_widget(self, frame: Any) -> str: ...

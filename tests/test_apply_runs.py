@@ -700,7 +700,7 @@ class LimitTests(ApplyCase):
         self.base = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
 
     def block(self, *, mode="one_click", company=BLUEFIN, board="bluefin", now=None):
-        return apply_runs.limits_block(self.conn, USER, employer_key(company), board, mode, now or self.at())
+        return apply_runs.limits_block(self.conn, USER, employer_key(company), "greenhouse", board, mode, now or self.at())
 
     def stamp(self, minutes):
         return self.at(minutes).isoformat(timespec="microseconds")

@@ -57,7 +57,6 @@ from .agent_types import (
     LEFT_UNPLANNED,
     MAX_LOOKUP_OPTIONS,
     OP_HANDOFF_READY,
-    PROGRESS_STEPS,
     STOPPED,
     WINDOW_CLOSED,
     ApplyTimeouts,
@@ -66,15 +65,11 @@ from .agent_types import (
     LookupRequest,
     RunResult,
     problem_dict,
+    progress_text,
 )
 from .checks import (
-    CAPTCHA_ENDPOINTS,
-    CONFIRMED_CAPTCHA_HOSTS,
-    FORM_POST_HOSTS,
-    GREENHOUSE_LOOKUP_ENDPOINTS,
     MORE_PAGES_SCRIPT,
     PHASE_AFTER_HAND_OVER,
-    STATIC_ASSET_HOSTS,
     TYPED_LOOKUP_KINDS,
     PHASE_AFTER_INPUT,
     PHASE_BEFORE_INPUT,
@@ -82,18 +77,17 @@ from .checks import (
     PHASE_STUDENT,
     REQUIRED_CHECK_SCRIPT,
     SAFE_METHODS,
-    TELEMETRY_HOSTS,
     UNCONFIRMED_NOTE,
     Abort,
     Endpoint,
     Observation,
     Outcome,
     Problem,
+    RoutePolicy,
     RouteRequest,
     RouteState,
     SeenRequest,
     check_required,
-    confirmation_reached,
     decide_outcome,
     is_upload,
     looks_like_a_send,
@@ -104,7 +98,7 @@ from .checks import (
     safe_host,
     student_submit_elsewhere,
 )
-from .ats import AtsAdapter, spec_for
+from .ats import REGISTRY, AtsAdapter, AtsSpec, spec_for
 from .greenhouse import ATS_GREENHOUSE, BOARD_HOSTS, SUBMIT_HOST
 from .runs import INSTALL_PLAYWRIGHT, PlaywrightProbe
 
@@ -112,13 +106,14 @@ from .runs import INSTALL_PLAYWRIGHT, PlaywrightProbe
 
 INSTALL = "Could not start the browser. " + INSTALL_PLAYWRIGHT
 NOT_BUILT = "This kind of run is not built yet"
-NOT_BOARD = "The app only opens Greenhouse's own job boards"
-HTTP_STATUS = "Greenhouse answered HTTP {status}"
+# {ats} in a sentence below is the ATS's display name (``RoutePolicy.display_name``); ``ApplyAgent._say`` fills it.
+NOT_BOARD = "The app only opens {ats}'s own job boards"
+HTTP_STATUS = "{ats} answered HTTP {status}"
 OFFSITE = "This posting sends applicants to {host}"
 POPUP = "The page tried to open another site, so the app stopped"
-LEGACY = "This is Greenhouse's older form, which the app does not fill yet"
+LEGACY = "This is {ats}'s older form, which the app does not fill yet"
 CLOSED = "The posting is no longer accepting applications"
-UNKNOWN_PAGE = "The page did not look like a Greenhouse application form"
+UNKNOWN_PAGE = "The page did not look like a {ats} application form"
 NO_LOADER = "The app couldn't find where this form sends applications, so it could not help you submit it"
 S3_NOTE = "This board uploads your résumé as soon as it is attached, so the app can't attach it without sending it"
 CAPTCHA_NOTE = "The form shows a CAPTCHA checkbox"
@@ -130,16 +125,16 @@ NO_FILE = 'The app could not read the file for "{question}"'
 LETTER_CHANGED = 'Your cover letter for this role changed while the rehearsal ran, so the app did not attach one for "{question}". Approve the one you want and run again'
 NO_CONTROL = 'The form has no field for "{question}"'
 NO_OPTIONS = "No options came back for what you typed"
-NO_ENDPOINT = "The app has not confirmed Greenhouse's lookup service for this list yet, so it did not ask it"
+NO_ENDPOINT = "The app has not confirmed {ats}'s lookup service for this list yet, so it did not ask it"
 PLAN_FAILED = "The app could not plan this form"
 # Not in the shared list: what the agent says when a whole step, not one field, went wrong.
 MORE_PAGES = "This form has more than one page, and the app read only the first"
-OPEN_FAILED = "The app could not open the Greenhouse form"
+OPEN_FAILED = "The app could not open the {ats} form"
 READ_FAILED = "The app could not read the form"
 CHECK_FAILED = "The app could not check the filled form"
 # agent_types.WINDOW_CLOSED is the student closing the window during a handoff; this is the window going away in any other run.
 WINDOW_GONE = "The browser window was closed before the run finished"
-DIFFERENT_POSTING = "Greenhouse opened a different posting from the one the app was asked to open"
+DIFFERENT_POSTING = "{ats} opened a different posting from the one the app was asked to open"
 DEFERRED_MISSING = 'The form does not offer the answer the app would give for "{question}"'
 DEFERRED_UNREADABLE = 'The app could not read the options of "{question}", so it could not check the answer it would give'
 NOT_FILLED = "The run stopped before the app filled and checked this field, so nothing was put in it"
@@ -312,8 +307,8 @@ PRESS_CDP_CALLS = ("Page.enable", "Runtime.enable", "Runtime.addBinding", "Page.
 # (measured on Playwright 1.62's Chromium: neither a feature flag nor --disable-quic stops its packets), so it, and every worker that could
 # reach one, is closed by the init script alone, in every realm a page can make (tests/test_apply_agent_browser.py names each one).
 #
-# The resolver rule is the catch-all: the browser can look up only the hosts a Greenhouse form and its fonts, lookups, static files and
-# CAPTCHA use (``RESOLVABLE_HOSTS``), and any other name, an IP address included, fails inside Chromium with no query leaving the machine
+# The resolver rule is the catch-all: the browser can look up only the hosts a registered ATS's form and its lookups, static files and
+# CAPTCHA use (each spec's ``route_policy.resolvable_hosts``, joined here) and the fonts every page loads (``RESOLVABLE_HOSTS``), and any other name, an IP address included, fails inside Chromium with no query leaving the machine
 # (WebRTC to an ICE server given as an IP address is not a name lookup: the init script is the only thing that stops it. Measured on
 # Playwright 1.62's Chromium, the resolver rule left ten packets reaching a loopback listener, and no switch silenced both STUN over UDP
 # and TURN over TCP: ``--force-webrtc-ip-handling-policy=disable_non_proxied_udp`` stops the UDP and not the TCP, and the blink and
@@ -325,16 +320,20 @@ PRESS_CDP_CALLS = ("Page.enable", "Runtime.enable", "Runtime.addBinding", "Page.
 # whatever channel it takes, and a value put in a host name is never looked up: not by Chromium, and not by this process either, since the
 # route handler refuses a name outside the list (``unlisted_host``) before its own resolver is asked about it, in every mode and phase. The third-party widgets a board may load (Google Drive,
 # Dropbox, a recruiting-analytics script) do not load either: the app presses none of them.
-RESOLVABLE_HOSTS: tuple[str, ...] = tuple(sorted({
-    *BOARD_HOSTS, *(endpoint.host for endpoint in GREENHOUSE_LOOKUP_ENDPOINTS), *STATIC_ASSET_HOSTS,
-    "s?-recruiting.cdn.greenhouse.io", "s??-recruiting.cdn.greenhouse.io", "s???-recruiting.cdn.greenhouse.io",
-    *CONFIRMED_CAPTCHA_HOSTS, "fonts.googleapis.com", "fonts.gstatic.com",
-}))
+FONT_HOSTS = ("fonts.googleapis.com", "fonts.gstatic.com")   # whatever the ATS, its pages ask Google for their fonts
 
 
-def resolver_rule(extra_hosts: Sequence[str] = ()) -> str:
-    """The ``--host-resolver-rules`` switch: every name fails to resolve but ``RESOLVABLE_HOSTS`` (and ``extra_hosts``, for a test's loopback page)."""
-    return "--host-resolver-rules=MAP * ~NOTFOUND , " + " , ".join(f"EXCLUDE {host}" for host in (*RESOLVABLE_HOSTS, *extra_hosts))
+def resolvable_hosts(registry: Sequence[AtsSpec]) -> tuple[str, ...]:
+    """The names the browser may look up for these ATSs: each spec's ``route_policy.resolvable_hosts`` and the font hosts, sorted."""
+    return tuple(sorted({*(host for spec in registry for host in spec.route_policy.resolvable_hosts), *FONT_HOSTS}))
+
+
+RESOLVABLE_HOSTS: tuple[str, ...] = resolvable_hosts(REGISTRY)
+
+
+def resolver_rule(extra_hosts: Sequence[str] = (), hosts: Sequence[str] | None = None) -> str:
+    """The ``--host-resolver-rules`` switch: every name fails to resolve but ``RESOLVABLE_HOSTS`` (``hosts``, for a test of another registry) and ``extra_hosts`` (a test's loopback page)."""
+    return "--host-resolver-rules=MAP * ~NOTFOUND , " + " , ".join(f"EXCLUDE {host}" for host in (*(RESOLVABLE_HOSTS if hosts is None else hosts), *extra_hosts))
 
 
 # What Playwright 1.62 switches off in Chromium at launch (its own ``--disable-features``). Chromium reads one value of a repeated switch, the
@@ -472,8 +471,8 @@ def _host_of(url: str) -> str:
 PATH_WITHHELD = "[path withheld]"
 
 
-def _captcha_path(host: str, path: str) -> bool:
-    return any(endpoint.host == host and path.startswith(endpoint.path_prefix) for endpoint in CAPTCHA_ENDPOINTS)
+def _captcha_path(host: str, path: str, policy: RoutePolicy) -> bool:
+    return any(endpoint.host == host and path.startswith(endpoint.path_prefix) for endpoint in policy.captcha_endpoints)
 
 
 def _job_id(page_url: str) -> str:
@@ -540,10 +539,11 @@ class _Observer:
 
     def __init__(
         self, page: Any, active: Callable[[], bool], values: Callable[[], Mapping[str, Any]] = lambda: {},
-        submit_path: Callable[[], str] = lambda: "",
+        submit_path: Callable[[], str] = lambda: "", *, policy: RoutePolicy,
     ) -> None:
         self.page = page
         self._active = active
+        self._policy = policy
         self._values = values
         self._submit_path = submit_path
         self.tracked: list[tuple[Any, str, str, str, bool]] = []
@@ -586,9 +586,9 @@ class _Observer:
         records = []
         for request, method, host, path, passed in self.tracked:
             shown = safe_host(host, values)
-            if host == SUBMIT_HOST and submit_path and path == submit_path:
+            if self._policy.is_submit_request(host, path, submit_path):
                 kept = path
-            elif host in (*BOARD_HOSTS, SUBMIT_HOST) or _captcha_path(host, path):
+            elif host in (*self._policy.navigation_hosts, *self._policy.submit_hosts) or _captcha_path(host, path, self._policy):
                 kept = path if passed and not (values and leaked_field(RouteRequest(method="GET", url=path), values)) else PATH_WITHHELD
             else:
                 kept = PATH_WITHHELD
@@ -603,6 +603,26 @@ class GreenhouseAdapter:
 
     Everything that changes the page goes through the agent (``ops``): this class reads, and asks ``ops`` to act.
     """
+
+    ats = ATS_GREENHOUSE
+    form_page_kind = "application_form_new"   # what ``detect_page`` answers for a form the app fills
+
+    # --- the posting's address ----------------------------------------------------------------------------------
+
+    @staticmethod
+    def posting_ids(url: str) -> tuple[str, str]:
+        """(board token, job id) of a posting address, for the check that the page opened is the posting asked for; ("", "") for any other."""
+        return posting_ids(url)   # the module's function of that name, not this method
+
+    @staticmethod
+    def lookup_token(url: str) -> str:
+        """The token that fills ``{token}`` in the policy's lookup endpoints."""
+        return board_token(url)
+
+    @staticmethod
+    def confirmation_ids(url: str) -> tuple[str, str]:
+        """What the policy's confirmation rule reads of the posting's address (``Observation.board_token`` and ``job_id``)."""
+        return board_token(url), _job_id(url)
 
     # --- the page ---------------------------------------------------------------------------------------------
 
@@ -670,9 +690,13 @@ class GreenhouseAdapter:
         return host, found[0], found[1]
 
     def uploads_on_attach(self, frame: Any) -> bool:
-        """The form (or an upload group in it) says a file is uploaded the moment it is attached."""
+        """The form (or an upload group in it) says a file is uploaded to a storage address the moment it is attached."""
         return bool(frame.locator(
             'form#application-form[data-allow-s3="true"], form#application-form [data-allow-s3="true"]').count())
+
+    def reads_on_attach(self, frame: Any) -> bool:
+        """The page reads a file as it is attached, sending it to the ATS before Submit. Greenhouse's boards the app supports do not."""
+        return False
 
     def security_code_prompt(self, frame: Any) -> bool:
         """The emailed security code's first box is on the form and visible (the form asks for the code)."""
@@ -852,6 +876,7 @@ class ApplyAgent:
     ) -> None:
         self.mode = mode
         self.adapter = adapter
+        self._policy: RoutePolicy = spec_for(adapter.ats).route_policy
         self.run_id = run_id
         self.screenshot_dir = Path(screenshot_dir) if screenshot_dir else None
         self.timeouts = timeouts
@@ -1037,9 +1062,9 @@ class ApplyAgent:
                 method=request.method, url=request.url, resource_type=request.resource_type, is_navigation=navigation,
                 public=True, headers=request.headers, body=body,
             )
-            decision = route_decision(self.mode, self._phase, facts, self._state)
+            decision = route_decision(self.mode, self._phase, facts, self._state, self._policy)
             if isinstance(decision, Abort) and decision.rule == "code_post_before_press" and self._press_arrives():
-                decision = route_decision(self.mode, self._phase, facts, self._state)   # the press was reported a moment after the request
+                decision = route_decision(self.mode, self._phase, facts, self._state, self._policy)   # the press was reported a moment after the request
             # Resolved last, and only for a request the policy would let through: the name of a request that is refused anyway
             # (after the first input, anything but Greenhouse's own hosts) is never sent to a resolver, since a hostname can carry a value.
             # A name the browser itself could not look up is not looked up here either: the resolver below runs in this process, outside the
@@ -1093,7 +1118,7 @@ class ApplyAgent:
     def _send_after_a_late_press(self, facts: RouteRequest) -> bool:
         """``looks_like_a_send`` for a request whose press has not been reported yet: wait a moment for it, and ask again."""
         before = self._state.last_press_at
-        return self._press_arrives(after=before) and looks_like_a_send(facts, self._state)
+        return self._press_arrives(after=before) and looks_like_a_send(facts, self._state, self._policy)
 
     def _resolvable(self, host: str) -> bool:
         """Whether this host is one of the names the browser may look up (``RESOLVABLE_HOSTS`` and a test's own lookup endpoints)."""
@@ -1124,7 +1149,7 @@ class ApplyAgent:
             if unsafe and self._phase == PHASE_FILL:
                 if decision.rule == "before_hand_over":
                     self._early = True
-                elif _host_of(request.url) not in TELEMETRY_HOSTS and (is_upload(facts) or _host_of(request.url) in FORM_POST_HOSTS):
+                elif _host_of(request.url) not in self._policy.telemetry_hosts and (is_upload(facts) or _host_of(request.url) in self._policy.form_post_hosts):
                     # During the fill either one is fatal: a page that uploads or posts as it is filled is not one the app can leave alone.
                     # (The page's own usage reporting is neither: it is refused, recorded a few times, and the fill goes on.)
                     self._upload_refused = {"host": safe_host(_host_of(request.url), self._state.values), "rule": decision.rule}
@@ -1135,14 +1160,14 @@ class ApplyAgent:
                 # the app did not agree to. A file going to any other address (a résumé or cover-letter parse on a board's API, a
                 # storage host) is a file leaving, whatever the address: that one is an upload, and gets the upload sentence.
                 host = _host_of(request.url)
-                file_leaving = is_upload(facts) and host not in TELEMETRY_HOSTS
-                if file_leaving and host != SUBMIT_HOST:
+                file_leaving = is_upload(facts) and host not in self._policy.telemetry_hosts
+                if file_leaving and host not in self._policy.submit_hosts:
                     self._closing, self._why_closing = True, "upload"
-                elif student_submit_elsewhere(facts, self._state):
+                elif student_submit_elsewhere(facts, self._state, self._policy):
                     self._closing, self._why_closing = True, "elsewhere"
                 elif file_leaving:
                     self._closing, self._why_closing = True, "upload"
-                elif self._elsewhere_seen is None and (looks_like_a_send(facts, self._state) or self._send_after_a_late_press(facts))                         and self._phase == PHASE_STUDENT and not self._handed_over:
+                elif self._elsewhere_seen is None and (looks_like_a_send(facts, self._state, self._policy) or self._send_after_a_late_press(facts))                         and self._phase == PHASE_STUDENT and not self._handed_over:
                     # Refused as always, and the turn goes on; but the page would only show its own error, so the student is told.
                     # (Not when the student's own submission was handed over while the late press was waited for: that one is on its way.)
                     self._elsewhere_seen = {"host": safe_host(host, self._state.values)}
@@ -1399,10 +1424,14 @@ class ApplyAgent:
 
     # --- progress, time and the window --------------------------------------------------------------------------
 
+    def _say(self, template: str, **words: Any) -> str:
+        """A sentence of this module's, naming the ATS the agent is for."""
+        return template.format(ats=self._policy.display_name, **words)
+
     def _progress(self, step: str, **words: Any) -> None:
         if self._on_progress is not None:
             try:
-                self._on_progress(step, PROGRESS_STEPS[step].format(**words))
+                self._on_progress(step, progress_text(step, self._policy.display_name, **words))
             except (OSError, ValueError):   # a closed pipe: the parent is gone, and that is not an error on this path
                 self._parent_gone = True
 
@@ -1558,12 +1587,12 @@ class ApplyAgent:
         """The student's Submit went on. Whatever stopped the run now, nothing can be said about what was sent."""
         self._closing = True
         self._close_browser()
-        return self._finish("unconfirmed", [UNCONFIRMED_NOTE], handed_over=True, after_click=True)
+        return self._finish("unconfirmed", [self._say(UNCONFIRMED_NOTE)], handed_over=True, after_click=True)
 
     def _crashed(self) -> RunResult:
         if self.mode == "handoff":
             if self._handed_over:
-                return self._stopped("unconfirmed", UNCONFIRMED_NOTE)
+                return self._stopped("unconfirmed", self._say(UNCONFIRMED_NOTE))
             if self._page is not None and self._closed():
                 return self._stopped("failed", WINDOW_CLOSED, "closed")
             if self._loaded and self._phase == PHASE_FILL and self._offsite_host():
@@ -1632,18 +1661,18 @@ class ApplyAgent:
         return clean
 
     def _step_sentence(self) -> str:
-        return {"open": OPEN_FAILED, "read": READ_FAILED, "check": CHECK_FAILED}.get(self._step, PLAN_FAILED)
+        return {"open": self._say(OPEN_FAILED), "read": READ_FAILED, "check": CHECK_FAILED}.get(self._step, PLAN_FAILED)
 
     def _run(self, page_url: str, replan: Callable[[list[dict[str, Any]], bool], Any] | None) -> RunResult:
         if self.mode not in BUILT_MODES:
             return self._finish("failed", [NOT_BUILT])
-        if (urlsplit(page_url).hostname or "").lower().rstrip(".") not in BOARD_HOSTS:
-            return self._finish("failed", [NOT_BOARD])
+        if (urlsplit(page_url).hostname or "").lower().rstrip(".") not in self._policy.navigation_hosts:
+            return self._finish("failed", [self._say(NOT_BOARD)])
         if self.mode == "lookup" and self._lookup is None:
             return self._finish("failed", [PLAN_FAILED])
         self._endpoints = (
             self._lookup_endpoints_override if self._lookup_endpoints_override is not None
-            else bind_endpoints(GREENHOUSE_LOOKUP_ENDPOINTS, board_token(page_url))
+            else bind_endpoints(self._policy.lookup_endpoints, self.adapter.lookup_token(page_url))
         )
         self._state.lookup_endpoints = self._endpoints
         self._refresh_values()
@@ -1664,29 +1693,33 @@ class ApplyAgent:
         kind = self._offsite_kind() or self.adapter.detect_page(self._page)
         self._evidence_bits["page"] = kind
         if kind == "application_form_legacy" and not LEGACY_ENABLED:
-            raise _Stop("needs_you", LEGACY)
+            raise _Stop("needs_you", self._say(LEGACY))
         if kind == "closed":
             raise _Stop("failed", CLOSED)
         if kind == "offsite":
             raise _Stop("needs_you", OFFSITE.format(host=self._offsite_host() or (urlsplit(self._page.url).hostname or "another site")))
         if self._popup_refused():
             raise _Stop("needs_you", POPUP)
-        asked, landed = posting_ids(page_url), posting_ids(self._page.url)
+        asked, landed = self.adapter.posting_ids(page_url), self.adapter.posting_ids(self._page.url)
         if asked != ("", "") and landed != ("", "") and landed != asked:
             # A board that redirects a posting to another one: what is filled and checked here would be that other posting.
-            raise _Stop("needs_you", DIFFERENT_POSTING)
-        if kind != "application_form_new":
-            raise _Stop("needs_you", UNKNOWN_PAGE)
+            raise _Stop("needs_you", self._say(DIFFERENT_POSTING))
+        if kind != self.adapter.form_page_kind:
+            raise _Stop("needs_you", self._say(UNKNOWN_PAGE))
         submit_host, submit_path, confirmation_path = self.adapter.loader_paths(html)
         self._state.submit_path = submit_path
         self._confirmation_path = confirmation_path
         self._evidence_bits["loader"] = {"submit_path": bool(submit_path), "confirmation_path": bool(confirmation_path)}
         uploads = self.adapter.uploads_on_attach(frame)
         self._evidence_bits["uploads_on_attach"] = uploads
+        if self.adapter.reads_on_attach(frame):
+            # The page reads a file as it is attached (the file leaves at once, to the ATS's own parser). Noted, never a reason to refuse the board:
+            # whether the app may attach a file to such a page is the student's setting, decided where the file is planned.
+            self._evidence_bits["reads_on_attach"] = True
         if self.mode == "handoff":
             # Before any input. On a board whose submit address is not the one the request rules know, every Submit would be
             # stopped: safe, and useless.
-            if not (submit_path and confirmation_path and submit_host == SUBMIT_HOST):
+            if not (submit_path and confirmation_path and submit_host in self._policy.submit_hosts):
                 raise _Stop("needs_you", HANDOFF_NO_LOADER, "board")
             if uploads:
                 raise _Stop("needs_you", HANDOFF_S3, "board")
@@ -1713,9 +1746,9 @@ class ApplyAgent:
             host = self._offsite_host()
             if host:
                 raise _Stop("needs_you", OFFSITE.format(host=host))
-            raise _Stop("failed", OPEN_FAILED)
+            raise _Stop("failed", self._say(OPEN_FAILED))
         if response is not None and response.status >= 400:
-            raise _Stop("failed", HTTP_STATUS.format(status=response.status))
+            raise _Stop("failed", self._say(HTTP_STATUS, status=response.status))
         try:
             page.wait_for_load_state("networkidle", timeout=8_000)
         except Exception:  # noqa: BLE001 - a busy page is read as it stands
@@ -1752,7 +1785,7 @@ class ApplyAgent:
         if not options:
             self._reasons.append(NO_OPTIONS)
             if not any(endpoint.kind == lookup.field for endpoint in self._endpoints):
-                self._reasons.append(NO_ENDPOINT)
+                self._reasons.append(self._say(NO_ENDPOINT))
         return self._finish("looked_up")
 
     # --- fill: a rehearsal stops at the picture, a handoff goes on to the student's turn -------------------------
@@ -1829,6 +1862,7 @@ class ApplyAgent:
         seen = frame.evaluate(REQUIRED_CHECK_SCRIPT)
         problems = check_required(
             seen.get("items", []), self._check_view(), self._schema, initial, controls=seen.get("controls", []), invalid=seen.get("invalid", []),
+            ats_name=self._policy.display_name,
         )
         if handoff:
             self._resolve_check(frame, problems)
@@ -2303,7 +2337,7 @@ class ApplyAgent:
         self._step = "turn"
         entries, plan_hash = self._plan_entries()
         shot = next((item for item in reversed(self._screenshots) if item["step"] == "filled"), None)
-        self._observer = _Observer(self._page, lambda: self._handed_over, lambda: self._state.values, lambda: self._state.submit_path)
+        self._observer = _Observer(self._page, lambda: self._handed_over, lambda: self._state.values, lambda: self._state.submit_path, policy=self._policy)
         self._observer.start()
         # One last look before the turn: a press in the gap after the check is caught here, with the observer already listening.
         self._between()
@@ -2357,10 +2391,10 @@ class ApplyAgent:
     # --- after the press: the outcome, and the security code ----------------------------------------------------------
 
     def _decide(self, obs: Observation, *, code_wait_over: bool) -> Outcome:
-        out = decide_outcome(obs, code_wait_over=code_wait_over)
+        out = decide_outcome(obs, self._policy, code_wait_over=code_wait_over)
         if self._submit_continued and out.outcome == "failed" and not out.after_click:
             # The POST was continued, whatever the tracker shows: "nothing was sent" is not a thing this run can say.
-            return Outcome("unconfirmed", 1, UNCONFIRMED_NOTE, evidence=out.evidence, settled=False)
+            return Outcome("unconfirmed", 1, self._say(UNCONFIRMED_NOTE), evidence=out.evidence, settled=False)
         return out
 
     def _outcome(self) -> RunResult:
@@ -2381,7 +2415,7 @@ class ApplyAgent:
                 # A prompt is counted from evidence: the first 428, then a new 428 (or the boxes again) after the code POST was
                 # answered. The boxes stay on the page while the code POST is on its way, which is not a second prompt: it would
                 # open a second code POST nobody asked for and tell the student to press Submit again.
-                if code_round == 0 or new_code_prompt(obs):
+                if code_round == 0 or new_code_prompt(obs, self._policy):
                     code_round += 1
                     self._security_code(reader=(code_round == 1), until=after_until)
                     window = self._cap(time.monotonic() + t.outcome_s)
@@ -2437,13 +2471,14 @@ class ApplyAgent:
         except Exception:  # noqa: BLE001 - a page in the middle of navigating or closing: the last thing seen stands
             frame = None
         seen = self._observer.seen() if self._observer is not None else ()
+        token, job_id = self.adapter.confirmation_ids(self._page_url)
         error = ""
         if frame is not None and form_present and any(item.status is not None and 400 <= item.status < 500 and item.status != 428 for item in seen):
             error = self._first_error_question(frame)
         return Observation(
             main_path=path, main_query=query, form_present=form_present, requests=seen, security_code_visible=code_visible,
             challenge_frame=challenge, submit_path=self._state.submit_path, confirmation_path=self._confirmation_path,
-            board_token=board_token(self._page_url), job_id=_job_id(self._page_url),
+            board_token=token, job_id=job_id,
             navigated=bool(self._observer is not None and self._observer.navigated), first_field_error=error,
         )
 
@@ -2580,9 +2615,9 @@ class ApplyAgent:
         """The main frame is on Greenhouse's confirmation page (the code, if it was needed, has been accepted)."""
         try:
             parts = urlsplit(self._page.url)
-            return confirmation_reached(Observation(
-                main_path=parts.path, main_query=parts.query, confirmation_path=self._confirmation_path,
-                board_token=board_token(self._page_url), job_id=_job_id(self._page_url),
+            token, job_id = self.adapter.confirmation_ids(self._page_url)
+            return self._policy.confirmation_reached(Observation(
+                main_path=parts.path, main_query=parts.query, confirmation_path=self._confirmation_path, board_token=token, job_id=job_id,
             ))
         except Exception:  # noqa: BLE001 - a page that cannot answer is not on the confirmation page
             return False
@@ -2597,7 +2632,7 @@ class ApplyAgent:
             return False, "press_unseen"                 # the student's press could not be told from the widget's send: they type it
         try:
             parts = urlsplit(self._page.url)
-            if (parts.hostname or "").lower() not in BOARD_HOSTS or not parts.path.rstrip("/").startswith(self._job_path):
+            if (parts.hostname or "").lower() not in self._policy.navigation_hosts or not parts.path.rstrip("/").startswith(self._job_path):
                 return False, "page_closed"
             boxes = self.adapter.security_code_inputs(self.adapter.form_frame(self._page))   # now, in the current frame
         except Exception:  # noqa: BLE001 - a page that cannot answer

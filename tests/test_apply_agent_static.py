@@ -43,7 +43,6 @@ from opportunity_app.apply.agent import (
     ENGINE_FILES,
     ENGINE_SOURCE,
     NOT_BUILT,
-    NOT_BOARD,
     ApplyAgent,
     DefaultApplyAgentFactory,
     GreenhouseAdapter,
@@ -53,7 +52,7 @@ from opportunity_app.apply.agent import (
 from opportunity_app.apply import agent_types
 from opportunity_app.apply import runner as apply_runner
 from opportunity_app.apply.agent_types import BUILT_MODES, ApplyTimeouts
-from opportunity_app.apply.checks import REQUIRED_CHECK_SCRIPT, Endpoint
+from opportunity_app.apply.checks import GREENHOUSE_ROUTE_POLICY as POLICY, REQUIRED_CHECK_SCRIPT, Endpoint
 from opportunity_app.apply.greenhouse import BOARD_HOSTS
 
 AGENT_PATH = "apply/agent.py"
@@ -1101,7 +1100,7 @@ class UnbuiltAndRefusedRunsOpenNoBrowser(unittest.TestCase):
         for url in ("https://careers.example.test/apply", "https://my.greenhouse.io/jobs/1", "http://127.0.0.1:8799/x"):
             with self.subTest(url=url):
                 result = self.run_agent("rehearse", url)
-                self.assertEqual((result.outcome, result.reasons), ("failed", [NOT_BOARD]))
+                self.assertEqual((result.outcome, result.reasons), ("failed", ["The app only opens Greenhouse's own job boards"]))
 
     def test_a_missing_playwright_is_the_install_sentence(self):
         agent = ApplyAgent(mode="rehearse", adapter=GreenhouseAdapter())
@@ -1276,7 +1275,7 @@ class FinishInBrowserKeepsD1B(unittest.TestCase):
         agent._screenshot = picture
         result = agent._stopped("needs_you", apply_agent.HANDOFF_NOT_SUBMITTED, "early")
         self.assertEqual((result.outcome, result.handed_over, result.after_click), ("unconfirmed", True, True))
-        self.assertEqual(result.reasons, [apply_agent.UNCONFIRMED_NOTE])
+        self.assertEqual(result.reasons, [apply_agent.UNCONFIRMED_NOTE.format(ats="Greenhouse")])
 
     def test_a_field_the_agent_never_filled_is_never_described_as_filled(self):
         agent = self.handoff_agent()
@@ -1315,7 +1314,7 @@ class FinishInBrowserKeepsD1B(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             for mode, expected in (("handoff", ["gender", "charged", "tied"]), ("rehearse", ["gender"])):
                 with self.subTest(mode=mode):
-                    agent = ApplyAgent(mode=mode, adapter=mock.Mock(), run_id="run-shot", screenshot_dir=Path(folder))
+                    agent = ApplyAgent(mode=mode, adapter=mock.Mock(ats="greenhouse"), run_id="run-shot", screenshot_dir=Path(folder))
                     page = mock.Mock()
                     page.screenshot.return_value = b"png"
                     agent._page = page
@@ -1374,13 +1373,13 @@ class WhatAnAbortedRequestMeansInAHandoff(unittest.TestCase):
         agent = ApplyAgent(mode="handoff", adapter=GreenhouseAdapter())
         agent._state.submit_path = apply_fake_ats.JOB_PATH
         agent._phase = phase
-        agent._observer = apply_agent._Observer(mock.Mock(), lambda: True)
+        agent._observer = apply_agent._Observer(mock.Mock(), lambda: True, policy=POLICY)
         return agent
 
     def abort(self, agent, method, url, *, headers=None, body=None, resource_type="fetch"):
         request = mock.Mock(method=method, url=url, headers=headers or {}, resource_type=resource_type)
         facts = apply_checks.RouteRequest(method, url, resource_type=resource_type, headers=headers or {}, body=body, public=True)
-        decision = apply_checks.route_decision("handoff", agent._phase, facts, agent._state)
+        decision = apply_checks.route_decision("handoff", agent._phase, facts, agent._state, POLICY)
         self.assertIsInstance(decision, apply_checks.Abort, (method, url))
         route = mock.Mock()
         agent._abort_request(route, request, facts, decision)
@@ -1439,7 +1438,7 @@ class WhatAnAbortedRequestMeansInAHandoff(unittest.TestCase):
                 agent = self.agent(apply_checks.PHASE_STUDENT)
                 request = mock.Mock(method="POST", url=url, headers=kwargs.get("headers", {}), resource_type="fetch")
                 facts = apply_checks.RouteRequest("POST", url, resource_type="fetch", headers=kwargs.get("headers", {}), body=kwargs.get("body"), public=True)
-                decision = apply_checks.route_decision("handoff", agent._phase, facts, agent._state)
+                decision = apply_checks.route_decision("handoff", agent._phase, facts, agent._state, POLICY)
                 if isinstance(decision, apply_checks.Abort):
                     agent._abort_request(mock.Mock(), request, facts, decision)
                 self.assertEqual((agent._closing, agent._early, agent._upload_refused), (False, False, None))
@@ -1475,7 +1474,7 @@ class WhatAnAbortedRequestMeansInAHandoff(unittest.TestCase):
 
 class TheObserverIsAppendOnly(unittest.TestCase):
     def test_what_passed_is_always_kept_and_what_was_refused_is_capped(self):
-        observer = apply_agent._Observer(mock.Mock(), lambda: True)
+        observer = apply_agent._Observer(mock.Mock(), lambda: True, policy=POLICY)
         request = mock.Mock(url="https://boards.greenhouse.io/x", method="post")
         for _ in range(apply_agent.MAX_REQUESTS + 50):
             observer.track(request, passed=False)
@@ -1490,7 +1489,7 @@ class TheObserverIsAppendOnly(unittest.TestCase):
     def test_a_navigation_counts_only_after_the_hand_over(self):
         page = mock.Mock()
         active = {"on": False}
-        observer = apply_agent._Observer(page, lambda: active["on"])
+        observer = apply_agent._Observer(page, lambda: active["on"], policy=POLICY)
         observer._navigated(page.main_frame)
         self.assertFalse(observer.navigated)
         active["on"] = True
@@ -1520,7 +1519,7 @@ class AHandoffRecordCarriesNoValueThroughAHostOrAPath(unittest.TestCase):
         agent._state.values = dict(self.VALUES)
         agent._state.submit_path = "/acme/jobs/1"
         agent._phase = phase
-        agent._observer = apply_agent._Observer(mock.Mock(), lambda: True, lambda: agent._state.values, lambda: agent._state.submit_path)
+        agent._observer = apply_agent._Observer(mock.Mock(), lambda: True, lambda: agent._state.values, lambda: agent._state.submit_path, policy=POLICY)
         return agent
 
     def assert_no_value(self, *documents):
@@ -1614,7 +1613,7 @@ class HandoffSentencesAreTheSpecs(unittest.TestCase):
         self.assertEqual(agent_types.HANDOFF_UPLOAD, "The form tried to upload a file, which the app does not allow yet, so the app stopped it and closed the window. Nothing was sent. Apply from the posting instead.")
         self.assertEqual(agent_types.HANDOFF_HIDDEN, 'The form has a hidden field where the app expected "{question}", so the app stopped before filling it. Nothing was sent. Apply from the posting instead.')
         self.assertEqual(agent_types.WINDOW_CLOSED, "You closed the window. No application was sent.")
-        self.assertEqual(agent_types.WINDOW_UNCONFIRMED, "The app couldn't confirm the Chromium window closed, so it can't be sure nothing was sent. Check your email for a confirmation from Greenhouse.")
+        self.assertEqual(agent_types.WINDOW_UNCONFIRMED.format(ats="Greenhouse"), "The app couldn't confirm the Chromium window closed, so it can't be sure nothing was sent. Check your email for a confirmation from Greenhouse.")
         self.assertEqual(agent_types.YOUR_TURN, "The form is filled in the Chromium window. Complete the fields below, then press Submit application there.")
         self.assertEqual(agent_types.YOUR_TURN_NONE_LEFT, "The form is filled in the Chromium window. Check the form, then press Submit application there.")
         self.assertEqual(agent_types.LEFT_FIELD, 'The app could not fill "{question}". Fill it in yourself.')
@@ -1623,14 +1622,14 @@ class HandoffSentencesAreTheSpecs(unittest.TestCase):
         self.assertEqual(agent_types.LEFT_UNPLANNED, 'The page put something in "{question}" that the app didn\'t. Check it before you press Submit application.')
 
     def test_the_progress_steps_of_the_turn_and_the_code(self):
-        steps = agent_types.PROGRESS_STEPS
+        steps = {key: agent_types.progress_text(key, "Greenhouse") for key in ("your_turn", "submitting", "security_code", "code_typed", "code_yours", "challenge")}
         self.assertEqual(steps["your_turn"], "Your turn: complete the form in the window, then press Submit application there")
         self.assertEqual(steps["submitting"], "Submitting to Greenhouse…")
         self.assertEqual(steps["code_typed"], "The app typed the security code from your email. Press Submit application in the window")
         self.assertEqual(steps["code_yours"], "Type the security code Greenhouse emailed you into the window, then press Submit application")
         self.assertEqual(steps["challenge"], "Greenhouse showed a check in the window. Finish it there")
         self.assertIn("looking for it in your Gmail", steps["security_code"])
-        for key in ("your_turn", "submitting", "security_code", "code_typed", "code_yours", "challenge"):
+        for key in steps:
             self.assertNotIn("{", steps[key])
 
     def test_the_pipe_has_the_ops_of_a_handoff(self):

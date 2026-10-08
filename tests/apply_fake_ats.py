@@ -566,13 +566,13 @@ class CannedAgent:
     def run(self, plan: Any, *, page_url: str, schema: list[Any], files: dict[str, Any], lookup: Any = None, replan: Any = None,
             hand_over: Any = None, cancelled: Any = None, link: Any = None, check_file: Any = None) -> Any:
         from opportunity_app.apply import policy as apply_policy
-        from opportunity_app.apply.agent_types import PROGRESS_STEPS, RunResult
+        from opportunity_app.apply.agent_types import PROGRESS_STEPS, RunResult, progress_text
 
         cancelled = cancelled or (lambda: False)
         stopped = RunResult("failed", [STOPPED_TEXT])
         if self.mode == "handoff":
             return self._handoff(plan, hand_over, cancelled, link)
-        self.on_progress("open", PROGRESS_STEPS["open"])
+        self.on_progress("open", progress_text("open", "Greenhouse"))
         while self.hang:
             if cancelled():
                 return stopped
@@ -618,9 +618,11 @@ class CannedAgent:
         """The handoff script (no browser, no socket): fill, say ready, wait for the student, hand over, then one of the outcomes."""
         from opportunity_app.apply import policy as apply_policy
         from opportunity_app.apply.agent_types import (
-            HANDOFF_NOT_SUBMITTED, HANDOFF_UNRECORDED, LEFT_FIELD, PROGRESS_STEPS, RunResult,
+            HANDOFF_NOT_SUBMITTED, HANDOFF_UNRECORDED, LEFT_FIELD, PROGRESS_STEPS, RunResult, progress_text,
         )
-        from opportunity_app.apply.checks import UNCONFIRMED_NOTE
+        from opportunity_app.apply.checks import UNCONFIRMED_NOTE as UNCONFIRMED_TEMPLATE
+
+        UNCONFIRMED_NOTE = UNCONFIRMED_TEMPLATE.format(ats="Greenhouse")
 
         entries = apply_policy.plan_entries(plan)
         left = [
@@ -635,7 +637,7 @@ class CannedAgent:
         }
         stopped = RunResult("needs_you", [HANDOFF_NOT_SUBMITTED], plan=entries, plan_hash=plan_hash, handed_over=False, after_click=False,
                             evidence={**evidence, "handoff_end": "stopped"})
-        self.on_progress("open", PROGRESS_STEPS["open"])
+        self.on_progress("open", progress_text("open", "Greenhouse"))
         if self.handoff.get("outcome") == "no_loader":
             # A property of the board: the form sends applications somewhere the app does not know. Stops before any input, as the real agent does.
             from opportunity_app.apply.agent_types import HANDOFF_NO_LOADER
@@ -688,7 +690,7 @@ class CannedAgent:
             # The app said no (or we pretend it did): the POST would be aborted, and nothing the agent says may call it sent.
             return RunResult("needs_you", [HANDOFF_UNRECORDED], plan=entries, plan_hash=plan_hash, screenshots=shots, handed_over=False,
                              after_click=False, evidence={**evidence, "handoff_end": "refused"})
-        self.on_progress("submitting", PROGRESS_STEPS["submitting"])
+        self.on_progress("submitting", progress_text("submitting", "Greenhouse"))
         evidence.update(handoff_end="posted", submit_post=True, submit_continued=True, submit_status=200,
                         confirmation_path="/examplerobotics/jobs/4000000001/confirmation")
         if kind == "hang_after_hand_over":
@@ -707,11 +709,11 @@ class CannedAgent:
         code = {"prompted": False, "typed": False, "fallback": False, "posted": False, "rounds": 0, "auto_submit_blocked": False, "reason": ""}
         if kind == "security_code":
             code.update(prompted=True, rounds=1)
-            self.on_progress("security_code", PROGRESS_STEPS["security_code"])
+            self.on_progress("security_code", progress_text("security_code", "Greenhouse"))
             typed = self._ask_for_the_code(link, cancelled, typed_ok=bool(self.handoff.get("code_typed", True)),
                                            reason=str(self.handoff.get("code_reason", "")))
             code.update(typed=typed, fallback=not typed, posted=True, reason="" if typed else str(self.handoff.get("code_reason", "")))
-            self.on_progress("code_typed" if typed else "code_yours", PROGRESS_STEPS["code_typed" if typed else "code_yours"])
+            self.on_progress("code_typed" if typed else "code_yours", progress_text("code_typed" if typed else "code_yours", "Greenhouse"))
             time.sleep(0.2)
         evidence["security_code"] = code
         return RunResult("submitted", [], plan=entries, plan_hash=plan_hash, screenshots=shots, handed_over=True, after_click=True,
