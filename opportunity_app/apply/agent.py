@@ -1876,7 +1876,9 @@ class ApplyAgent:
         if response is not None and response.status >= 400:
             if response.status == 404 and self.adapter.closed_on_404:
                 raise _Stop("failed", CLOSED)
-            raise _Stop("failed", self._say(HTTP_STATUS, status=response.status))
+            if not (self.adapter.waits_for_challenge and response.status in (403, 503) and self._cloudflare_check(response)):
+                raise _Stop("failed", self._say(HTTP_STATUS, status=response.status))
+            # Cloudflare's check, served with the status it answers a browser it is unsure of with: the student's to pass, waited for like a 200 with no form.
         try:
             page.wait_for_load_state("networkidle", timeout=8_000)
         except Exception:  # noqa: BLE001 - a busy page is read as it stands
@@ -1885,6 +1887,15 @@ class ApplyAgent:
             return str(response.text()) if response is not None else ""
         except Exception:  # noqa: BLE001 - a body the browser no longer holds
             return ""
+
+    def _cloudflare_check(self, response: Any) -> bool:
+        """Whether this error response is Cloudflare's "checking your browser" page: its ``cf-mitigated: challenge`` header, or its title."""
+        try:
+            if str(response.headers.get("cf-mitigated", "")).strip().lower() == "challenge":
+                return True
+            return str(self._page.title()).strip().lower().startswith("just a moment")
+        except Exception:  # noqa: BLE001 - a response or page that cannot be asked is an error page
+            return False
 
     def _offsite_host(self) -> str:
         """The host the run's own page was sent to, from the first refused navigation of that page (a popup's is not it). Not read from

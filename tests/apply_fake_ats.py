@@ -1158,6 +1158,7 @@ class FakeLever:
         self.hcaptcha_loads = True                    # False: js.hcaptcha.com cannot be reached (Submit then does nothing)
         self.hcaptcha_posts_refused = False           # True: every non-GET to api.hcaptcha.com (getcaptcha, checkcaptcha) is aborted (Submit then does nothing)
         self.interstitial_s = 0.0                     # the first GET of the form starts this many seconds of the Cloudflare interstitial
+        self.interstitial_status = 200                # ...answered with this status (Cloudflare's managed challenge answers 403 with ``cf-mitigated: challenge``)
         self.cloudflare_beacon = True                 # Cloudflare's script posts a beacon under /cdn-cgi/ when it runs, once per page, as a live one does
         self.cookie_banner = True
         self.third_party_noise = True                 # the page loads Google Tag Manager's script and posts an error report to Bugsnag, as a live one does
@@ -1390,7 +1391,8 @@ class FakeLever:
                 page = lever_fixture_text("cloudflare_interstitial.html").replace('<meta http-equiv="refresh" content="390">', "")
                 page = page.replace("</body>", "<script>setTimeout(function () { location.reload(); }, 200);</script></body>")
                 self.interstitials_served += 1
-                return Reply(200, page, headers=cookie)
+                marked = {"cf-mitigated": "challenge"} if self.interstitial_status != 200 else {}
+                return Reply(self.interstitial_status, page, headers={**cookie, **marked})
         html = lever_fixture_text(fixture)
         if marked_invalid:
             html = re.sub(r'(<(?:input|select|textarea)\b[^>]*\bname="%s")' % re.escape(marked_invalid), r'\1 aria-invalid="true"', html, count=1)

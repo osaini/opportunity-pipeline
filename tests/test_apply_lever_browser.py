@@ -651,6 +651,23 @@ class BannerAndInterstitialTests(LeverCase):
         self.assertEqual(run.result.evidence["page"], "application_form")
         self.assertEqual(run.result.evidence["handoff_end"], "timeout")
 
+    def test_a_cloudflare_interstitial_served_with_an_error_status_is_waited_out_too_and_any_other_error_page_is_not(self):
+        fake = FakeLever()
+        fake.interstitial_s = 10.0
+        fake.interstitial_status = 403
+        run = self.go(fake, timeouts=dataclasses.replace(TIMEOUTS, person_s=20.0))
+        self.assertGreaterEqual(fake.interstitials_served, 1)
+        self.assertIn("challenge", run.steps)
+        self.assertEqual((run.seen["form"]["name"], run.result.evidence["page"]), ("Sam Rivera", "application_form"))
+
+        class Forbidden(FakeLever):
+            def _apply_page(self, fixture, **more):
+                return apply_fake_ats.Reply(403, "<html><head><title>Forbidden</title></head><body>No.</body></html>")
+
+        other = self.go(Forbidden())
+        self.assertEqual((other.result.outcome, other.result.reasons), ("failed", ["Lever answered HTTP 403"]))
+        self.assertEqual(other.agent.acts, [])
+
     def test_an_interstitial_that_never_ends_settles_needs_you_with_nothing_sent(self):
         fake = FakeLever()
         fake.interstitial_s = 1000.0
