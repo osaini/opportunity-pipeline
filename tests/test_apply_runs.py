@@ -30,6 +30,7 @@ from opportunity_app.outreach.automation import AutomationWorker
 from opportunity_app.core.schema import ensure_product_schema
 from opportunity_app.core.database import connect_product
 from opportunity_app.core.timestamps import utc_now
+from opportunity_app.student.profile import update_profile
 
 from helpers_platform import build_and_migrate
 from helpers_apply import ApplyCase, BLUEFIN, USER, setUpModule, tearDownModule  # noqa: F401 (module fixtures: unittest and pytest find them here)
@@ -313,6 +314,23 @@ class HandOverTests(ApplyCase):
         self.assertEqual(_parsed(row["handed_over_at"]), self.at(1))
         self.assertFalse(apply_runs.hand_over(self.conn, token, user_id=USER, now=self.at(2)), "only a claimed attempt is handed over")
         self.assertEqual(_parsed(self.claim_row(token)["handed_over_at"]), self.at(1), "and never twice")
+
+    def test_the_hand_over_records_which_address_the_application_used(self):
+        update_profile(self.conn, {"contact": {"email": "Sam.Rivera@Example.test"}}, ["contact"], user_id=USER)
+        token = self.claimed("handoff")
+        self.assertNotIn("mailbox_hash", json.loads(self.claim_row(token)["detail_json"]), "nothing yet: it is the hand-over that fixes the address")
+        self.assertTrue(apply_runs.hand_over(self.conn, token, user_id=USER, now=self.at(1)))
+        recorded = json.loads(self.claim_row(token)["detail_json"])["mailbox_hash"]
+        self.assertEqual(recorded, apply_runs.address_hash(" sam.rivera@example.test "), "trimmed and case folded, as the app compares addresses")
+        self.assertNotIn("example.test", json.dumps(json.loads(self.claim_row(token)["detail_json"])), "a hash, never the address")
+        # Editing the profile afterwards changes nothing already recorded.
+        update_profile(self.conn, {"contact": {"email": "other@example.test"}}, ["contact"], user_id=USER)
+        self.assertEqual(json.loads(self.claim_row(token)["detail_json"])["mailbox_hash"], recorded)
+
+    def test_a_hand_over_with_no_email_in_the_profile_records_no_address(self):
+        token = self.claimed("handoff")
+        self.assertTrue(apply_runs.hand_over(self.conn, token, user_id=USER, now=self.at(1)))
+        self.assertNotIn("mailbox_hash", json.loads(self.claim_row(token)["detail_json"]))
 
     def test_it_refuses_a_token_that_is_not_ours_a_cancelled_claim_and_another_students(self):
         token = self.claimed("handoff")

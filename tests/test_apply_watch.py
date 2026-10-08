@@ -589,6 +589,34 @@ class HonestClockTests(WatchCase):
         self.reader()
         self.assertEqual(self.watch()["extended"], 1, "back on the right account: the stall is added to the deadline")
 
+    def test_the_watch_compares_the_account_with_the_address_the_claim_recorded_not_the_profile_now(self):
+        token = self.expired(detail={"mailbox_hash": apply_runs.address_hash(EMAIL)})
+        # The student edits the profile email after submitting; the connected account is still the one the application used.
+        update_profile(self.conn, {"contact": {"email": "new.address@example.test"}}, ["contact"], user_id=USER)
+        self.assertEqual(self.watch(), self.zero(no_email_24h=1), "the reader looked in the right mailbox and no email came")
+        self.assertEqual(self.claim_row(token)["verification"], "no_email_24h")
+
+    def test_a_connected_account_that_is_not_the_recorded_address_pauses_even_when_it_is_the_profile_email(self):
+        token = self.expired(detail={"mailbox_hash": apply_runs.address_hash("first.address@example.test")})
+        # The profile says EMAIL and the account is EMAIL, but the application went out under another address.
+        self.assertEqual(self.watch(), self.zero(paused=1))
+        self.assertEqual(self.detail(token)["watch_paused"], apply_watch.READER_OTHER_ADDRESS)
+        self.reader(account="first.address@example.test")
+        self.assertEqual(self.watch()["extended"], 1, "back on the account the application used")
+
+    def test_a_claim_without_a_recorded_address_falls_back_to_the_profile_email(self):
+        token = self.expired()
+        self.reader(account="someone.else@example.test")
+        self.assertEqual(self.watch(), self.zero(paused=1))
+        self.assertEqual(self.detail(token)["watch_paused"], apply_watch.READER_OTHER_ADDRESS)
+
+    def test_claims_with_different_recorded_addresses_are_judged_each_on_its_own(self):
+        right = self.expired(detail={"mailbox_hash": apply_runs.address_hash(EMAIL)})
+        wrong = self.expired(detail={"mailbox_hash": apply_runs.address_hash("first.address@example.test")})
+        self.assertEqual(self.watch(), self.zero(no_email_24h=1, paused=1))
+        self.assertEqual(self.claim_row(right)["verification"], "no_email_24h")
+        self.assertEqual(self.claim_row(wrong)["verification"], "awaiting_email")
+
     def test_a_stall_that_would_push_the_deadline_past_the_14_days_ends_the_watch_as_not_watched(self):
         handed = self.at(days=-12, hours=-23, minutes=-30)  # 12.98 days ago
         token = self.submitted(handed=handed, until=handed + timedelta(hours=24, minutes=1),

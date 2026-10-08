@@ -117,8 +117,13 @@ def _detail(row: Any) -> dict[str, Any]:
 # --- D12: can the watch run at all --------------------------------------------------------
 
 
-def mailbox_reason(conn: sqlite3.Connection, user_id: str) -> str:
+def mailbox_reason(conn: sqlite3.Connection, user_id: str, applied_with: str = "") -> str:
     """'' when the Gmail account the app reads is the email the application carries; else the sentence that says what is wrong.
+
+    ``applied_with`` is the hash of the address a claim went out under (``apply_runs.address_hash``, kept as
+    detail.mailbox_hash at the hand-over): the account is compared with that, so editing the profile email after the
+    submission changes nothing. Without it (a claim handed over before it was kept) the profile email now stands in for it,
+    which is also what the settings requirement asks about the next application.
 
     Database reads only: requirements run on every settings render.
     """
@@ -128,6 +133,8 @@ def mailbox_reason(conn: sqlite3.Connection, user_id: str) -> str:
     account = str(row["account_email"] or "").strip()
     if not account:
         return WATCH_NEEDS_ADDRESS
+    if applied_with:
+        return "" if apply_runs.address_hash(account) == applied_with else WATCH_OTHER_ADDRESS
     contact = preparation.confirmed_facts(conn, user_id).get("contact")
     email = contact.get("email") if isinstance(contact, dict) else None
     if not isinstance(email, str) or not email.strip() or account.casefold() != email.strip().casefold():
@@ -155,14 +162,15 @@ def watch_for(conn: sqlite3.Connection, user_id: str, mode: str) -> bool:
 
 
 def reader_health(
-    conn: sqlite3.Connection, user_id: str, now: datetime | None = None, *, since: datetime | None = None,
+    conn: sqlite3.Connection, user_id: str, now: datetime | None = None, *, since: datetime | None = None, applied_with: str = "",
 ) -> tuple[str, datetime | None]:
     """(stall reason, when the reader last finished a pass). Reason '' means the mail reader is working now.
 
     ``since`` is the earliest time a watched email could have arrived: an email the reader set aside unread (state
     'error') at or after it stalls the watch, because the email that failed may be the confirmation. The Gmail account
-    must also still be the application's address (D12): an account switched since the submission reads a mailbox where
-    the confirmation never lands, so that is a stall too (the watch pauses; it never ends as "no email").
+    must also still be the application's address (D12; ``applied_with``, the hash a claim recorded, else the profile email): an
+    account switched since the submission reads a mailbox where the confirmation never lands, so that is a stall too (the
+    watch pauses; it never ends as "no email").
     """
     moment = _at(now)
     row = connector_row(conn, user_id)
@@ -175,7 +183,7 @@ def reader_health(
         return READER_NOT_CONNECTED, last_ok
     if state == "needs_reconnect":
         return READER_RECONNECT, last_ok
-    problem = mailbox_reason(conn, user_id)
+    problem = mailbox_reason(conn, user_id, applied_with)
     if problem:
         return (READER_UNKNOWN_ADDRESS if problem == WATCH_NEEDS_ADDRESS else READER_OTHER_ADDRESS), last_ok
     if sync is None or not sync["history_id"]:
@@ -278,7 +286,8 @@ def watch(conn: sqlite3.Connection, user_id: str, now: datetime | None = None) -
     if not rows:
         return counts
     used = _used_ids(conn, user_id)
-    health: list[tuple[str, datetime | None]] = []
+    # The reader's health, once per recorded address: claims that went out under different addresses can differ in whether the account fits.
+    health: dict[str, tuple[str, datetime | None]] = {}
     for claim in rows:
         strong, weak = _evidence(conn, user_id, claim, used)
         if strong is not None:
@@ -296,12 +305,13 @@ def watch(conn: sqlite3.Connection, user_id: str, now: datetime | None = None) -
             if _merge(conn, user_id, claim, {"possible_email_at": iso_utc(weak["received_at"])}):
                 counts["possible_email"] += 1
         if claim["state"] == "submitted" and claim["verification"] == "awaiting_email":
-            if not health:
+            applied = str(_detail(claim).get("mailbox_hash") or "")
+            if applied not in health:
                 handed = [parse_app_instant(item["handed_over_at"]) for item in rows if item["state"] == "submitted" and item["verification"] == "awaiting_email"]
                 oldest = min((value for value in handed if value is not None), default=None)
                 floor = None if oldest is None else (oldest - EMAIL_SLACK).replace(microsecond=0)
-                health.append(reader_health(conn, user_id, moment, since=floor))
-            _clock(conn, user_id, claim, health[0], moment, now, counts)
+                health[applied] = reader_health(conn, user_id, moment, since=floor, applied_with=applied)
+            _clock(conn, user_id, claim, health[applied], moment, now, counts)
     return counts
 
 

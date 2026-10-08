@@ -157,6 +157,25 @@ def _iso(moment: datetime) -> str:
     return moment.astimezone(timezone.utc).isoformat(timespec="microseconds")
 
 
+def address_hash(address: str) -> str:
+    """A short hash of an email address as the app compares addresses (trimmed, case folded); '' for no address.
+
+    A claim keeps this, never the address, of the one its application went out under (detail.mailbox_hash), so the
+    confirmation watch can tell whether the Gmail account it reads is that mailbox.
+    """
+    text = str(address or "").strip().casefold()
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:24] if text else ""
+
+
+def application_address(conn: sqlite3.Connection, user_id: str) -> str:
+    """The email in the student's confirmed contact facts, which the application is filled with, or ''."""
+    from ..student import preparation
+
+    contact = preparation.confirmed_facts(conn, user_id).get("contact")
+    email = contact.get("email") if isinstance(contact, dict) else None
+    return email.strip() if isinstance(email, str) else ""
+
+
 def _dumps(value: Any) -> str:
     return json.dumps(value, sort_keys=True)
 
@@ -697,6 +716,11 @@ def hand_over(
         if deadline is not None and monotonic() > deadline:
             return False
         detail = {**json_as(row["detail_json"], {}), "waiting": ""}
+        # The address the application goes out under is the one in the profile now. The watch reads the connected Gmail account against
+        # this, not against whatever the profile says by then (apply/watch.py ``mailbox_reason``).
+        used = address_hash(application_address(conn, user_id))
+        if used:
+            detail["mailbox_hash"] = used
         return bool(conn.execute(
             "UPDATE application_submit_claims SET state='clicking', after_click=1, handed_over_at=?, heartbeat_at=?, updated_at=?, "
             "detail_json=? WHERE token=? AND user_id=? AND state='claimed'",

@@ -18,7 +18,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Apply for me | 0 | 4 | 8 | 12 |
+| Apply for me | 0 | 4 | 7 | 11 |
 | Mail, Gmail and inboxes | 0 | 4 | 9 | 13 |
 | Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
@@ -26,7 +26,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Scoring, scheduling and configuration | 1 | 2 | 6 | 9 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **29** | **34** | **64** |
+| **Total** | **1** | **29** | **33** | **63** |
 
 ## Start here: the high-severity entries
 
@@ -262,13 +262,6 @@ The first was one of three left open by PR #54 (the fail-closed net) and recorde
 - **What happens:** A list or dict reason is unhashable when tested against the frozenset, so the script reports "failed (TypeError)" instead of CANNOT_READ or WAIT.
 - **Suggested fix:** Reuse `is_throttle` from `opportunity_app/integrations/gmail_client.py`.
 - **Regression suite:** tests/ unittest (`test_pipeline_mailbox`)
-
-### Apply for me's confirmation watch compares the Gmail account read now, not the address the application used
-- **Severity:** low (found in review of the confirmation watch, M5b part 1)
-- **Where:** `opportunity_app/apply/watch.py` `reader_health()` (the `mailbox_reason` check) and `watch_for()`; the claim carries no record of the address it was submitted with
-- **What happens:** The watch pauses whenever the Gmail account the app reads is not the email in the profile, which is safe (a pause never writes "no email came") but imprecise. A student who edits the profile email after submitting, when the old address is still the connected account, sees a correct watch paused until the 13-day give-up turns it into not watched. A student who reconnects as another account and then back inside the window is not told the reader was in the wrong mailbox for part of it, because only the account read at each pass is compared.
-- **Suggested fix:** Record the address (or a hash of it) the application used on the claim at hand-over, and compare the connected account against that, not against the profile at each pass. The hand-over is `runs.py`, which the browser-driver milestone edits.
-- **Regression suite:** tests/ unittest (`test_apply_watch`: edit the profile email after the submission and expect the watch to keep running; switch the account and expect a pause)
 
 ### An email the Phase 1 reader set aside as an error stalls every Apply for me watch for the rest of its window
 - **Severity:** low (found in review of the confirmation watch, M5b part 1)
