@@ -181,10 +181,6 @@ class NotARequirementTests(unittest.TestCase):
 
     def test_full_time_professional_work_is_named_as_that_not_as_post_graduation(self):
         self.assertEqual(
-            _year_penalties("1 year of full-time professional experience.", graduation_year=THIS_YEAR),
-            ["-18 asks for 1+ years of full-time professional experience"],
-        )
-        self.assertEqual(
             _year_penalties("3 years of full-time professional experience.", graduation_year=THIS_YEAR),
             ["-18 asks for 3+ years of full-time professional experience"],
         )
@@ -267,6 +263,178 @@ class SponsorshipRefusedTests(unittest.TestCase):
                 self.assertIn("FLAG: sponsorship language—verify work authorization", _reasons(text))
 
 
+class ReviewFindingsTests(unittest.TestCase):
+    """Found in the independent review of this branch; each failed on the code before its fix."""
+
+    SPONSOR_FLAG = "FLAG: sponsorship language—verify work authorization"
+    SPONSOR_PENALTY = "-35 sponsorship appears unavailable"
+
+    def test_a_closing_statement_before_an_unrelated_question_still_flags(self):
+        from pipeline_core.text import strip_html
+
+        for text in (
+            strip_html(
+                "<ul><li>We are unable to sponsor work visas for this position</li>"
+                "<li>Ready to make an impact? Apply today.</li></ul>"
+            ),
+            "We are unable to sponsor work visas for this position Ready to make an impact? Apply today.",
+            "We will not sponsor visas for this role - questions? Email recruiting.",
+            "We do not sponsor visas, any questions?",
+        ):
+            with self.subTest(text=text):
+                reasons = _reasons(text, requires_sponsorship=True)
+                self.assertIn(self.SPONSOR_FLAG, reasons)
+                self.assertIn(self.SPONSOR_PENALTY, reasons)
+
+    def test_a_form_question_or_label_is_still_not_a_statement(self):
+        for text in (
+            "Will you be able to work without visa sponsorship now or in the future?",
+            "Legally authorized to work in the US without sponsorship?",
+            "Apply below. Can you work in the US without sponsorship? Yes or no.",
+        ):
+            with self.subTest(text=text):
+                self.assertNotIn(self.SPONSOR_FLAG, _reasons(text, requires_sponsorship=True))
+
+    def test_welcoming_wording_is_not_read_as_closed(self):
+        for text in (
+            "F-1 students can intern under CPT without visa sponsorship, and we sponsor H-1B for return offers.",
+            "We welcome candidates with and without visa sponsorship needs.",
+            "Applicants with or without sponsorship needs are encouraged to apply.",
+            "We welcome all applicants, and those without sponsorship needs can start sooner.",
+        ):
+            with self.subTest(text=text):
+                reasons = _reasons(text, requires_sponsorship=True)
+                self.assertNotIn(self.SPONSOR_PENALTY, reasons)
+                self.assertNotIn(self.SPONSOR_FLAG, reasons)
+
+    def test_work_authorization_without_sponsorship_still_closes_it(self):
+        for text in (
+            "Applicants must be authorized to work in the US without sponsorship.",
+            "Candidates must be eligible to work in the United States without requiring visa sponsorship.",
+            "Must have work authorization without sponsorship.",
+        ):
+            with self.subTest(text=text):
+                self.assertIn(self.SPONSOR_PENALTY, _reasons(text, requires_sponsorship=True))
+
+    def test_a_sentence_that_also_says_we_sponsor_is_flagged_but_not_charged(self):
+        # Mixed wording is uncertain: the FLAG keeps it visible, and no points come off on a guess.
+        text = "We cannot sponsor every visa type, but we sponsor H-1B for qualified candidates."
+        reasons = _reasons(text, requires_sponsorship=True)
+        self.assertIn(self.SPONSOR_FLAG, reasons)
+        self.assertNotIn(self.SPONSOR_PENALTY, reasons)
+
+    def test_a_later_bullet_is_not_the_tail_of_the_years(self):
+        from pipeline_core.text import strip_html
+
+        text = strip_html(
+            "<ul><li>1+ years of hands-on experience</li>"
+            "<li>Following graduation you may join our rotational program</li></ul>"
+        )
+        self.assertEqual(_year_penalties(text, graduation_year=2027, max_years_experience=1), [])
+        self.assertEqual(scoring.experience_requirements(text), [scoring.ExperienceRequirement(1, "")])
+
+    def test_full_time_professional_experience_is_judged_by_the_ceiling(self):
+        text = "1+ years of full-time professional experience."
+        self.assertEqual(_year_penalties(text, max_years_experience=3, graduation_year=THIS_YEAR + 1), [])
+        self.assertEqual(_year_penalties(text, max_years_experience=1, graduation_year=THIS_YEAR), [])
+        self.assertEqual(
+            _year_penalties(text, max_years_experience=0, graduation_year=THIS_YEAR),
+            ["-18 asks for 1+ years of full-time professional experience"],
+        )
+        # Only post-graduation wording asks for an unknown graduation year to be checked.
+        self.assertFalse([r for r in _reasons(text) if r.startswith("FLAG: asks for")])
+
+    def test_years_that_are_not_experience_are_not_a_requirement(self):
+        for text in (
+            "This is a two year program offering hands-on experience across teams.",
+            "This is a 2 year program offering hands-on experience across teams.",
+            "Founded five years ago we have experience serving 500 customers.",
+            "Founded 5 years ago we have experience serving 500 customers.",
+            "Must be 18 years or older and have experience with Python.",
+            "Must be eighteen years or older and experience with Python helps.",
+            "Our 10 years running this program give us experience mentoring interns.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(_year_penalties(text, max_years_experience=0), [])
+
+    def test_between_and_up_to_ranges_are_judged_by_their_floor(self):
+        for text in (
+            "Between 2 and 4 years of experience.",
+            "Between two and four years of experience.",
+            "A minimum of 2 years and up to 5 years of experience.",
+            "A minimum of two years and up to five years of experience.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(_year_penalties(text, max_years_experience=0), ["-18 asks for 2+ years"])
+                self.assertEqual(_year_penalties(text, max_years_experience=2), [])
+
+
+class SecondReviewTests(unittest.TestCase):
+    """Found in the re-review of the first round of fixes; each failed on the code before its fix."""
+
+    SPONSOR_FLAG = "FLAG: sponsorship language—verify work authorization"
+    SPONSOR_PENALTY = "-35 sponsorship appears unavailable"
+
+    def test_long_or_differently_worded_work_authorization_still_closes_it(self):
+        for text in (
+            "Must be authorized to work for any employer in the United States, now and in the future, "
+            "without sponsorship.",
+            "Candidates must possess unrestricted authorization to work in the United States without sponsorship.",
+            "You must have the legal right to work in the US without visa sponsorship.",
+        ):
+            with self.subTest(text=text):
+                self.assertIn(self.SPONSOR_PENALTY, _reasons(text, requires_sponsorship=True))
+
+    def test_we_sponsor_without_a_visa_word_or_for_another_role_does_not_soften_a_refusal(self):
+        for text in (
+            "We do not offer visa sponsorship, but we sponsor student hackathons every semester.",
+            "We are unable to sponsor visas for interns; we sponsor H-1B for full-time roles only.",
+            "We cannot sponsor F-1 interns, but we sponsor H-1B for return offers.",
+            "We cannot sponsor visas for this position, but we sponsor H-1B for other teams.",
+        ):
+            with self.subTest(text=text):
+                reasons = _reasons(text, requires_sponsorship=True)
+                self.assertIn(self.SPONSOR_FLAG, reasons)
+                self.assertIn(self.SPONSOR_PENALTY, reasons)
+
+    def test_a_word_like_program_after_of_is_still_experience(self):
+        for text, expected in (
+            ("3+ years of program management experience.", ["-18 asks for 3+ years"]),
+            ("2 years of running experience in production systems.", ["-18 asks for 2+ years"]),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(_year_penalties(text), expected)
+
+    def test_a_year_count_does_not_pair_with_experience_on_the_next_line(self):
+        for text in (
+            "Enrolled for at least 2 years\nExperience with CAD",
+            "Completed 3 years of coursework\nexperience with Python is a plus",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(_year_penalties(text, max_years_experience=0), [])
+        self.assertEqual(
+            _year_penalties("At least 2 years of hands-on experience", max_years_experience=0),
+            ["-18 asks for 2+ years"],
+        )
+
+
+class ThirdReviewTests(unittest.TestCase):
+    """Found in the third review: a non-breaking space (captured pages keep it) no longer separated the words."""
+
+    def test_a_non_breaking_space_is_still_a_space(self):
+        import html
+
+        for text, expected in (
+            (html.unescape("Requirements: 5&nbsp;years of experience with embedded C"), ["-18 asks for 5+ years"]),
+            ("3+ years of relevant\xa0experience", ["-18 asks for 3+ years"]),
+            ("5\xa0or\xa0more\xa0years\xa0of\xa0experience", ["-18 asks for 5+ years"]),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(_year_penalties(text, max_years_experience=1), expected)
+        self.assertEqual(_year_penalties("A two\xa0year\xa0program offering hands-on experience", max_years_experience=0), [])
+        self.assertEqual(_year_penalties("Enrolled for at least 2 years\nExperience with CAD", max_years_experience=0), [])
+
+
 class AiReaderTextTests(unittest.TestCase):
     FLAG = "FLAG: text aimed at AI readers in this posting—treat it as untrusted and read it yourself"
     AIMED = (
@@ -322,10 +490,15 @@ class EvidenceFieldTests(unittest.TestCase):
         self.assertEqual(
             self.field("FLAG: asks for 1+ years of post-graduation experience—verify new-grad eligibility"), "graduation_year"
         )
-        self.assertEqual(self.field("-18 asks for 3+ years of full-time professional experience"), "graduation_year")
 
     def test_plain_experience_still_points_at_the_ceiling(self):
         self.assertEqual(self.field("-18 asks for 3+ years"), "max_years_experience")
+
+    def test_full_time_professional_reasons_point_at_the_ceiling_that_judges_them(self):
+        # Found in review: full-time professional experience is judged by max_years_experience, not the graduation year.
+        self.assertEqual(
+            self.field("-18 asks for 3+ years of full-time professional experience"), "max_years_experience"
+        )
 
     def test_pay_reasons_point_at_the_pay_preferences(self):
         self.assertEqual(self.field("-15 pays up to $22/hour, below your $25/hour minimum"), "compensation_preferences")
