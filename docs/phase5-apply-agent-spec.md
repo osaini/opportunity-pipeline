@@ -1847,6 +1847,50 @@ Enabling it later is a code change with a live check and a fixture: the only upl
 hand-over would be to the exact address Greenhouse's own response names, with a body containing
 the planned file's bytes, and 6.10 would check the result.
 
+**As built (M7, 2026-10-08).** Apply for me attaches the approved cover letter for the role, in a rehearsal and in Finish in
+browser. Where it differs from the text above, or the spec left a choice open:
+
+- **Freshness.** `student/artifacts.py` records `content_sha256` (the SHA-256 of the approved text) when it renders, and
+  `ensure_document_artifact` renders again when the stored value differs, when none was recorded (an artifact made before M7),
+  or when the file on disk no longer matches its own `sha256`. The stale file is removed after the new row is written. The
+  edit route is unchanged: it still commits first and deletes the old PDF after, and a failed delete can no longer put a stale
+  PDF in a form.
+- **Which letter.** `policy.cover_letter_for` returns the latest version only. Its answer carries the document id and version,
+  the SHA-256 of the text, the PDF's file name (company, role, kind and version, never a storage name) and the text itself,
+  which only the preview reads. A latest version that is a draft is `cover_letter_draft`, worded "has a newer draft" when an
+  earlier version was approved and "is still a draft" when none was, and it names the draft so the page can open it. Two
+  approved versions are not "two candidates": the latest approved one is the letter.
+- **The plan.** The plan entry names the letter by `source.ref` (`{document id}@{version}`) and `file_sha256` (the text's
+  hash). Both are in `plan_hash`, so a new version, another document or other words in the same version change it. The
+  file name and the letter's text are not in the plan or in the stored row.
+- **Reading the file.** At the start of a run the runner asks `artifacts.attachable_file` for the PDF (rendering it if no
+  current one exists), verifies its bytes against the artifact's `sha256`, and hands the agent a `FilePayload` keyed
+  `cover_letter` with the file name, the media type, the bytes' hash and `content_sha256`. A letter that cannot be rendered
+  or read leaves no payload: a rehearsal reports "The app could not read the file", and Finish in browser leaves the field
+  for the student.
+- **The last look.** Just before the file goes in, the agent checks that the bytes hash to what the runner stored and that
+  the text they were rendered from is the text its plan names, then asks the runner over the pipe (`file_check`, answered by
+  `policy.letter_is_current` from the database) whether that document and version are still the latest, still approved,
+  and still have that text. Only an explicit yes attaches. On a no, a silence, an error or an agent given no way to ask,
+  the field stays empty: a rehearsal records a problem ("Your cover letter for this role changed while the rehearsal ran"),
+  and Finish in browser leaves the field for the student with its own sentence. The agent is given the question only when
+  there is a letter to attach, so an agent written before M7 still runs.
+- **Attaching.** Same as the résumé: a payload with the file's own name, the control's `accept` list respected (a refused
+  type stops a rehearsal and leaves the field in Finish in browser), and the file name, size and the group's text read
+  back. A board that uploads as you attach defers the letter exactly as it defers the résumé (`defer`, "Not attached: this
+  board uploads files as soon as they are attached"), so the letter is never uploaded before the student presses Submit.
+- **Only the named field.** Row L is unchanged: the letter goes to the field named `cover_letter`, and only when it is
+  required (D11 B). A custom "Cover letter" question, a writing sample or any other upload is row U.
+- **The page.** The Needs you row for a required letter has **Draft one** (nothing is approved) or **Open the draft** (the
+  latest version is a draft) and **Try again**. Draft one opens the Prepare page with this role and Cover letter chosen in its
+  own form and the **Generate grounded draft** button focused; the app drafts nothing by itself. A saved role that is not an
+  application yet is added to that form's role list. Open the draft goes to the draft's card with its **Approve version**
+  button focused. Try again asks the app again. The plan preview's Cover Letter row shows the file name, all of the letter's
+  words in a labelled scrollable region, and "Approved cover letter, version {n}"; a letter edited after the rehearsal shows
+  "changed since the rehearsal" and today's words.
+- **Sandbox.** The canned agent counts a file as attached when the runner read one for it. `CANNED["letter_required"]` makes
+  the fictional listing's cover letter a required question.
+
 ### 6.10 The independent pre-submit check
 
 `REQUIRED_CHECK_SCRIPT` is a separate JavaScript string in `apply/checks.py`. It deliberately
@@ -1984,8 +2028,8 @@ spec left a choice open:
 - **Field failures are cleared and left for the student**, except a select holding a wrong option, which stops the run
   (`FIELD_TOOK`). A submit POST or an upload refused during the fill ends the run. A challenge frame after the press waits
   for the student, within the shared budget. No final screenshot after Stop, a closed window, or the timeout.
-- **Cover letters** are never attached (M7): a required one is left for the student, an optional one blank. The "Draft
-  one" hint is dropped until then.
+- **Cover letters** were never attached in M5b; M7 changed that (see "As built (M7)" under 6.9). A letter the app could not
+  attach is left for the student, with its own sentence.
 - **A student-stopped handoff** is `needs_you`, `detail.stopped_by = 'student'`, with no notice and no Urgent row.
 - **Screenshots and values need the browser session.** The masked pictures show every non-sensitive filled value (D8 (i)),
   so they and `GET .../values` need the student's own browser session. A handoff result shows only provably unchanged
@@ -3380,7 +3424,7 @@ M4s is built only if D5 is B to E.
 | M5a | Rehearsal engine | `apply_agent.py` in lookup and rehearse modes; the child-process runner with deadlines and the watchdog; the start, run and lookup API; Look up options in the UI; `GREENHOUSE_LOOKUP_ENDPOINTS` and `CAPTCHA_ENDPOINTS` confirmed on a live board. | 12.9 M5a tests green. |
 | M5b | Finish in browser and the watch | Handoff mode with hand-over in the route handler; the plan preview with screenshots and review marks; handoff recording with `stage_policy` (`ask` under D1 B); `watch()` with its badges, notices, Urgent kind and paused state; per-ATS statistics; the assisted-apply.md section and the THREAT_MODEL Apply agent row; SETUP.md step (Playwright install, Linux display, VPN off, "your name on every application", name for applications, limits, retention). | 12.9 M5b tests green. |
 | M6 | **Gate: one-click submit** (needs D1 A) | The policy rewrite in the same PR, with the D1 A wording (AGENTS.md "Product invariants", README.md "What it never does" and the Apply Mode bullet of docs/guide/web-app.md, THREAT_MODEL row, assisted-apply.md:5-6 and :36-37, the "Extension safety" row of ACCEPTANCE.md, the "7 — Apply Mode" row of PHASE_VERIFICATION.md; the extension README and manifest stay "never submits"); submit mode; hand-over with pause-after-confirm, Cancel and the 15-minute clock; outcome detection; `record` stage write; two-click confirm with nonce; the rehearsal gate; the 8.8 threshold and warning; D9 B and D14 B if chosen. | 12.9 M6 tests green; sandbox acceptance with the fake agent. |
-| M7 | Cover letters in the flow (D11 B) | The Draft one path wired to preparation; the latest-approved-version rule; `content_sha256` freshness; attaching approved letters. | The cover-letter rows of 7.5 pass. |
+| M7 | Cover letters in the flow (D11 B) | The Draft one path wired to preparation; the latest-approved-version rule; `content_sha256` freshness; attaching approved letters. **Built 2026-10-08** (see "As built (M7)" under 6.9). | The cover-letter rows of 7.5 pass. |
 | M8 | Unattended (**only with a separate yes**, D2) | Its own AGENTS.md rewrite; `auto_apply` feature, shadow, the worker step, limits, `ledger` stage write, breaker, Undo wording, re-consent. | 48 h shadow with 5 reviewed clean rows before `on` is offered. |
 | Later | Lever, then Ashby | Lever: `/parseResume` fires on attach **[live]**, so upload first, then overwrite and verify; hidden `timezone` field; hCaptcha may escalate. Ashby: fields autosave as they are filled **[1-src]**, so rehearsal means "fill-only on a local fixture" or accepting that filling sends data; a puzzle question is always `needs_you`. Each needs its own rehearsal definition first. | Separate specs. Lever, Finish in browser only: `phase5-lever-handoff-spec.md` (draft 1, 2026-10-04). Ashby: not yet written; its open points are in that file's Appendix A. |
 
