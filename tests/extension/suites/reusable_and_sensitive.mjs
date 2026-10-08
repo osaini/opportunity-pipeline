@@ -306,3 +306,25 @@ tests.the_never_storable_chains_match_the_shared_vectors_the_python_plan_also_ru
     });
   }
 };
+
+tests.a_one_option_select_and_an_agreement_in_other_words_never_carry_a_reusable_row_to_another_company = () => {
+  // apply.classify.field_net marks the same fields (tick or agreement) so the plan never fills them from the answer library.
+  const cases = [
+    { label: "Work arrangement", options: [{ value: "h", label: "Hybrid, three days on site" }] },
+    { label: "Code of conduct", options: [{ value: "y", label: "I will comply" }, { value: "n", label: "I will not comply" }] },
+    { label: "Handbook", options: [{ value: "y", label: "I will abide by it" }, { value: "n", label: "I will not" }] },
+  ];
+  for (const { label, options } of cases) {
+    const page = pageOf({ tag: "select", id: "question_20", name: "question_20", label, options });
+    const rows = [{ id: "r", question: label, answer: options[0].label, company: "Acme Robotics", tags: ["reusable"] }];
+    assert.equal(preTicked(loadContentScript(page).scan(profile, rows, "Orbit Systems"), "question_20"), false, label);
+  }
+  for (const label of ["Signed by", "Sign below", "Countersignature", "Name of signatory"]) {
+    const page = pageOf({ tag: "input", type: "text", id: "question_21", name: "question_21", label });
+    const rows = [{ id: "r", question: label, answer: "SR", company: "Acme Robotics", tags: ["reusable"] }];
+    assert.equal(preTicked(loadContentScript(page).scan(profile, rows, "Orbit Systems"), "question_21"), false, label);
+  }
+  const plain = pageOf({ tag: "select", id: "question_22", name: "question_22", label: "Which team are you most interested in?", options: [{ value: "p", label: "Perception" }, { value: "c", label: "Controls" }, { value: "x", label: "Planning" }] });
+  const row = [{ id: "r", question: "Which team are you most interested in?", answer: "Controls", company: "Acme Robotics", tags: ["reusable"] }];
+  assert.equal(loadContentScript(plain).scan(profile, row, "Acme Robotics").fields[0].confidence, 0.9, "an ordinary choice still matches at its own company");
+};

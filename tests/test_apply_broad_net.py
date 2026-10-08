@@ -661,6 +661,57 @@ class NoBoxOrAgreementFromTheLibraryTests(unittest.TestCase):
                         self.assertIn("agreement", got.net_never)
                         self.assertEqual(apply_preflight._action(got, {})["type"], "manual")
 
+    def test_a_select_with_one_option_works_as_a_tick_box_and_is_never_filled_from_the_library(self):
+        for label, options in (("Work arrangement", ("Hybrid, three days on site",)), ("Interview format", ("Video call",)), ("Start", ("Noted",))):
+            for kind in (SINGLE, MULTI):
+                with self.subTest(label=label, kind=kind):
+                    field = F("q", label, kind, options=options, parent="Resume/CV")
+                    keyed = plan(BASE + [field]).get("q").answer_key
+                    for company in (COMPANY, OTHER):
+                        rows = [answer(keyed, options[0], COMPANY), answer(keyed, options[0], OTHER, ["reusable"]), answer(label, options[0], COMPANY)]
+                        got = plan(BASE + [field], sources(answers=rows), company=company).get("q")
+                        self.assertEqual((got.source.kind, got.value), ("none", None), company)
+                        self.assertIn("tick", got.net_never)
+                        self.assertEqual(apply_preflight._action(got, {})["type"], "manual", "no form offers to save it")
+
+    def test_a_select_whose_options_or_heading_hit_the_agreement_topic_in_words_the_narrow_list_lacks_is_left_for_the_student(self):
+        cases = (
+            ("Code of conduct", ("I will comply", "I will not comply")), ("Handbook", ("I will abide by it", "I will not")),
+            ("Waiver", ("I waive my right", "I keep my right")), ("Declaration", ("True", "Not true")),
+            ("Please indicate your compliance with the code", ("Done", "Not yet")), ("Data sharing", ("I authorize this", "I do not")),
+        )
+        for label, options in cases:
+            for kind in (SINGLE, MULTI):
+                with self.subTest(label=label, kind=kind):
+                    field = F("q", label, kind, options=options, parent="Resume/CV")
+                    keyed = plan(BASE + [field]).get("q").answer_key
+                    rows = [answer(keyed, options[0], COMPANY), answer(keyed, options[0], OTHER, ["reusable"])]
+                    for company in (COMPANY, OTHER):
+                        got = plan(BASE + [field], sources(answers=rows), company=company).get("q")
+                        self.assertEqual((got.source.kind, got.value), ("none", None), company)
+                        self.assertIn("agreement", got.net_never)
+                        self.assertEqual(apply_preflight._action(got, {})["type"], "manual")
+
+    def test_a_signature_line_worded_unusually_is_never_filled_from_the_library(self):
+        for label, kind in (("Signed by", "input_text"), ("Sign below", "input_text"), ("Countersignature", "input_text"), ("Applicant declaration (full name)", "input_text"),
+                            ("Acknowledged by (your name)", "input_text"), ("Name of signatory", "input_text"), ("Sign below to complete your application", "textarea")):
+            with self.subTest(label=label):
+                field = F("q", label, kind, parent="Resume/CV")
+                keyed = plan(BASE + [field]).get("q").answer_key
+                for row in (answer(keyed, "Sam Rivera", COMPANY), answer(label, "Sam Rivera", COMPANY), answer(keyed, "Sam Rivera", OTHER, ["reusable"])):
+                    got = plan(BASE + [field], sources(answers=[row])).get("q")
+                    self.assertEqual((got.source.kind, got.value), ("none", None))
+                    self.assertTrue(got.sensitive is not None or "agreement" in got.net_never, "left for the student, by the classifier or the net")
+
+    def test_ordinary_single_line_questions_and_longer_choice_lists_still_fill_at_their_own_company(self):
+        for label, kind, options in (("Your favourite programming language", "input_text", ()), ("Preferred pronunciation of your name", "input_text", ()),
+                                     ("Which team are you most interested in?", SINGLE, ("Perception", "Controls", "Planning")), ("Tell us about yourself", "textarea", ())):
+            with self.subTest(label=label):
+                field = F("q", label, kind, options=options, parent="Resume/CV")
+                value = options[0] if options else "Answer"
+                got = plan(BASE + [field], sources(answers=[answer(label, value, COMPANY)])).get("q")
+                self.assertEqual((got.source.kind, got.value, got.net_never), ("answer", value, ()))
+
     def test_an_ordinary_select_still_fills_at_its_own_company(self):
         field = F("q", "Which team are you most interested in?", SINGLE, options=("Perception", "Controls"), parent="Resume/CV")
         got = plan(BASE + [field], sources(answers=[answer("Which team are you most interested in?", "Controls", COMPANY)])).get("q")

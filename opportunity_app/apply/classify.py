@@ -390,8 +390,12 @@ _AGREEMENT_OPTION = re.compile(r"\bagree|\baccept|\backnowledg|\bconsent|\bcerti
 # Typed initials are one too, and so is any "type ... to agree" instruction.
 _SIGNATURE = re.compile(
     r"\bsignature\b|\be ?sign|\bsign here\b|\btype your (?:full )?(?:legal )?name\b|\binitials?\b"
+    r"|\bsign(?:ed)? (?:below|off|by)\b|\bsignator|\bcountersign|\bwet ink\b"
     r"|\b(?:type|enter|print|write|input)\b.{0,60}\b(?:to|as|in) (?:agree|accept|confirm|acknowledge|consent|certify|attest)"
 )
+# The words of the agreement topic that, in a single-line text field's heading, make it a signature line. Narrower than the topic: "confirm",
+# "permission", "notice" and "policy" are in plenty of plain questions.
+_SIGNED_HEADING = re.compile(r"\b(?:agree|acknowledg|consent|certif|attest|affirm|declar|accept|waive|abide)|\bhereby\b")
 _PAY_ATTENTION = re.compile(r"\bpay(?:s|ing)? (?:close |careful |special )?attention\b", re.IGNORECASE)
 # A choice that is Yes or No in the student's own words: two or more of yes, no, y, n among its options.
 _YES_NO_WORDS = frozenset({"yes", "no", "y", "n"})
@@ -412,29 +416,42 @@ def field_net(item: SchemaField, control: str) -> tuple[frozenset[str], tuple[st
     to something, and a typed signature, are an ``agreement``. Only an exact stored statement may tick or choose those (D9 B).
     """
     box = control == "checkbox"
+    # A select with one option cannot be a choice: it is a tick box in a select's clothes ("Hybrid, three days on site"), so it is read as one.
+    single = control in ("select", "multiselect") and len(item.options) == 1
     yes_no = control == "select" and (_yes_no(item.options) or _yes_no_like(item.options))
     parts = [item.label]
-    if box:
+    if box or single:
         parts.extend(item.options)
     own = set(net_topics(" ".join(parts)))
     description = net_topics(_PAY_ATTENTION.sub(" ", plain_text(item.description)))
     # A description is where a form sometimes puts the real question ("Please list any criminal convictions here"). Its own agreement
     # and family words are usually boilerplate, so those count only on a box or a Yes/No question, whose whole point is the statement.
-    own |= set(description) if box or yes_no else set(description) - {"agreement", "relative"}
+    own |= set(description) if box or single or yes_no else set(description) - {"agreement", "relative"}
     options = [normalized_text(option) for option in item.options]
     if control in ("select", "multiselect") and options:
         own |= set(net_topics(" ".join(options))) & _NET_OPTION_TOPICS
         own |= {topic for topic, pattern in _OPTION_EXTRA.items() if any(pattern.search(option) for option in options)}
     marks: list[str] = []
-    if control in ("checkbox", "multiselect"):
+    if control in ("checkbox", "multiselect") or single:
         marks.append(TICK_MARK)
     # A select, radio or multiselect is an agreement when an agreement word is in its options or in its heading or description:
-    # "Do you certify that your answers are true?" with the options "Yes I do" / "Yes I do not" says it in the heading alone.
+    # "Do you certify that your answers are true?" with the options "Yes I do" / "Yes I do not" says it in the heading alone. The
+    # narrow list is not the only reader: the broad net's agreement topic is read on each option and on the heading too ("I will
+    # comply", "I waive my right"). A single-line text field whose heading states an agreement ("Acknowledged by (your name)") is a
+    # signature line; a longer answer is not read that way, so a statement of interest is still an essay, and a heading that only
+    # shares a word with the topic ("Please confirm your employment eligibility status") stays a question.
     choice_words = [normalized_text(item.label), normalized_text(plain_text(item.description))]
     if (
-        ((box or yes_no) and "agreement" in own)
-        or (control in ("select", "multiselect") and any(_AGREEMENT_OPTION.search(text) for text in (*options, *choice_words)))
+        ((box or single or yes_no) and "agreement" in own)
+        or (
+            control in ("select", "multiselect")
+            and (
+                any(_AGREEMENT_OPTION.search(text) for text in (*options, *choice_words))
+                or any("agreement" in net_topics(text) for text in (item.label, *item.options))
+            )
+        )
         or (control in ("text", "textarea") and _SIGNATURE.search(" ".join(choice_words)))
+        or (control == "text" and _SIGNED_HEADING.search(normalized_text(item.label)))
     ):
         marks.append("agreement")
     return frozenset(own), tuple(marks)

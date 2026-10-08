@@ -18,7 +18,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Apply for me | 0 | 5 | 8 | 13 |
+| Apply for me | 0 | 4 | 8 | 12 |
 | Mail, Gmail and inboxes | 0 | 4 | 9 | 13 |
 | Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
@@ -26,7 +26,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Scoring, scheduling and configuration | 1 | 2 | 6 | 9 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **30** | **34** | **65** |
+| **Total** | **1** | **29** | **34** | **64** |
 
 ## Start here: the high-severity entries
 
@@ -113,13 +113,6 @@ The entry flagged for an owner decision is
 ## Apply for me
 
 The first three were left open by PR #54 (the fail-closed net) and recorded here on 2026-10-03. Apply for me never carries an answer across companies, so each of those can at worst affect one company's own saved answer, and the student still presses Submit (D1 B). The next six were found while building the rehearsal engine (M5a), and the last four while building Finish in browser (M5b part 2); none was fixed there.
-
-### Agreement-shaped choices and signatures outside the word list still fill from a same-company saved answer
-- **Severity:** medium (PR #54 review)
-- **Where:** `opportunity_app/apply/classify.py` `field_net()` (the `agreement` mark: `_AGREEMENT_OPTION`, `_SIGNATURE`, the `agree` net words); `opportunity_app/apply/policy.py` `_saved_answer()`
-- **What happens:** A select, radio or text field that agrees to something in words the lists miss (for example a one-option select that works as a tick box, or a signature line worded unusually) gets no `agreement` mark, so a saved answer the student gave at the same company for another posting fills it. Only an exact stored statement should tick or choose an agreement (D9 B).
-- **Suggested fix:** Treat any one-option select as a tick box, and leave a select or text field for the student whenever its options or heading hit the broad net's agreement topic, not only the narrow lists.
-- **Regression suite:** tests/ unittest (`test_apply_policy`, `test_apply_broad_net`)
 
 ### The broad never-storable net misses most fresh wordings
 - **Severity:** medium (PR #54 review)

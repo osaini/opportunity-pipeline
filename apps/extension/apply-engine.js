@@ -508,7 +508,7 @@
   // An option, heading or description that agrees to, accepts, acknowledges, consents to, certifies or confirms something.
   const AGREEMENT_OPTION = /\bagree|\baccept|\backnowledg|\bconsent|\bcertif|\battest|\bconfirm|\bi have read\b|\bi ve read\b|\bunderstand/;
   // A field that asks for a typed signature or initials is an agreement whatever else it says.
-  const SIGNATURE = /\bsignature\b|\be ?sign|\bsign here\b|\btype your (?:full )?(?:legal )?name\b|\binitials?\b|\b(?:type|enter|print|write|input)\b.{0,60}\b(?:to|as|in) (?:agree|accept|confirm|acknowledge|consent|certify|attest)/;
+  const SIGNATURE = /\bsignature\b|\be ?sign|\bsign here\b|\btype your (?:full )?(?:legal )?name\b|\binitials?\b|\bsign(?:ed)? (?:below|off|by)\b|\bsignator|\bcountersign|\bwet ink\b|\b(?:type|enter|print|write|input)\b.{0,60}\b(?:to|as|in) (?:agree|accept|confirm|acknowledge|consent|certify|attest)/;
 
   function plainWords(text) {
     return String(text ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -555,7 +555,10 @@
       const choice = type === "select" ? optionLabels(control) : [];
       const fromOptions = optionTopics(choice);
       const read = `${screened} ${described}`;
-      const agrees = type === "select" && AGREEMENT_OPTION.test(plainWords([read, ...choice].join(" ")));
+      // A select with one option is a tick box in a select's clothes, and the broad net's agreement topic is read on each option too
+      // ("I will comply"); apply.classify.field_net reads the same.
+      const agrees = type === "select" && (choice.length === 1 || AGREEMENT_OPTION.test(plainWords([read, ...choice].join(" ")))
+        || choice.some((option) => netTopics(option).includes("agreement")));
       const typed = !["select", "radio", "checkbox", "file", "custom_select"].includes(type);
       const hit = SENSITIVE.test(screened) || SENSITIVE.test(question) || possiblySensitive(read) || fromOptions.length > 0 || agrees
         || (typed && SIGNATURE.test(plainWords(read)));
