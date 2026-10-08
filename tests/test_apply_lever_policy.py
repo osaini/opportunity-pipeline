@@ -109,19 +109,36 @@ class PolicyValuesTests(Cases):
         self.assertEqual({(e.host, e.path_prefix, e.kind) for e in POLICY.lookup_endpoints}, {(HOST, "/searchLocations", "location"), (EU, "/searchLocations", "location")})
         self.assertEqual(POLICY.storage_upload_suffixes, ())
         self.assertTrue(POLICY.static_asset_host(HOST) and POLICY.static_asset_host(EU))
-        self.assertFalse(POLICY.static_asset_host("cdn.example-games.test") or POLICY.static_asset_host("lever.co"))
+        # The page's fonts and its company's logo (spec 11, Q3): two more hosts, each exactly, and nothing under lever.co by suffix.
+        self.assertTrue(POLICY.static_asset_host("cdn.lever.co") and POLICY.static_asset_host("lever-client-logos.s3.amazonaws.com"))
+        self.assertFalse(POLICY.static_asset_host("cdn.example-games.test") or POLICY.static_asset_host("lever.co") or POLICY.static_asset_host("bugs.lever.co"))
+        self.assertFalse(POLICY.static_asset_host("evil.s3.amazonaws.com") or POLICY.static_asset_host("a.cdn.lever.co"))
 
-    def test_the_captcha_endpoints_are_the_three_hcaptcha_hosts_section_7_names_and_the_recording_extends_that_tuple(self):
-        self.assertEqual({(e.host, e.path_prefix) for e in POLICY.captcha_endpoints}, {("js.hcaptcha.com", "/"), ("hcaptcha.com", "/"), ("api.hcaptcha.com", "/")})
+    def test_the_captcha_endpoints_are_the_hcaptcha_hosts_the_load_recording_saw_and_that_tuple_is_what_a_recording_extends(self):
+        # js and the three that were posted to at load (spec 11, Q3), and the host the widget's frames load from, under the one prefix it was seen to use.
+        self.assertEqual(
+            {(e.host, e.path_prefix) for e in POLICY.captcha_endpoints},
+            {("js.hcaptcha.com", "/"), ("hcaptcha.com", "/"), ("api.hcaptcha.com", "/"), ("api2.hcaptcha.com", "/"), ("newassets.hcaptcha.com", "/captcha/v1/")},
+        )
         self.assertIs(POLICY.captcha_endpoints, checks.LEVER_CAPTCHA_ENDPOINTS)
-        self.assertEqual(set(checks.LEVER_CAPTCHA_RESOLVABLE_HOSTS), {"js.hcaptcha.com", "hcaptcha.com", "api.hcaptcha.com"})
+        self.assertEqual(set(checks.LEVER_CAPTCHA_RESOLVABLE_HOSTS), {e.host for e in checks.LEVER_CAPTCHA_ENDPOINTS})
+
+    def test_the_hcaptcha_widgets_posts_at_load_are_allowed_to_the_hosts_it_posts_to_and_to_no_other_path_of_its_frame_host(self):
+        for phase in (FILL, STUDENT):
+            for host in ("api.hcaptcha.com", "api2.hcaptcha.com", "hcaptcha.com"):
+                with self.subTest(phase=phase, host=host):
+                    self.assertAllowed(decide(phase, request("POST", host, "/checksiteconfig", query="v=1&host=jobs.lever.co", body=b"{}")), "captcha")
+            with self.subTest(phase=phase, host="newassets.hcaptcha.com"):
+                self.assertAllowed(decide(phase, request("POST", "newassets.hcaptcha.com", "/captcha/v1/log", body=b"{}")), "captcha")
+                self.assertAborted(decide(phase, request("POST", "newassets.hcaptcha.com", "/elsewhere", body=b"{}")), "non_get_before_hand_over")
 
     def test_the_other_lists_and_flags(self):
         self.assertEqual(POLICY.challenge_path_prefixes, ("/cdn-cgi/challenge-platform/",))
         self.assertEqual(POLICY.resume_post_path, "/parseResume")
         self.assertEqual(POLICY.submit_content_types, ("multipart/form-data",))
         self.assertTrue(POLICY.bind_submit_host)
-        self.assertEqual(set(POLICY.telemetry_hosts), {"googletagmanager.com", "google-analytics.com", "bugsnag.com"})
+        # Bugsnag's own host is bugs.lever.co (a lever.co host, named exactly), and the "Apply with LinkedIn" widget some boards load posts to LinkedIn.
+        self.assertEqual(set(POLICY.telemetry_hosts), {"googletagmanager.com", "google-analytics.com", "bugsnag.com", "bugs.lever.co", "linkedin.com"})
         self.assertIs(POLICY.outcome_table, checks.lever_outcome)
 
     def test_greenhouse_has_none_of_it(self):
@@ -133,10 +150,11 @@ class PolicyValuesTests(Cases):
 
     def test_a_domain_set_holds_the_domain_and_every_subdomain_and_nothing_that_only_ends_the_same(self):
         telemetry = POLICY.telemetry_hosts
-        for host in ("googletagmanager.com", "www.googletagmanager.com", "www.google-analytics.com", "region1.google-analytics.com", "notify.bugsnag.com", "sessions.bugsnag.com"):
+        for host in ("googletagmanager.com", "www.googletagmanager.com", "www.google-analytics.com", "region1.google-analytics.com", "notify.bugsnag.com", "sessions.bugsnag.com",
+                     "bugs.lever.co", "www.linkedin.com", "platform.linkedin.com"):
             with self.subTest(host=host):
                 self.assertIn(host, telemetry)
-        for host in ("notgoogletagmanager.com", "googletagmanager.com.example.test", "bugsnag.com.evil.test", "lever.co", HOST, ""):
+        for host in ("notgoogletagmanager.com", "googletagmanager.com.example.test", "bugsnag.com.evil.test", "lever.co", HOST, EU, "hire.lever.co", "cdn.lever.co", "notlinkedin.com", ""):
             with self.subTest(host=host):
                 self.assertNotIn(host, telemetry)
         self.assertEqual(telemetry, frozenset(checks.LEVER_TELEMETRY_DOMAINS), "iterating and comparing see the names written down")
@@ -310,7 +328,8 @@ class BeforeHandOverCellTests(Cases):
 
     def test_telemetry_is_refused_for_every_method_silently_and_never_counted_as_a_send(self):
         for phase in self.PHASES:
-            for host in ("www.googletagmanager.com", "googletagmanager.com", "www.google-analytics.com", "region1.google-analytics.com", "notify.bugsnag.com", "sessions.bugsnag.com"):
+            for host in ("www.googletagmanager.com", "googletagmanager.com", "www.google-analytics.com", "region1.google-analytics.com", "notify.bugsnag.com", "sessions.bugsnag.com",
+                         "bugs.lever.co", "www.linkedin.com", "platform.linkedin.com"):
                 for method in ("GET", "HEAD", "OPTIONS", "POST", "PUT"):
                     with self.subTest(phase=phase, host=host, method=method):
                         facts = request(method, host, "/collect", body=b"v=1" if method in ("POST", "PUT") else None)
@@ -323,6 +342,14 @@ class BeforeHandOverCellTests(Cases):
     def test_the_apply_post_before_the_student_is_in_charge_is_refused(self):
         decision = decide(FILL, apply_request())
         self.assertAborted(decision, "before_hand_over")
+
+    def test_the_apply_with_linkedin_widgets_post_into_a_frame_is_refused_silently_and_never_ends_the_turn(self):
+        # Some boards load LinkedIn's widget, which submits a form into an iframe at every load (spec 11, Q3): a refused document POST that is not the form's.
+        post = request("POST", "www.linkedin.com", "/talentwidgets/apply-with-linkedin", kind="document", body=b"a=b", headers={"Content-Type": "application/x-www-form-urlencoded"})
+        for phase in (FILL, STUDENT):
+            self.assertAborted(decide(phase, post), "telemetry")
+        self.assertFalse(student_submit_elsewhere(post, state(), POLICY))
+        self.assertTrue(student_submit_elsewhere(request("POST", "example-games.test", "/talentwidgets", kind="document", body=b"a=b"), state(), POLICY), "any other document POST still does")
 
     def test_a_write_a_cloudflare_beacon_makes_is_never_the_turn_ending_elsewhere(self):
         beacon = request("POST", HOST, "/cdn-cgi/challenge-platform/h/b/jsd/oneshot/a1", body=b"{}", headers={"Content-Type": "application/json"})
@@ -709,20 +736,27 @@ class ResolvableHostsTests(unittest.TestCase):
     def covered(self, host):
         return any(fnmatch.fnmatchcase(host, pattern) for pattern in apply_agent.RESOLVABLE_HOSTS)
 
-    def test_every_host_the_lever_policy_must_reach_resolves_except_the_named_captcha_gap(self):
+    def test_every_host_the_lever_policy_must_reach_resolves(self):
         needed = {*POLICY.navigation_hosts, *POLICY.submit_hosts, *POLICY.form_post_hosts, *(endpoint.host for endpoint in POLICY.lookup_endpoints)}
         needed |= {endpoint.host for endpoint in POLICY.captcha_endpoints}
-        gap = {host for host in needed if not self.covered(host)}
-        self.assertEqual(gap, set(checks.LEVER_CAPTCHA_RESOLVABLE_HOSTS), "the CAPTCHA hosts are the one thing left for the Lever driver to join to the resolver rule")
+        self.assertEqual({host for host in needed if not self.covered(host)}, set(), "the browser can look up every name the policy lets a request reach")
         for host in checks.LEVER_CAPTCHA_RESOLVABLE_HOSTS:
             self.assertIn(host, {endpoint.host for endpoint in POLICY.captcha_endpoints})
+            self.assertIn(host, POLICY.resolvable_hosts)
 
     def test_every_lever_name_in_the_resolver_rule_is_one_the_policy_needs(self):
         lever_names = set(POLICY.resolvable_hosts)
-        self.assertEqual(lever_names, set(lever.LEVER_HOSTS))
-        for host in lever_names:
+        self.assertEqual(lever_names, {*lever.LEVER_HOSTS, *checks.LEVER_CAPTCHA_RESOLVABLE_HOSTS, "cdn.lever.co", "lever-client-logos.s3.amazonaws.com"})
+        for host in lever.LEVER_HOSTS:
             self.assertTrue(host in POLICY.navigation_hosts and host in POLICY.submit_hosts and POLICY.static_asset_host(host))
+        for host in lever_names:
             self.assertTrue(self.covered(host))
+            self.assertTrue(
+                host in POLICY.navigation_hosts or POLICY.static_asset_host(host) or host in {endpoint.host for endpoint in POLICY.captcha_endpoints},
+                f"nothing in the policy needs {host} to resolve",
+            )
+        for host in ("hire.lever.co", "bugs.lever.co", "lever.co", "www.linkedin.com", "shard1.w.hcaptcha.com"):
+            self.assertNotIn(host, lever_names)
 
     def test_the_union_over_every_registered_policy_is_the_rule(self):
         union = {host for spec in apply_ats.REGISTRY for host in spec.route_policy.resolvable_hosts}

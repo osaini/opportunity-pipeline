@@ -567,13 +567,16 @@ class LaunchIsPlain(unittest.TestCase):
     # hosts a Lever posting lives on, which every registered ATS adds to the one rule: the agent's request rules still refuse them on a Greenhouse run),
     # written out here so that adding a host is a decision someone reads. "s?-recruiting" stands for the numbered logo and banner shards.
     RESOLVABLE = [
-        "api-geocode-earth-proxy.greenhouse.io", "boards.greenhouse.io", "fonts.googleapis.com", "fonts.gstatic.com", "job-boards.cdn.greenhouse.io",
-        "job-boards.greenhouse.io", "jobs.eu.lever.co", "jobs.lever.co", "recruiting.cdn.greenhouse.io", "s?-recruiting.cdn.greenhouse.io",
+        "api-geocode-earth-proxy.greenhouse.io", "api.hcaptcha.com", "api2.hcaptcha.com", "boards.greenhouse.io", "cdn.lever.co", "fonts.googleapis.com",
+        "fonts.gstatic.com", "hcaptcha.com", "job-boards.cdn.greenhouse.io", "job-boards.greenhouse.io", "jobs.eu.lever.co", "jobs.lever.co", "js.hcaptcha.com",
+        "lever-client-logos.s3.amazonaws.com", "newassets.hcaptcha.com", "recruiting.cdn.greenhouse.io", "s?-recruiting.cdn.greenhouse.io",
         "s??-recruiting.cdn.greenhouse.io", "s???-recruiting.cdn.greenhouse.io", "www.gstatic.com", "www.recaptcha.net",
     ]
+    # (This is the browser's one rule, the union over every registered ATS. What a Greenhouse run's own request rules reach is narrower:
+    # tests/test_apply_lever_adapter.py ``ResolvableForARunTests``.)
     # What a closing page can send without the route handler being asked is limited by this list alone, so it holds only what a rehearsal
     # needs before Submit: not Greenhouse's analytics collector or my.greenhouse.io, and no CAPTCHA service a Greenhouse form was not seen to use.
-    LEFT_OUT = ["c.spl.greenhouse.io", "my.greenhouse.io", "www.google.com", "hcaptcha.com", "api.hcaptcha.com", "challenges.cloudflare.com"]
+    LEFT_OUT = ["c.spl.greenhouse.io", "my.greenhouse.io", "www.google.com", "challenges.cloudflare.com", "www.googletagmanager.com", "bugs.lever.co", "www.linkedin.com"]
     ARGS = [
         "--disable-blink-features=FetchLaterAPI,WebSocketStream",
         "--disable-features=" + ",".join((*apply_agent.PLAYWRIGHT_DISABLED_FEATURES, "FedCm")),
@@ -593,8 +596,10 @@ class LaunchIsPlain(unittest.TestCase):
         for host in self.LEFT_OUT:
             self.assertNotIn(host, self.RESOLVABLE)
         self.assertEqual(
-            {endpoint.host for endpoint in apply_checks.CAPTCHA_ENDPOINTS} - set(self.RESOLVABLE), {"www.google.com", "hcaptcha.com", "api.hcaptcha.com", "challenges.cloudflare.com"},
-            "the policy still allows the unconfirmed CAPTCHA hosts; only their names no longer resolve")
+            {endpoint.host for endpoint in apply_checks.CAPTCHA_ENDPOINTS} - set(self.RESOLVABLE), {"www.google.com", "challenges.cloudflare.com"},
+            "the policy still allows the unconfirmed CAPTCHA hosts; only their names no longer resolve (hCaptcha's resolve for Lever's form, below)")
+        self.assertEqual(
+            {endpoint.host for endpoint in apply_checks.LEVER_CAPTCHA_ENDPOINTS} - set(self.RESOLVABLE), set(), "every host Lever's hCaptcha is reached at resolves")
         for host in (*apply_checks.STATIC_ASSET_HOSTS, *BOARD_HOSTS):
             self.assertIn(host, self.RESOLVABLE)
 

@@ -580,8 +580,12 @@ class ResolvableHostsTests(unittest.TestCase):
         self.assertEqual(list(apply_agent.resolvable_hosts((GREENHOUSE,))), self.OLD)
         self.assertEqual(sorted(POLICY.resolvable_hosts), [host for host in self.OLD if not host.startswith("fonts.")])
 
-    def test_with_lever_registered_the_list_is_the_old_one_and_the_two_lever_hosts(self):
-        self.assertEqual(set(apply_agent.RESOLVABLE_HOSTS) - set(self.OLD), {"jobs.lever.co", "jobs.eu.lever.co"})
+    def test_with_lever_registered_the_list_is_the_old_one_and_the_names_lever_needs(self):
+        # Its two hosts, hCaptcha's five (the widget is how its Submit works), and the hosts of its fonts and its company's logo.
+        self.assertEqual(set(apply_agent.RESOLVABLE_HOSTS) - set(self.OLD), {
+            "jobs.lever.co", "jobs.eu.lever.co", "js.hcaptcha.com", "hcaptcha.com", "api.hcaptcha.com", "api2.hcaptcha.com", "newassets.hcaptcha.com",
+            "cdn.lever.co", "lever-client-logos.s3.amazonaws.com",
+        })
         self.assertEqual(set(self.OLD) - set(apply_agent.RESOLVABLE_HOSTS), set())
 
     def test_the_list_is_the_union_of_every_registered_policy_and_the_fonts(self):

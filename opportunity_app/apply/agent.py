@@ -1121,10 +1121,14 @@ class ApplyAgent:
         return self._press_arrives(after=before) and looks_like_a_send(facts, self._state, self._policy)
 
     def _resolvable(self, host: str) -> bool:
-        """Whether this host is one of the names the browser may look up (``RESOLVABLE_HOSTS`` and a test's own lookup endpoints)."""
+        """Whether this host is one of the names this run's ATS needs the browser to look up (its policy's, and the fonts) or a test's own lookup endpoints.
+
+        The browser's resolver rule is the union over every registered ATS (``RESOLVABLE_HOSTS``), because it is one list; this run's own request rules
+        are narrower, so a Greenhouse run never reaches a name only Lever's form needs.
+        """
         if not host:
             return False
-        patterns = (*RESOLVABLE_HOSTS, *(endpoint.host for endpoint in self._endpoints))
+        patterns = (*self._policy.resolvable_hosts, *FONT_HOSTS, *(endpoint.host for endpoint in self._endpoints))
         return any(fnmatch.fnmatchcase(host, pattern) for pattern in patterns)
 
     def _abort_request(self, route: Any, request: Any, facts: RouteRequest, decision: Abort, *, own_page: bool = False) -> None:

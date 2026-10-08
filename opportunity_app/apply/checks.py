@@ -1050,26 +1050,35 @@ GREENHOUSE_ROUTE_POLICY = RoutePolicy(
 # Lever rows of the outcome table (``lever_outcome``).
 LEVER_LOOKUP_ENDPOINTS: tuple[Endpoint, ...] = tuple(Endpoint(host, lever.SEARCH_LOCATIONS_PATH, "location") for host in lever.LEVER_HOSTS)
 
-# The hCaptcha hosts section 7 states, each an exact host (any path). The load-time hosts of the challenge (its asset and image hosts) and the
-# hosts it posts to when it runs are pinned from a live recording (Q3, section 11), and until then a request to a host not listed here is
-# refused, which the student is told ("the form tried to send to an address the app doesn't recognize") and nothing has left. THIS TUPLE IS WHAT
-# THE RECORDING EXTENDS, and nothing else.
-LEVER_CAPTCHA_ENDPOINTS: tuple[Endpoint, ...] = (Endpoint("js.hcaptcha.com", "/"), Endpoint("hcaptcha.com", "/"), Endpoint("api.hcaptcha.com", "/"))
+# The hCaptcha hosts a Lever apply page was seen to use at load (spec 11, Q3; tests/fixtures/apply/lever/endpoints.json): its script (js), the
+# three hosts its widget posts to by itself before anyone presses anything (api, api2 and hcaptcha.com), and the host its frames load from, under the
+# one path prefix they were seen at. Each is an exact host: a name under w.hcaptcha.com (the logo shards) is not here, because a wildcard there would
+# let a name carry a planned value. What the widget posts to once Submit is pressed (getcaptcha, checkcaptcha and the like) was not seen, and until the
+# first real handoff shows it, a request to any host not listed is refused: the student is told ("the form tried to send to an address the app doesn't
+# recognize") and nothing has left. THIS TUPLE IS WHAT A RECORDING EXTENDS, and nothing else.
+LEVER_CAPTCHA_ENDPOINTS: tuple[Endpoint, ...] = (
+    Endpoint("js.hcaptcha.com", "/"), Endpoint("hcaptcha.com", "/"), Endpoint("api.hcaptcha.com", "/"), Endpoint("api2.hcaptcha.com", "/"),
+    Endpoint("newassets.hcaptcha.com", "/captcha/v1/"),
+)
 # The names the browser must be able to look up for those endpoints to be reachable at all (``js.hcaptcha.com`` by GET: without it Submit does nothing,
-# spec 3.10). NOT in ``LEVER_ROUTE_POLICY.resolvable_hosts`` yet: the resolver rule is one list for every ATS, so adding them lets a Greenhouse run's
-# browser look up hCaptcha too, which the pinned list (tests/test_apply_agent_static.py ``LEFT_OUT``) rules out today. Joining them is the decision
-# that goes with the Lever driver, and ``tests/test_apply_lever_policy.py`` pins that they are the only gap.
+# spec 3.10). They are in ``LEVER_ROUTE_POLICY.resolvable_hosts``, so the resolver rule (one list for every ATS) names them; a Greenhouse run's own
+# request rules still refuse them (``ApplyAgent._resolvable`` reads the run's own policy), which tests/test_apply_agent_static.py pins.
 LEVER_CAPTCHA_RESOLVABLE_HOSTS: tuple[str, ...] = tuple(sorted({endpoint.host for endpoint in LEVER_CAPTCHA_ENDPOINTS}))
+# Where the page's fonts and its company's logo come from (Q3). Neither is needed for the form to work; a window that shows them is the student's own.
+LEVER_STATIC_HOSTS: tuple[str, ...] = ("cdn.lever.co", "lever-client-logos.s3.amazonaws.com")
 # Cloudflare's bot check runs on every Lever page (spec 3.14): its script is under this path and its beacons post there. Narrower than the
 # spec's "under /cdn-cgi/", until the recording (Q3) shows another path in use.
 LEVER_CLOUDFLARE_PATH_PREFIXES: tuple[str, ...] = ("/cdn-cgi/challenge-platform/",)
-# Refused for every method, silently, on any subdomain: the page works without them (spec 7).
-LEVER_TELEMETRY_DOMAINS: tuple[str, ...] = ("googletagmanager.com", "google-analytics.com", "bugsnag.com")
+# Refused for every method, silently, on any subdomain: the page works without them (spec 7). Bugsnag's own host is a lever.co one (the page's
+# ``bug-snag.js`` names ``bugs.lever.co``), so it is listed exactly and ``lever.co`` is never let through by suffix. Some boards also load the "Apply with
+# LinkedIn" widget, which submits a form into a frame at every load: that refused document POST is neither the form's nor a reason to end the student's
+# turn (Q3).
+LEVER_TELEMETRY_DOMAINS: tuple[str, ...] = ("googletagmanager.com", "google-analytics.com", "bugsnag.com", "bugs.lever.co", "linkedin.com")
 
 
 def is_lever_static_asset_host(host: str) -> bool:
-    """Lever's documents and static files come from its own two hosts."""
-    return host in lever.LEVER_HOSTS
+    """Lever's documents and static files come from its own two hosts, its fonts from ``cdn.lever.co`` and a company's logo from one picture bucket."""
+    return host in lever.LEVER_HOSTS or host in LEVER_STATIC_HOSTS
 
 
 def lever_loader_paths(page_url: str) -> tuple[str, str, str]:
@@ -1100,7 +1109,7 @@ LEVER_ROUTE_POLICY = RoutePolicy(
     lookup_endpoints=LEVER_LOOKUP_ENDPOINTS,
     captcha_endpoints=LEVER_CAPTCHA_ENDPOINTS,
     storage_upload_suffixes=(),
-    resolvable_hosts=tuple(sorted(lever.LEVER_HOSTS)),
+    resolvable_hosts=tuple(sorted({*lever.LEVER_HOSTS, *LEVER_CAPTCHA_RESOLVABLE_HOSTS, *LEVER_STATIC_HOSTS})),
     confirmation_reached=_lever_confirmation_reached,
     challenge_path_prefixes=LEVER_CLOUDFLARE_PATH_PREFIXES,
     resume_post_path=lever.PARSE_RESUME_PATH,
