@@ -72,7 +72,9 @@ OP_ERROR = "error"                  # child -> parent: {"op", "error": exception
 OP_HANDOFF_READY = "handoff_ready"     # child -> parent, one-way: {"op", "plan": [value-free entries], "plan_hash",
                                        #   "left": [{"key", "question", "reason"}], "screenshot": {...} | None,
                                        #   "captcha_widget": bool, "page_defaults": [keys],
-                                       #   "handoff_in_s": seconds the agent will really keep the window for the student}
+                                       #   "handoff_in_s": seconds the agent will really keep the window for the student,
+                                       #   "resume_sent_to_lever": bool, optional (Lever only: true once the app's attach sent the file;
+                                       #   left out, nothing is recorded and the run's planned-attach marker stands)}
 OP_SECURITY_CODE = "security_code"     # child -> parent: {"op", "id"}. The parent answers for its own run's claim,
                                        #   never for a token the child names. Sent again only after the last ask's
                                        #   reply arrived (never while one is outstanding).

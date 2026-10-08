@@ -1352,14 +1352,22 @@ class ApplyRunner:
                         return False
 
                 def ready(message: dict[str, Any]) -> None:
-                    resume_sent = bool(message.get("resume_sent_to_lever"))
+                    # Only what the window said is written: a message that leaves the key out must not become an explicit "no", and the
+                    # planned marker written when the run started goes on standing until something confirms the file got there.
+                    said = message.get("resume_sent_to_lever")
+                    resume_sent = said is True
                     work.resume_sent_seen = work.resume_sent_seen or resume_sent
+                    kept: dict[str, Any] = {}
+                    if isinstance(said, bool):
+                        kept["resume_sent_to_lever"] = said
+                    if work.resume_planned:
+                        kept[RESUME_PLANNED_KEY] = True
                     shots = _relative_screenshots(work.apply_root, [message["screenshot"]] if isinstance(message.get("screenshot"), dict) else [])
                     # The window closes when the agent says it will (its turn is shortened by a slow fill), never later than handoff_s.
-                    kept = message.get("handoff_in_s")
+                    in_s = message.get("handoff_in_s")
                     seconds = work.timeouts.handoff_s
-                    if isinstance(kept, (int, float)) and not isinstance(kept, bool) and 0 <= kept <= work.timeouts.handoff_s:
-                        seconds = float(kept)
+                    if isinstance(in_s, (int, float)) and not isinstance(in_s, bool) and 0 <= in_s <= work.timeouts.handoff_s:
+                        seconds = float(in_s)
                     until = datetime.now(timezone.utc) + timedelta(seconds=seconds)
                     stored = apply_runs.record_handoff_ready(
                         conn, user_id=user_id, run_id=run_id, token=work.token, plan=[item for item in message.get("plan") or [] if isinstance(item, dict)],
@@ -1368,7 +1376,7 @@ class ApplyRunner:
                             "left_for_you": _left_items(message.get("left")), "captcha_widget": bool(message.get("captcha_widget")),
                             "page_defaults": [str(key) for key in message.get("page_defaults") or []],
                             "handoff_until": apply_runs.iso_utc(until),
-                            "resume_sent_to_lever": resume_sent,
+                            **kept,
                         },
                     )
                     if not stored:

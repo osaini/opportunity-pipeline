@@ -8,7 +8,9 @@ browser, no network; every company and posting is fictional.
 
 import json
 import sys
+import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from dataclasses import replace
 from pathlib import Path
 from unittest import mock
@@ -19,7 +21,7 @@ import realdata_guard
 
 realdata_guard.install()
 
-from opportunity_app.apply import ats as apply_ats, runner as apply_runner
+from opportunity_app.apply import ats as apply_ats, runner as apply_runner, runs as apply_runs
 from opportunity_app.apply.agent_types import RESUME_PLANNED_KEY
 
 import test_apply_runner as runner_tests
@@ -45,6 +47,28 @@ class ForgetfulFactory(FakeApplyAgentFactory):
         forgetful = ForgetfulAgent.__new__(ForgetfulAgent)
         forgetful.__dict__.update(canned.__dict__)
         return forgetful
+
+
+class QuietReadyAgent(CannedAgent):
+    """A canned Lever agent whose ready message leaves out what it knows about the résumé (nothing forces an adapter to send the key)."""
+
+    def run(self, *args, link=None, **kwargs):
+        class Quiet:
+            def ready(self, message):
+                link.ready({key: value for key, value in message.items() if key != "resume_sent_to_lever"})
+
+            def __getattr__(self, name):
+                return getattr(link, name)
+
+        return super().run(*args, link=Quiet() if link is not None else None, **kwargs)
+
+
+class QuietReadyFactory(FakeApplyAgentFactory):
+    def __call__(self, **kwargs):
+        canned = super().__call__(**kwargs)
+        quiet = QuietReadyAgent.__new__(QuietReadyAgent)
+        quiet.__dict__.update(canned.__dict__)
+        return quiet
 
 
 class LeverRunCase(runner_tests.RunnerCase):
@@ -103,6 +127,28 @@ class KeptEvidenceTests(LeverRunCase):
         evidence = json.loads(row["evidence_json"])
         self.assertIs(evidence.get("resume_sent_to_lever"), True)
         self.assertIs(self.view(run_id)["resume_sent_to_lever"], True)
+
+
+class ReadyWithoutTheKeyTests(LeverRunCase):
+    def test_a_ready_message_without_the_key_keeps_the_planned_marker_and_recovery_says_lever_may_have_the_file(self):
+        run_id = self.lever(QuietReadyFactory(step_delay=0.0, handoff={"wait": 20, "outcome": "submitted"}))
+        deadline = time.monotonic() + 30
+        evidence = {}
+        while time.monotonic() < deadline and "handoff_until" not in evidence:
+            time.sleep(0.05)
+            evidence = json.loads(self.row(run_id)["evidence_json"] or "{}")
+        self.assertIn("handoff_until", evidence, "the window never got ready")
+        self.assertIs(evidence.get(RESUME_PLANNED_KEY), True, "the ready write erased the planned marker")
+        self.assertNotIn("resume_sent_to_lever", evidence, "a key the window never sent was made up as False")
+        # The server dies during the student's turn: another process finds the claim and settles it.
+        stale = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(timespec="microseconds")
+        with self.conn:
+            self.conn.execute("UPDATE application_submit_claims SET instance='another-process', heartbeat_at=? WHERE run_id=?", (stale, run_id))
+        apply_runs.recover_stale(self.conn, datetime.now(timezone.utc), user_id=USER)
+        claim = self.conn.execute("SELECT note FROM application_submit_claims WHERE run_id=?", (run_id,)).fetchone()
+        self.assertIn(MAYBE, claim["note"])
+        self.assertNotIn("Nothing was sent", claim["note"])
+        self.runner.shutdown(30)
 
 
 if __name__ == "__main__":
