@@ -715,12 +715,13 @@ def hand_over(
             rehearsed = parse_app_instant(rehearsal["finished_at"] or rehearsal["started_at"]) if rehearsal is not None else None
             if rehearsed is None or moment - rehearsed >= CONFIRM_MAX_AGE:
                 return False
+        # The address the application goes out under is the one in the profile now. The watch reads the connected Gmail account against
+        # this, not against whatever the profile says by then (apply/watch.py ``mailbox_reason``). It is read before the deadline
+        # check, which stays the last step before the UPDATE.
+        used = address_hash(application_address(conn, user_id))
         if deadline is not None and monotonic() > deadline:
             return False
         detail = {**json_as(row["detail_json"], {}), "waiting": ""}
-        # The address the application goes out under is the one in the profile now. The watch reads the connected Gmail account against
-        # this, not against whatever the profile says by then (apply/watch.py ``mailbox_reason``).
-        used = address_hash(application_address(conn, user_id))
         if used:
             detail["mailbox_hash"] = used
         return bool(conn.execute(

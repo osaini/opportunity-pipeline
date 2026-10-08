@@ -1262,6 +1262,19 @@ class HandOverDeadlineTests(ApplyCase):
         self.assertEqual((row["state"], row["after_click"]), ("clicking", 1))
         self.assertEqual(json.loads(row["detail_json"])["waiting"], "", "a clicking claim never says the student is still working")
 
+    def test_a_deadline_that_passes_while_the_profile_is_read_refuses_and_leaves_the_claim_claimed(self):
+        # The deadline comparison is the last step before the UPDATE: nothing slow may sit between them.
+        real = apply_runs.application_address
+
+        def slow(*args, **kwargs):
+            time.sleep(0.2)
+            return real(*args, **kwargs)
+
+        with mock.patch.object(apply_runs, "application_address", side_effect=slow):
+            self.assertFalse(apply_runs.hand_over(self.conn, self.token, user_id=USER, deadline=time.monotonic() + 0.1))
+        row = self.claim_row(self.token)
+        self.assertEqual((row["state"], row["handed_over_at"], row["after_click"]), ("claimed", None, 0))
+
     def test_a_request_that_waited_in_the_queue_past_its_expiry_is_refused(self):
         case = self
 
