@@ -755,6 +755,28 @@ def _key_of(item: Any) -> str:
     return _canonical_key(_get(item, "name") or _get(item, "id") or "")
 
 
+def _lone_choice_agrees(item: Any, scan: Any) -> bool:
+    """Whether a radio or checkbox with no question of its own says something the listing says.
+
+    Its words are the scan's ``label`` (the wrapping label's text, then the control's name and id, which are taken off again). They must be
+    contained in the listing's label, an option's label or its description: the same rule a statement box is held to before it is ticked
+    (a statement may add the heading and description around the option's own words, never replace them). A statement the listing does not
+    carry (``label_from_page``) has nothing to be compared with.
+    """
+    if _get(item, "label_from_page"):
+        return True
+    words = str(_get(scan, "label") or "")
+    for own in (_get(scan, "name"), _get(scan, "id")):
+        if own:
+            words = re.sub(re.escape(str(own)), " ", words, flags=re.IGNORECASE)
+    words = question_key(words)
+    if not words:
+        return False
+    description = re.sub(r"<[^>]*>", " ", str(_get(item, "description") or ""))
+    listed = question_key(" ".join((str(_get(item, "label") or ""), *(str(option) for option in _get(item, "options") or ()), description)))
+    return f" {words} " in f" {listed} "
+
+
 def join(schema_fields: Iterable[Any], scan_fields: Iterable[Any], fill_keys: Iterable[Any] | None = None) -> list[Problem]:
     """Every way the page and Greenhouse's own listing disagree.
 
@@ -809,10 +831,16 @@ def join(schema_fields: Iterable[Any], scan_fields: Iterable[Any], fill_keys: It
             continue
         scan = scans[next(iter(controls.values()))]
         heard = _get(scan, "question")
-        # A radio or checkbox with no fieldset legend (a consent box wrapped in its own label) reports no question at all. Nothing was heard,
-        # so there is nothing to disagree with; the control is still matched to the listing by its name.
+        # A radio or checkbox with no fieldset legend (a consent box wrapped in its own label) reports no question at all. Its own words are
+        # then the only wording there is, so those are compared with the listing's (never skipped: Finish in browser ticks a statement box
+        # from the listing's words alone).
         unheard_choice = _get(scan, "type") in CHOICE_TYPES and not str(heard or "").strip()
-        if heard is not None and not unheard_choice and question_key(heard) != question_key(label):
+        if unheard_choice:
+            mismatch = not _lone_choice_agrees(item, scan)
+            heard = str(_get(scan, "label") or "")
+        else:
+            mismatch = heard is not None and question_key(heard) != question_key(label)
+        if mismatch:
             problems.append(Problem(
                 "wording_mismatch", name, f"The form's wording differs from Greenhouse's listing ({heard})", str(heard), required,
             ))
@@ -841,9 +869,11 @@ def join(schema_fields: Iterable[Any], scan_fields: Iterable[Any], fill_keys: It
 # REQUIRED_CHECK_SCRIPT: the independent re-scan of the filled form (spec 6.10)
 # ---------------------------------------------------------------------------------------------
 
-# Whether the form is one page of several: a control that goes on to another page (Next, Continue, Save and continue) or a step counter
-# ("Step 1 of 3"). It looks inside the form and the element around it, and returns fixed words only, never anything the page said. The
-# app reads one page, so a form that shows either is not a form it read whole (the rehearsal says so and does not call itself clean).
+# Whether the form is one page of several. It fails closed: any visible button, link or role=button on the page whose words (text, value,
+# aria-label or title) include next, continue or proceed, other than a control that says submit, and any step counter ("Step 1 of 3",
+# "Page 1/3", "2 of 4"), makes it so. The wording of a real multi-page form is not known, so the words are matched, not the whole text.
+# It returns fixed words only, never anything the page said. The app reads one page, so a form that shows either is not a form it read
+# whole (the rehearsal says so and does not call itself clean).
 MORE_PAGES_SCRIPT = r"""() => {
   const form = document.querySelector("form#application-form") || document.querySelector("#application_form");
   if (!form) return [];
@@ -856,14 +886,17 @@ MORE_PAGES_SCRIPT = r"""() => {
     return box.width >= 2 && box.height >= 2;
   };
   const found = [];
-  const goes_on = /^(save (and|&) )?(next|continue)( step| page| to [a-z ]{1,30})?\s*[>›»→]*$/;
-  for (const el of scope.querySelectorAll("button, a, [role=button], input[type=button], input[type=submit]")) {
-    const text = squash(el.innerText || el.value || el.getAttribute("aria-label"));
-    if (goes_on.test(text) && shown(el)) { found.push("next"); break; }
+  const goes_on = /\b(next|continue|proceed)\b/;
+  const asks_to_send = /\bsubmit\b/;
+  for (const el of document.querySelectorAll("button, a, [role=button], input[type=button], input[type=submit], input[type=image]")) {
+    const words = squash([el.innerText, el.value, el.getAttribute("aria-label"), el.getAttribute("title")].join(" "));
+    if (goes_on.test(words) && !asks_to_send.test(words) && shown(el)) { found.push("next"); break; }
   }
-  const counter = /\b(?:step|page)\s+(\d+)\s+(?:of|\/)\s+(\d+)\b/;
-  const said = counter.exec(squash(scope.innerText));
-  if ((said && Number(said[2]) > 1) || scope.querySelector("[aria-current=step]")) found.push("steps");
+  // A counter written with a word ("Step 1 of 3", "Page 1/3") counts anywhere on the page; a bare "2 of 4" only beside the form.
+  const named = /\b(?:step|page)\s*(\d+)\s*(?:of|\/)\s*(\d+)\b/.exec(squash(document.body.innerText));
+  const bare = /\b(\d+)\s+of\s+(\d+)\b/.exec(squash(scope.innerText));
+  const total = (said) => (said ? Number(said[2]) : 0);
+  if (total(named) > 1 || (total(bare) > 1 && Number(bare[1]) <= total(bare)) || document.querySelector("[aria-current=step]")) found.push("steps");
   return found;
 }"""
 

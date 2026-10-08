@@ -105,6 +105,12 @@ SCENARIOS = (
     "next_button",                  # a multi-page form: a Next button sits under the questions
     "continue_link",                # a multi-page form: a "Save and continue" link outside the form, in the page around it
     "step_indicator",               # a multi-page form: "Step 1 of 3" above the questions
+    "continue_to_step",             # a multi-page form: a "Continue to step 2" button under the questions
+    "next_section",                 # a multi-page form: a "Next section" button under the questions
+    "next_review",                  # a multi-page form: a "Next: Review" button under the questions
+    "page_slash_counter",           # a multi-page form: "Page 1/3" above the questions
+    "next_button_aria",             # a multi-page form: a button with only an icon and the label "Go to the next page"
+    "counter_outside",              # a multi-page form: "Step 2 of 4" in a header outside the form's own element
 )
 
 _FORM = 'document.getElementById("application-form")'
@@ -149,6 +155,41 @@ _SCRIPTS = {
       button.type = "button";
       button.textContent = "Next";
       """ + _FORM + """.appendChild(button);
+    })();""",
+    "continue_to_step": """(function () {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Continue to step 2";
+      """ + _FORM + """.appendChild(button);
+    })();""",
+    "next_section": """(function () {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Next section";
+      """ + _FORM + """.appendChild(button);
+    })();""",
+    "next_review": """(function () {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Next: Review";
+      """ + _FORM + """.appendChild(button);
+    })();""",
+    "page_slash_counter": """(function () {
+      var note = document.createElement("p");
+      note.textContent = "Page 1/3";
+      """ + _FORM + """.insertBefore(note, """ + _FORM + """.firstChild);
+    })();""",
+    "next_button_aria": """(function () {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.setAttribute("aria-label", "Go to the next page");
+      button.textContent = "→";
+      document.body.appendChild(button);
+    })();""",
+    "counter_outside": """(function () {
+      var note = document.createElement("div");
+      note.textContent = "Step 2 of 4";
+      document.body.insertBefore(note, document.body.firstChild);
     })();""",
     "continue_link": """(function () {
       var link = document.createElement("a");

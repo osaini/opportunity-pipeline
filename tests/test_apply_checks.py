@@ -1017,17 +1017,32 @@ class JoinTests(unittest.TestCase):
             with self.subTest(wording=wording):
                 self.assertEqual(join([field_of("q", "Why us?")], [scan_of("q", wording)]), [])
 
-    def test_a_lone_checkbox_with_no_question_of_its_own_is_not_a_wording_mismatch(self):
-        # The engine reports "" for a checkbox (or radio) with no fieldset legend, such as a consent box wrapped in its own label.
-        # Nothing was heard, so there is nothing to disagree with.
+    def test_a_lone_checkbox_with_no_question_of_its_own_is_compared_by_its_own_words(self):
+        # The engine reports "" for a checkbox (or radio) with no fieldset legend, such as a consent box wrapped in its own label. Its
+        # words are in the scan's label (with the control's name and id after them), and they must be ones the listing has.
         consent = field_of("gdpr_consent_given", "I consent to Example Robotics storing my application data for 365 days", type="multi_value_multi_select")
         for kind in ("checkbox", "radio"):
             with self.subTest(kind=kind):
-                self.assertEqual(join([consent], [scan_of("gdpr_consent_given", "", type=kind)]), [])
+                same = scan_of("gdpr_consent_given", "", type=kind, label="I consent to Example Robotics storing my application data for 365 days gdpr_consent_given gdpr_consent_given")
+                self.assertEqual(join([consent], [same]), [])
         # A control that is not a choice still needs its wording, and a choice that does report a different question still disagrees.
         text = field_of("q", "Why us?")
         self.assertEqual([p.kind for p in join([text], [scan_of("q", "")])], ["wording_mismatch"])
         self.assertEqual([p.kind for p in join([consent], [scan_of("gdpr_consent_given", "Something else", type="checkbox")])], ["wording_mismatch"])
+
+    def test_a_lone_checkbox_whose_own_words_differ_from_the_listing_is_a_wording_mismatch(self):
+        # Finish in browser ticks a statement box from the listing's words alone; a form that says something else must be left to the student.
+        notice = field_of("question_1", "I have read the privacy notice", type="multi_value_multi_select")
+        marketing = scan_of("question_1", "", type="checkbox", label="I agree to receive marketing calls question_1 question_1")
+        self.assertEqual([(p.kind, p.key) for p in join([notice], [marketing])], [("wording_mismatch", "question_1")])
+        self.assertEqual([p.kind for p in join([notice], [scan_of("question_1", "", type="checkbox")])], ["wording_mismatch"], "no words at all cannot be compared")
+        # The listing's option words and a longer statement that contains the box's words are the listing's own.
+        heading = dict(field_of("question_2", "Data processing", type="multi_value_multi_select"), options=("I agree to the processing of my data",))
+        self.assertEqual(join([heading], [scan_of("question_2", "", type="checkbox", label="I agree to the processing of my data question_2")]), [])
+        self.assertEqual([p.kind for p in join([heading], [scan_of("question_2", "", type="checkbox", label="I agree to the sale of my data question_2")])], ["wording_mismatch"])
+        # A statement the listing does not carry (the page is its only source) has nothing to be compared with.
+        page_only = dict(field_of("gdpr_consent_given", "GDPR data consent (shown on the form only)", type="multi_value_multi_select"), label_from_page=True)
+        self.assertEqual(join([page_only], [scan_of("gdpr_consent_given", "", type="checkbox", label="Whatever it says gdpr_consent_given")]), [])
 
     def test_a_required_control_the_listing_does_not_mention_is_a_problem(self):
         problems = join([field_of("first_name", "First Name")], [scan_of("first_name", "First Name"), scan_of("surprise", "Extra question")])

@@ -13,6 +13,7 @@ import base64
 import hashlib
 import json
 import pickle
+import re
 import socket
 import sys
 import tempfile
@@ -338,7 +339,8 @@ class RehearsalTests(AgentCase):
         self.assertIsNone(run.seen["resume"])
 
     def test_a_form_with_more_than_one_page_is_not_rehearsed_as_if_it_were_read_whole(self):
-        for scenario in ("next_button", "continue_link", "step_indicator"):
+        for scenario in ("next_button", "continue_link", "step_indicator", "continue_to_step", "next_section", "next_review", "page_slash_counter",
+                         "next_button_aria", "counter_outside"):
             with self.subTest(scenario=scenario):
                 run = self.go(scenario)
                 result = run.result
@@ -1468,7 +1470,8 @@ class HandoffTests(HandoffCase):
         told = [text for step, text in run.texts if step == "form_elsewhere"]
         self.assertEqual(told, [PROGRESS_STEPS["form_elsewhere"].format(host="apply.example-robotics.test")])
         self.assertIn("doesn't recognize", told[0])
-        self.assertIn("Nothing was sent", told[0])
+        self.assertNotIn("Nothing was sent", told[0], "the step is about the stopped request, not about the application")
+        self.assertIn("stopped that request", told[0])
         self.assertEqual(result.evidence["elsewhere_seen"], {"host": "apply.example-robotics.test"})
         self.assertLess(run.steps.index("your_turn"), run.steps.index("form_elsewhere"))
         self.assertNotIn("Rivera", json.dumps(result.evidence) + json.dumps(told))
@@ -1477,6 +1480,18 @@ class HandoffTests(HandoffCase):
         run = self.handoff("telemetry")
         self.assertNotIn("form_elsewhere", run.steps)
         self.assertNotIn("elsewhere_seen", run.result.evidence)
+
+    def test_a_tracker_that_reports_the_submit_click_leaves_no_notice_on_a_submission_that_went_through(self):
+        # The tracker's request is refused like any other, but the form's own submission is handed over and sent: nothing the student is told
+        # or shown afterwards may say that nothing was sent.
+        run = self.handoff("tracker_on_submit")
+        result = run.result
+        self.assertEqual(result.outcome, "submitted", result.reasons)
+        self.assertTrue(result.handed_over)
+        self.assertEqual(self.refused(run, host="events.example-analytics.test")[0]["method"], "POST", "the tracker's request was refused")
+        self.assertEqual(run.fake.requests_to("events.example-analytics.test"), [])
+        self.assertNotIn("elsewhere_seen", result.evidence, "the submission went on, so what the form tried before it is not the run's to report")
+        self.assertEqual([text for step, text in run.texts if step == "form_elsewhere" and re.search("nothing was sent", text, re.IGNORECASE)], [])
 
     def test_telemetry_does_not_end_the_turn(self):
         run = self.handoff("telemetry")
@@ -2107,6 +2122,16 @@ class HandoffTests(HandoffCase):
         self.assertIn("last_name", left)
         self.assertIn("The form's wording differs", left["last_name"]["reason"])
         self.assertEqual({entry["key"]: entry["disposition"] for entry in ready["plan"]}["last_name"], "left_for_you")
+
+    def test_a_bare_consent_box_whose_words_differ_from_the_listing_is_left_for_the_student_and_not_ticked(self):
+        run = self.handoff("consent_box_reworded", student="do_nothing", label_checkboxes=False, timeouts=replace(fakes.HANDOFF_TIMEOUTS, handoff_s=1))
+        ready = run.link.ready_messages[0]
+        left = {item["key"]: item for item in ready["left"]}
+        self.assertIn("The form's wording differs", left["question_4000000110"]["reason"])
+        self.assertEqual({entry["key"]: entry["disposition"] for entry in ready["plan"]}["question_4000000110"], "left_for_you")
+        self.assertNotIn("question_4000000110", run.result.evidence["filled_keys"], "the box was ticked from the listing's words, not the form's")
+        # The box that does say what the listing says is still the app's to tick.
+        self.assertNotIn("question_4000000109", left)
 
     def test_a_bare_consent_box_is_not_left_for_the_student_for_its_wording(self):
         run = self.handoff(student="do_nothing", label_checkboxes=False, timeouts=replace(fakes.HANDOFF_TIMEOUTS, handoff_s=1))

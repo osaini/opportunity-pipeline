@@ -223,6 +223,8 @@ HANDOFF_SCENARIOS = (
     "security_code_retry",        # the code widget submits on the 8th box and again every 2.5 s until the page moves on
     "security_code_retry_twice",  # the retrying widget above, and the code is asked for again after the first code POST
     "security_code_forger",       # the code widget fakes the student's press (a script click, a made-up event, every function on window), then submits
+    "consent_box_reworded",       # the accuracy box on the form says something other than the listing does (marketing, not accuracy)
+    "tracker_on_submit",          # a tracker reports the Submit click to another address while the form's own submission goes on as usual
     "form_posts_elsewhere",       # the form sends its application to an address the app does not recognize (the page's own submit listener)
     "challenge",                  # the answer to the POST is a visible reCAPTCHA challenge frame
     "bframe_hidden",              # a reCAPTCHA frame is loaded but invisible, and the POST is refused with a 422
@@ -285,6 +287,9 @@ _HANDOFF_SCRIPTS = {
         form.requestSubmit();
       }
     })();""" % _FORM,
+    "tracker_on_submit": """document.addEventListener("submit", function () {
+      fetch("https://events.example-analytics.test/collect", {method: "POST", body: new URLSearchParams({event: "apply_submit"})}).catch(function () {});
+    }, true);""",
     "form_posts_elsewhere": """document.addEventListener("submit", function (e) {
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -369,6 +374,11 @@ class HandoffGreenhouse(FakeGreenhouse):
         if self.scenario == "loader_other_host":
             html = html.replace(
                 '"submitPath":"/examplerobotics/jobs/4000000001",', '"submitPath":"https://job-boards.greenhouse.io/examplerobotics/jobs/4000000001",',
+            )
+        if self.scenario == "consent_box_reworded":
+            html = html.replace(
+                "I certify that the information I have provided is accurate</label>",
+                "I agree that Example Robotics may share my application with marketing partners</label>",
             )
         script = _HANDOFF_SCRIPTS.get(self.scenario, "")
         return html.replace("<!--FAKE_SCENARIO-->", f"<script>{script}</script>" if script else "")
