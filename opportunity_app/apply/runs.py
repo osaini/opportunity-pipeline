@@ -60,7 +60,7 @@ from ..core.profile_store import read_stored_profile
 from ..core.settings_store import get_setting, put_setting, setting_updated_at
 from ..core.timestamps import parse_app_instant, utc_now
 from ..core.user_time import UserTimezone, user_timezone
-from .ats import name_of
+from .ats import CODE_MODE, claim_refusal, name_of
 from .greenhouse import ADAPTER_VERSION, ATS_GREENHOUSE, is_greenhouse_sender
 from .claims import HELD_HEARTBEAT, RUNNING, claim_held, forget, peek_unconfirmed, take_unconfirmed
 
@@ -580,6 +580,10 @@ def claim(
     try:
         with conn:
             lock_user(conn, user_id)
+            # An ATS that supports one way of applying refuses the others here too, inside the transaction, not only in the runner (Lever, spec 6.1).
+            wrong_mode = claim_refusal(ats, mode)
+            if wrong_mode:
+                raise ClaimRefused(wrong_mode, code=CODE_MODE)
             if mode == "unattended" and automation.pause_guard(conn, user_id):
                 raise automation.AutomationPaused()
             application_id = actions.ensure_application_tx(
@@ -1723,9 +1727,9 @@ def set_ats_label(
     conn: sqlite3.Connection, user_id: str, field: str, label: str, *, ats: str = ATS_GREENHOUSE, now: datetime | None = None,
 ) -> dict[str, str]:
     """Save the exact text of the option the student picked for a typeahead list. Replaces an earlier one."""
-    from .policy import ALLOWED_ATS_LABEL_FIELDS
+    from .policy import label_fields_for
 
-    if field not in ALLOWED_ATS_LABEL_FIELDS:
+    if field not in label_fields_for(ats):
         raise ValueError(f"Unknown option list: {field}")
     text = " ".join(str(label or "").split())
     if not text or len(text) > 200:
