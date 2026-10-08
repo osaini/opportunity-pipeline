@@ -583,7 +583,7 @@ def claim(
             if mode == "unattended" and automation.pause_guard(conn, user_id):
                 raise automation.AutomationPaused()
             application_id = actions.ensure_application_tx(
-                conn, opportunity_id, user_id, event_type="apply_agent_started", detail={"mode": mode, "run_id": run_id},
+                conn, opportunity_id, user_id, event_type="apply_agent_started", detail={"mode": mode, "run_id": run_id, "ats_name": name_of(ats)},
                 timestamp=stamp,
             )
             if retry or mode != "unattended":

@@ -9,7 +9,7 @@
 
   // From app-ui.js.
   const {
-    HTTP_ADDRESS, announce, autoSaveSelect, browserTimeZone, chip, element, externalLink, formatCalendarDate, formatDate,
+    HTTP_ADDRESS, announce, atsName, autoSaveSelect, browserTimeZone, chip, element, externalLink, formatCalendarDate, formatDate,
     gmailOpenLink, optionElement, plural, profileField, revealRequested, showError, skeletons, toLocalInputValue,
     uniqueLabels,
   } = App;
@@ -39,11 +39,11 @@
   };
 
   // Finish in browser's events say whose act each step was: the app only filled the form, the student pressed Submit.
-  function applyEventWords(event) {
+  function applyEventWords(event, ats) {
     const detail = event.detail || {};
     if (detail.mode === "handoff" && event.event_type === "apply_agent_started") return "Finish in browser started";
     if (detail.mode === "handoff" && event.event_type === "apply_agent_submitted") {
-      return `You submitted in the window${detail.confirmation_path ? " · Greenhouse showed its confirmation page" : ""}`;
+      return `You submitted in the window${detail.confirmation_path ? ` · ${ats} showed its confirmation page` : ""}`;
     }
     return EVENT_WORDS[event.event_type] || event.event_type.replaceAll("_", " ");
   }
@@ -64,7 +64,7 @@
   // and an attempt that may have reached Greenhouse never does.
   function applyBadge(item) {
     const apply = item.apply;
-    const ats = apply.ats_name || "Greenhouse";
+    const ats = atsName(apply);
     const submitted = ["watching", "watch_paused", "email_confirmed", "no_email", "not_watched"].includes(apply.status);
     const uncertain = apply.status === "may_have_been_sent" || apply.status === "no_email";
     const box = element("section", `apply-badge${uncertain ? " is-uncertain" : ""}`);
@@ -413,17 +413,19 @@
       const timeline = element("section", "tracker-subsection");
       timeline.appendChild(element("h4", "", "Activity timeline"));
       const eventList = element("ol", "timeline-list");
+      // The job system the application went to, as the attempt's first event recorded it (an older one did not: it is Greenhouse's).
+      const ats = atsName({ ats_name: (payload.events || []).map((event) => event.detail?.ats_name).find((name) => typeof name === "string" && name) });
       // Newest first, so the first event an automatic action wrote carries its Undo.
       // Each action id maps to the author line of every event it wrote.
       const automatic = new Map();
       (payload.events || []).forEach((event) => {
         const row = element("li", "");
-        row.appendChild(element("strong", "", applyEventWords(event)));
+        row.appendChild(element("strong", "", applyEventWords(event, ats)));
         row.appendChild(element("span", "", formatDate(event.created_at)));
         if (event.from_stage || event.to_stage) row.appendChild(element("p", "", `${event.from_stage || "start"} → ${event.to_stage || "unchanged"}`));
         const source = typeof event.detail?.source === "string" ? event.detail.source : "";
         const who = element("p", "timeline-who");
-        who.appendChild(element("span", "timeline-author", changeAuthor(source)));
+        who.appendChild(element("span", "timeline-author", changeAuthor(source, ats)));
         row.appendChild(who);
         const runId = event.event_type.startsWith("apply_agent_") ? event.detail?.run_id : "";
         if (typeof runId === "string" && runId && owner.dataset.opportunityId) row.appendChild(seeRunButton(owner.dataset.opportunityId, runId));

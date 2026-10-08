@@ -9,6 +9,7 @@ from fastapi import Depends, HTTPException, Query, status
 
 from ..overrides import shared_router
 from ...applications import inbox as application_inbox
+from ...apply import ats as apply_ats
 from ...automation import ledger as automation_core
 from ...automation import health as automation_health
 from ...automation import triage as auto_triage
@@ -30,10 +31,21 @@ router = shared_router()
 
 # Everything the app does on its own (automation/ledger.py): the switches, the
 # master pause, the ledger of what it did, its notices, and its health.
+def name_the_ats(items: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
+    """Add the ATS's display name to each application item, so the page's sentence about it names the right one."""
+    for item in items or []:
+        if item.get("action") == "application" and item.get("ats"):
+            item["ats_name"] = apply_ats.name_of(str(item["ats"]))
+    return items
+
+
 def automation_view(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
+    health = automation_health.health_summary(conn, user_id)
+    name_the_ats(health.get("in_flight"))
+    name_the_ats(health.get("unconfirmed"))
     return {
         "settings": automation_core.settings_payload(conn, user_id),
-        "health": automation_health.health_summary(conn, user_id),
+        "health": health,
         "application_mail": application_inbox.status(conn, user_id),
     }
 
@@ -103,7 +115,7 @@ def put_automation_settings(
         application_inbox.note_off(conn, user_id)
     response = automation_view(conn, user_id)
     if applied["in_flight"] is not None:
-        response["in_flight"] = applied["in_flight"]
+        response["in_flight"] = name_the_ats(applied["in_flight"])
     return response
 
 

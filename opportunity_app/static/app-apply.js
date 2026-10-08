@@ -9,7 +9,7 @@
 
   // From app-ui.js.
   const {
-    announce, appendLinks, element, externalLink, formatDate, formatWeekdayDateTime, humanizeKey, optionElement, webAddresses,
+    announce, appendLinks, atsName, element, externalLink, formatDate, formatWeekdayDateTime, humanizeKey, optionElement, webAddresses,
     whenPresent,
   } = App;
 
@@ -34,7 +34,7 @@
   const REHEARSE_HELP = "Opens a Chromium window and fills this form to check it. Nothing is sent: the app never presses Submit, and it refuses every request it can see that could send the form.";
   const WINDOW_NOTE = "A Chromium window is open. You can watch, but please don't type in it.";
   // Finish in browser (apply/runner.py, docs/assisted-apply.md): the app fills the form in a window and the student presses Submit.
-  const HANDOFF_HELP = "Opens a Chromium window and fills the form. You complete what is left and press Submit application yourself. Your application is not sent until you do. To find options for typeahead fields, the app sends what is typed there to Greenhouse's lookup service.";
+  const handoffHelp = (name) => `Opens a Chromium window and fills the form. You complete what is left and press Submit application yourself. Your application is not sent until you do. To find options for typeahead fields, the app sends what is typed there to ${name}'s lookup service.`;
   const STOP_HELP = "Closes the window. Nothing is sent.";
   const FRONT_HELP = "If it doesn't appear, click Chromium in your taskbar.";
   const TURN_ERROR_HELP = "If the form shows an error, fix that field in the window and press Submit application again. Press Stop only if you want to give up; the app will tell you whether anything was sent.";
@@ -422,7 +422,7 @@
       line.append(words);
     }
     const when = result.from_cache ? "a copy kept for up to an hour" : formatWeekdayDateTime(result.checked_at);
-    line.append(` on Greenhouse${when ? `, ${when}` : ""}.`);
+    line.append(` on ${atsName(result)}${when ? `, ${when}` : ""}.`);
     body.appendChild(line);
     if (!posting.differs) return;
     const warning = element("div", "apply-mismatch");
@@ -534,7 +534,7 @@
     const choices = element("div", "apply-lookup-choices");
     block.append(
       actions,
-      element("p", "profile-help", "This sends what you typed to Greenhouse's lookup service."),
+      element("p", "profile-help", `This sends what you typed to ${atsName({ ats_name: problem.atsName })}'s lookup service.`),
       status,
       choices,
     );
@@ -915,7 +915,7 @@
   function applyClaimBlock(view, settle) {
     const claim = view.claim;
     if (!claim) return null;
-    const ats = claim.ats_name || "Greenhouse";
+    const ats = atsName(claim);
     const box = element("div", "apply-claim");
     box.setAttribute("role", "group");
     box.setAttribute("aria-label", "What to do next");
@@ -1173,7 +1173,7 @@
     // Shown once there is something to say. A role that is not on Greenhouse says so; the switch turned off meanwhile says nothing.
     section.hidden = true;
     section.appendChild(element("p", "eyebrow", "Apply for me"));
-    const summary = element("p", "apply-summary", "Checking the Greenhouse form…");
+    const summary = element("p", "apply-summary", "Checking the form…");
     summary.setAttribute("role", "status");
     // The rehearsal (a run in a window, never sent) sits above the questions and keeps its state while they are rebuilt.
     const rehearse = element("div", "apply-rehearse");
@@ -1300,7 +1300,7 @@
       const status = element("p", "form-status");
       status.setAttribute("role", "status");
       box.append(group, button);
-      if (help) box.appendChild(element("p", "profile-help", HANDOFF_HELP));
+      if (help) box.appendChild(element("p", "profile-help", handoffHelp(atsName(checked))));
       box.append(reason, status);
       const starter = {
         kind: "handoff", button, reason, busy: false, fresh: true,
@@ -1583,7 +1583,7 @@
       const groups = [[problems.filter((problem) => problem.action?.type !== "manual"), ""], [problems.filter((problem) => problem.action?.type === "manual"), "Left for you"]];
       groups.forEach(([group, heading]) => {
         if (!group.length) return;
-        if (heading) body.appendChild(element("p", "apply-group", `${heading}: the app leaves these to you on the Greenhouse form.`));
+        if (heading) body.appendChild(element("p", "apply-group", `${heading}: the app leaves these to you on the ${atsName(result)} form.`));
         const list = element("ul", "apply-problems");
         group.forEach((problem) => {
           const row = element("li", "apply-problem");
@@ -1592,7 +1592,7 @@
           row.appendChild(element("p", "profile-help", problem.message));
           // A kind of question the student could let the app answer says where, so it is not mistaken for a never.
           if (problem.action?.allowable) row.appendChild(element("p", "profile-help", "You can let the app answer this kind of question, once you add the answer yourself, in Apply for me settings under Automation."));
-          const control = applyProblemAction({ ...problem, opportunityId: item.id, opportunityLabel: [result.company, result.title].filter(Boolean).join(" — "), postingConfirmed: () => postingConfirmed, lookups }, result.company, (fresh, message) => {
+          const control = applyProblemAction({ ...problem, atsName: result.ats_name, opportunityId: item.id, opportunityLabel: [result.company, result.title].filter(Boolean).join(" — "), postingConfirmed: () => postingConfirmed, lookups }, result.company, (fresh, message) => {
             if (fresh) paint(fresh, message);
             else load(message);
           });

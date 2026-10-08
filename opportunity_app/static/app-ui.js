@@ -510,6 +510,12 @@
     return text ? text[0].toUpperCase() + text.slice(1) : "";
   }
 
+  // How a sentence names the job system a record came from: the server's ats_name (apply/ats.py display_name). A record written
+  // before the name was kept is Greenhouse's, because Greenhouse was the only one then.
+  function atsName(record) {
+    return (record && typeof record.ats_name === "string" && record.ats_name) || "Greenhouse";
+  }
+
   function timeAgo(stamp) {
     const moment = new Date(stamp);
     if (!stamp || Number.isNaN(moment.getTime())) return "";
@@ -566,7 +572,7 @@
 
   Object.assign(App, {
     CLOCK_FORMAT, HTTP_ADDRESS, WEEKDAY_DAY_FORMAT, announce, announceWithUndo, appendLinks, applicationPicker,
-    armConfirm, autoSaveSelect, browserTimeZone, chip, clearError, commaList, copyText, deadlineState, element,
+    armConfirm, atsName, autoSaveSelect, browserTimeZone, chip, clearError, commaList, copyText, deadlineState, element,
     externalLink, formatCalendarDate, formatDate, formatDateTime, formatWeekdayDateTime, gmailOpenLink, groupSection,
     humanizeKey, inertClaims, isNewlySeen, markNeeded, nullableBoolean, optionElement, plural, profileBlock,
     profileField, profileGroup, profileSelect, requiredMark, revealRequested, safeExternalUrl, setBackgroundInert,

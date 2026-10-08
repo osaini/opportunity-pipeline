@@ -263,7 +263,7 @@ def _prepare(
     result: dict[str, Any] = {
         "opportunity_id": opportunity_id, "title": str(opportunity["title"] or ""), "company": company, "ats": "", "status": "unavailable",
         "message": not_supported(), "problems": [], "asks": [], "fields": [], "optional_sensitive": [], "counts": {}, "eligibility": {}, "application": {"exists": False, "stage": ""},
-        "checked_at": moment.isoformat(timespec="seconds"), "from_cache": False,
+        "checked_at": moment.isoformat(timespec="seconds"), "from_cache": False, "ats_name": "",
         "posting": {"title": "", "company": "", "url": "", "differs": False, "difference": ""},
     }
     found = apply_ats.identify(conn, opportunity_id)
@@ -271,7 +271,7 @@ def _prepare(
         return result, None, None, None
     ats, ident = found
     token, job = ident
-    result.update(ats=ats.key, board_token=token, job_id=job, canonical_url=ats.canonical_url(token, job))
+    result.update(ats=ats.key, ats_name=ats.display_name, board_token=token, job_id=job, canonical_url=ats.canonical_url(token, job))
     application = conn.execute("SELECT stage FROM applications WHERE opportunity_id=? AND user_id=?", (opportunity_id, user_id)).fetchone()
     if application is not None:
         result["application"] = {"exists": True, "stage": str(application["stage"])}

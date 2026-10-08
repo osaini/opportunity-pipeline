@@ -12,6 +12,7 @@ import dataclasses
 import fnmatch
 import inspect
 import itertools
+import json
 import random
 import re
 import sys
@@ -33,7 +34,7 @@ import frozen_pre_sentences as old_words
 import helpers_source
 import test_apply_runner as runner_tests
 from opportunity_app.apply import (
-    agent as apply_agent, agent_types, ats as apply_ats, checks as apply_checks, greenhouse as apply_greenhouse, policy as apply_policy,
+    agent as apply_agent, agent_types, ats as apply_ats, checks as apply_checks, claims as apply_claims, greenhouse as apply_greenhouse, policy as apply_policy,
     preflight as apply_preflight, runner as apply_runner, runs as apply_runs,
 )
 from opportunity_app.apply.agent_types import AgentJob, ApplyTimeouts, RunResult
@@ -1019,6 +1020,66 @@ class RunnerSentenceTests(unittest.TestCase):
             result, stop="", shutting_down=False, claim_state="claimed", cancel_requested=False, handed_over=False, closed_confirmed=False, minutes=5, ats_name="Second",
         )
         self.assertTrue(unclosed.note.endswith("Check your email for a confirmation from Second."), unclosed.note)
+
+
+# --- The names the pages need ---------------------------------------------------------------------------------------------
+
+class TheNamesThePagesNeedTests(ApplyCase):
+    """The page's sentences take the ATS's name from the server's payloads: the check, an attempt's first event, and the automation lists."""
+
+    def test_the_automation_lists_say_which_ats_an_application_item_is_on(self):
+        from opportunity_app.automation import ledger as automation
+
+        held = self.raw_claim(state="clicking", mode="handoff", handed_over_at=utc_now(), ats="second")
+        apply_claims.RUNNING.add(held)
+        self.raw_claim(state="unconfirmed", mode="handoff", handed_over_at=utc_now(), ats="greenhouse")
+        self.raw_claim(state="unconfirmed", mode="handoff", handed_over_at=utc_now(), ats="second")
+        flights = automation.in_flight(self.conn, USER)
+        self.assertEqual([(item["action"], item["ats"]) for item in flights], [("application", "second")])
+        unconfirmed = automation.unconfirmed(self.conn, USER)
+        self.assertEqual(sorted(item["ats"] for item in unconfirmed), ["greenhouse", "second"])
+
+    def test_the_router_adds_the_display_name_to_those_items_and_only_those(self):
+        from opportunity_app.web.routers import automation as automation_router
+
+        items = [
+            {"action": "application", "ats": "greenhouse"}, {"action": "application", "ats": "gone"}, {"action": "send", "ats": "greenhouse"},
+            {"action": "window"}, {"action": "application"},
+        ]
+        with mock.patch.object(apply_ats, "REGISTRY", (GREENHOUSE, SECOND)):
+            automation_router.name_the_ats(items)
+        self.assertEqual([item.get("ats_name") for item in items], ["Greenhouse", "Gone", None, None, None])
+        self.assertEqual(automation_router.name_the_ats(None), None)
+
+    def test_an_attempts_first_event_records_the_name_of_its_ats(self):
+        self.start("job-1", "handoff")
+        [event] = self.conn.execute("SELECT detail_json FROM application_events WHERE event_type='apply_agent_started'").fetchall()
+        self.assertEqual(json.loads(event["detail_json"])["ats_name"], "Greenhouse")
+
+
+class TheCheckNamesItsAtsTests(runner_tests.RunnerCase):
+    def test_the_check_says_which_ats_it_read_and_a_role_no_ats_recognises_says_none(self):
+        result = apply_preflight.check(self.conn, runner_tests.USER, runner_tests.ACME, client=self.schema, resume_root=self.root / "resumes")
+        self.assertEqual((result["ats"], result["ats_name"]), ("greenhouse", "Greenhouse"))
+        renamed = dataclasses.replace(GREENHOUSE, key="greenhouse-renamed", display_name="Renamed")
+        with mock.patch.object(apply_ats, "REGISTRY", (renamed,)):
+            result = apply_preflight.check(self.conn, runner_tests.USER, runner_tests.ACME, client=self.schema, resume_root=self.root / "resumes")
+        self.assertEqual((result["ats"], result["ats_name"]), ("greenhouse-renamed", "Renamed"))
+        with mock.patch.object(apply_ats, "REGISTRY", ()):
+            result = apply_preflight.check(self.conn, runner_tests.USER, runner_tests.ACME, client=self.schema, resume_root=self.root / "resumes")
+        self.assertEqual((result["ats"], result["ats_name"], result["status"]), ("", "", "unavailable"))
+
+
+class ThePagesNameTheAtsFromThePayloadTests(unittest.TestCase):
+    """app-ui.js's atsName and the sentences that use it (the browser tests read them rendered; this reads the source)."""
+
+    def test_no_sentence_of_the_three_pages_names_greenhouse_but_through_atsname(self):
+        texts = {name: text for name, text in helpers_source.static_scripts().items() if name.rsplit("/", 1)[-1] in ("app-apply.js", "app-applications.js", "app-automation.js")}
+        self.assertEqual(len(texts), 3, "the scan found the three pages")
+        for name, text in texts.items():
+            for number, line in enumerate(text.splitlines(), 1):
+                code = line.split("//", 1)[0]
+                self.assertNotIn("Greenhouse", code, f"{name}:{number} says Greenhouse in a sentence instead of the payload's name")
 
 
 # --- Correction 1: the company limit matches a board within its ATS ---------------------------------------------------
