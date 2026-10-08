@@ -18,7 +18,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Apply for me | 0 | 6 | 7 | 13 |
+| Apply for me | 0 | 5 | 7 | 12 |
 | Mail, Gmail and inboxes | 0 | 4 | 9 | 13 |
 | Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
@@ -26,7 +26,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Scoring, scheduling and configuration | 1 | 2 | 6 | 9 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **31** | **33** | **65** |
+| **Total** | **1** | **30** | **33** | **64** |
 
 ## Start here: the high-severity entries
 
@@ -141,13 +141,6 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** The agent reads one page of the form. A Greenhouse form that shows a second page after the first is filled (or that reveals further required questions on Next) has no fixture here, so nothing detects it. The rehearsal checks the fields it can see, reports `rehearsed`, and says "Here is what the app would send", although the later pages were never read or checked.
 - **Suggested fix:** Record a multi-page fixture from a board that has one, then end such a rehearsal as `needs_you` with a sentence ("This form has more pages than the app can check yet") whenever a second page, a Next button or a step indicator is present after the first page is filled. Until then, do not offer a one-click submit for a form the rehearsal did not fully read.
 - **Regression suite:** tests/test_apply_agent_browser.py (a fixture with a Next button) and tests/test_apply_runner.py (the view's wording)
-
-### Every lone checkbox on a form reads as a wording mismatch, so a form with a consent box is never a clean rehearsal
-- **Severity:** medium (found 2026-10-03, by the rehearsal driver tests, M5a)
-- **Where:** `apps/extension/apply-engine.js` `rawQuestion` (a radio or checkbox reports its group's question, and "" when there is no fieldset legend) with `opportunity_app/apply/checks.py` `join` (`heard is not None and question_key(heard) != question_key(label)`)
-- **What happens:** On a form whose consent or acknowledgment box is a bare label-wrapped input, the scan's question for the box is "". `join` reports `wording_mismatch` for it, `build_plan` blanks the box (even a required consent the student stored an answer for), and `clean_rehearsal` is False. The fictional form shows it for `question_4000000109`, `question_4000000110`, `question_4000000113` and `gdpr_consent_given`.
-- **Suggested fix:** In `join`, skip the wording comparison when `heard` is empty for a radio or checkbox control, or have the engine report the wrapping label's own text for a lone checkbox. Then tighten the browser test to `join_problems == []`.
-- **Regression suite:** tests/test_apply_agent_browser.py (`RehearsalTests.test_a_clean_run_fills_reads_back_and_stops_without_sending_anything`)
 
 ### A request a page makes while its window is closing skips the route handler, so a hostile script can carry a typed value to one of the allowed hosts
 - **Severity:** medium, privacy (found 2026-10-03, in the M5a recheck)

@@ -988,6 +988,18 @@ class JoinTests(unittest.TestCase):
             with self.subTest(wording=wording):
                 self.assertEqual(join([field_of("q", "Why us?")], [scan_of("q", wording)]), [])
 
+    def test_a_lone_checkbox_with_no_question_of_its_own_is_not_a_wording_mismatch(self):
+        # The engine reports "" for a checkbox (or radio) with no fieldset legend, such as a consent box wrapped in its own label.
+        # Nothing was heard, so there is nothing to disagree with.
+        consent = field_of("gdpr_consent_given", "I consent to Example Robotics storing my application data for 365 days", type="multi_value_multi_select")
+        for kind in ("checkbox", "radio"):
+            with self.subTest(kind=kind):
+                self.assertEqual(join([consent], [scan_of("gdpr_consent_given", "", type=kind)]), [])
+        # A control that is not a choice still needs its wording, and a choice that does report a different question still disagrees.
+        text = field_of("q", "Why us?")
+        self.assertEqual([p.kind for p in join([text], [scan_of("q", "")])], ["wording_mismatch"])
+        self.assertEqual([p.kind for p in join([consent], [scan_of("gdpr_consent_given", "Something else", type="checkbox")])], ["wording_mismatch"])
+
     def test_a_required_control_the_listing_does_not_mention_is_a_problem(self):
         problems = join([field_of("first_name", "First Name")], [scan_of("first_name", "First Name"), scan_of("surprise", "Extra question")])
         self.assertEqual([(p.kind, p.message) for p in problems],

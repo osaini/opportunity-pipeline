@@ -53,7 +53,6 @@ from opportunity_app.apply.agent_types import (
 )
 
 EMAIL = "sam.rivera@example.test"
-CHECKBOX_KEYS = {"question_4000000109", "question_4000000110", "question_4000000113", "gdpr_consent_given"}
 GUARDED = {"last_name": "Rivera", "email": EMAIL, "question_4000000101": fakes.WHY, "question_4000000102": fakes.PORTFOLIO}
 STATE_JS = """() => {
   const one = (id) => document.getElementById(id);
@@ -163,7 +162,7 @@ class RehearsalTests(AgentCase):
         self.assertEqual(run.steps, ["open", "read", "fill", "check", "picture"])
         self.assertTrue(run.beats)
         self.assertEqual(result.check_problems, [])
-        self.assertLessEqual({entry["key"] for entry in result.join_problems}, CHECKBOX_KEYS)
+        self.assertEqual(result.join_problems, [], "the form's four bare consent boxes are not a disagreement with the listing")
         self.assertTrue(result.plan_hash)
         self.assertFalse(result.handed_over)
         self.assertEqual(result.requests, [])
@@ -495,8 +494,7 @@ class RehearsalTests(AgentCase):
         result = run.result
         self.assertEqual((result.outcome, result.reasons), ("rehearsed", []), "nothing stops a run for a field that is not there")
         self.assertEqual(run.seen, 0)
-        # The only join problems are the fictional form's four bare consent boxes (the wording defect in docs/known-defects.md): none is for the field the page lacks.
-        self.assertEqual({entry["key"] for entry in result.join_problems} - CHECKBOX_KEYS, set(), "an optional question the page does not draw is not a disagreement with the listing (6.5, 9.2)")
+        self.assertEqual(result.join_problems, [], "an optional question the page does not draw is not a disagreement with the listing (6.5, 9.2)")
         field = next(entry for entry in result.plan if entry["key"] == "question_4000000102")
         self.assertEqual(field["disposition"], "blank")
         self.assertEqual(field["problem"], apply_checks.OPTIONAL_NOT_DRAWN_MESSAGE.format(question=field["question"]), "it still shows as left blank, and says why")
@@ -505,9 +503,12 @@ class RehearsalTests(AgentCase):
             self.assertIn(key, result.evidence["filled_keys"], f"{key} was filled and read back")
         self.assertTrue(apply_checks.clean_rehearsal({
             "outcome": result.outcome, "check_problems": result.check_problems,
-            "plan": [entry for entry in result.plan if entry["key"] not in CHECKBOX_KEYS],
-            "join_problems": [entry for entry in result.join_problems if entry["key"] not in CHECKBOX_KEYS],
-        }), "an optional field left blank does not make a rehearsal unclean (9.2): nothing but those four consent boxes (the known wording defect) is in the way")
+            # The form's data-consent box carries a statement only the form shows, which the plan honestly cannot match to one the student stored:
+            # a gap of its own, so it is left out here. Nothing else is in the way.
+            "plan": [entry for entry in result.plan if entry["key"] != "gdpr_consent_given"], "join_problems": result.join_problems,
+        }), "an optional field left blank does not make a rehearsal unclean (9.2)")
+        gdpr = next(entry for entry in result.plan if entry["key"] == "gdpr_consent_given")
+        self.assertTrue(gdpr["problem"] and gdpr["disposition"] == "blank", "the consent box the plan cannot match is still a gap the student sees")
 
     def test_an_optional_planned_field_that_goes_missing_after_the_plan_is_a_gap_and_not_a_stop(self):
         entries = [
@@ -2036,12 +2037,21 @@ class HandoffTests(HandoffCase):
         self.assertSent_nothing(run)
 
     def test_a_join_problem_leaves_the_field_for_the_student_with_the_join_s_own_words(self):
-        run = self.handoff(student="do_nothing", label_checkboxes=False, timeouts=replace(fakes.HANDOFF_TIMEOUTS, handoff_s=1))
+        listing = fixture_json("schema_new.json")
+        for question in listing["questions"]:
+            if question["label"] == "Last Name":
+                question["label"] = "Family name"      # the page still asks for the old wording
+        run = self.handoff(student="do_nothing", schema=apply_policy.parse_schema(listing), timeouts=replace(fakes.HANDOFF_TIMEOUTS, handoff_s=1))
         ready = run.link.ready_messages[0]
         left = {item["key"]: item for item in ready["left"]}
-        self.assertIn("question_4000000109", left)
-        self.assertIn("The form's wording differs", left["question_4000000109"]["reason"])
-        self.assertEqual({entry["key"]: entry["disposition"] for entry in ready["plan"]}["question_4000000109"], "left_for_you")
+        self.assertIn("last_name", left)
+        self.assertIn("The form's wording differs", left["last_name"]["reason"])
+        self.assertEqual({entry["key"]: entry["disposition"] for entry in ready["plan"]}["last_name"], "left_for_you")
+
+    def test_a_bare_consent_box_is_not_left_for_the_student_for_its_wording(self):
+        run = self.handoff(student="do_nothing", label_checkboxes=False, timeouts=replace(fakes.HANDOFF_TIMEOUTS, handoff_s=1))
+        ready = run.link.ready_messages[0]
+        self.assertEqual([item for item in ready["left"] if "wording differs" in item["reason"]], [])
 
     def test_a_late_fill_shortens_the_turn_and_never_the_time_after_the_press(self):
         t = fakes.HANDOFF_TIMEOUTS

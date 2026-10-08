@@ -781,7 +781,10 @@ def join(schema_fields: Iterable[Any], scan_fields: Iterable[Any], fill_keys: It
             continue
         scan = scans[next(iter(controls.values()))]
         heard = _get(scan, "question")
-        if heard is not None and question_key(heard) != question_key(label):
+        # A radio or checkbox with no fieldset legend (a consent box wrapped in its own label) reports no question at all. Nothing was heard,
+        # so there is nothing to disagree with; the control is still matched to the listing by its name.
+        unheard_choice = _get(scan, "type") in CHOICE_TYPES and not str(heard or "").strip()
+        if heard is not None and not unheard_choice and question_key(heard) != question_key(label):
             problems.append(Problem(
                 "wording_mismatch", name, f"The form's wording differs from Greenhouse's listing ({heard})", str(heard), required,
             ))
