@@ -402,8 +402,9 @@ reason a Lever role can get the read-only check with no browser.
    names is a question the page asks, so it is recorded as an unknown control (item 6).
 8. **Posting facts for the "differs from the saved role" tick** come from `<title>`, which was
    `"{Company} - {Role}"` on all six boards read **[live]**. A role can contain " - ", so the check does not split:
-   it requires the saved company and the saved title each to appear in the page title after normalization, and
-   otherwise asks for the student's tick (`posting_confirmed`), as Greenhouse does.
+   it requires the page title, after normalization, to begin with the saved company (as whole words) and to carry the
+   saved title after it. A company named only in the role half is another employer's posting. Otherwise it asks for the
+   student's tick (`posting_confirmed`), as Greenhouse does.
 9. The output is `LeverForm(fields: tuple[SchemaField, ...], posting: {company_title, ...}, unreadable, unknown)`.
    `SchemaField.section` is set so the existing classifier applies (6.6): `standard` for the fixed fields, `custom`
    for cards and surveys, and `demographic` for the four `eeo[...]` names, whose `name` is one of Phase 5's EEOC

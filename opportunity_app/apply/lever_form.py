@@ -117,18 +117,19 @@ class LeverPosting:
     company_title: str = ""
 
     def matches(self, company: str, title: str) -> bool:
-        """Whether the saved company and the saved title each appear in the page title (5.4 item 8).
+        """Whether the page title begins with the saved company and carries the saved title after it (5.4 item 8).
 
-        A role can contain " - ", so the title is never split. Both are compared as normalized words. When either
-        is missing on either side the answer is no, and the student ticks that the posting is the one meant.
+        The page title is ``"{Company} - {Role}"``, so the company is the start of it: a company named only in the role
+        half is another employer's posting. A role can contain " - ", so the title is never split. Both are compared as
+        normalized words. When either is missing on either side the answer is no, and the student ticks that the posting
+        is the one meant.
         """
         page = f" {normalized(self.company_title)} "
-
-        def appears(saved: str) -> bool:
-            words = normalized(_collapse(saved))
-            return bool(words) and f" {words} " in page
-
-        return appears(company) and appears(title)
+        employer = normalized(_collapse(company))
+        role = normalized(_collapse(title))
+        if not employer or not role or not page.startswith(f" {employer} "):
+            return False
+        return f" {role} " in page[len(employer) + 1:]
 
 
 @dataclass(frozen=True)

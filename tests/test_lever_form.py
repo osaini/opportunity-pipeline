@@ -1059,6 +1059,20 @@ class PostingTests(unittest.TestCase):
             with self.subTest(company=company, title=title):
                 self.assertFalse(posting.matches(company, title))
 
+    def test_the_company_must_be_the_one_the_title_begins_with_not_a_word_in_another_employers_role(self):
+        # "{Company} - {Role}": a saved company named only in the role half is another employer's posting.
+        posting = parse_lever_form(page(title="Northwind Traders - Acme Integration Engineer Intern")).posting
+        self.assertFalse(posting.matches("Acme", "Integration Engineer Intern"))
+        self.assertTrue(posting.matches("Northwind Traders", "Integration Engineer Intern"))
+        self.assertTrue(posting.matches("northwind  traders", "acme integration engineer intern"))
+        # The company may still be repeated in the role, and the title is still found anywhere after it.
+        again = parse_lever_form(page(title="Acme - Acme Integration Engineer Intern")).posting
+        self.assertTrue(again.matches("Acme", "Acme Integration Engineer Intern"))
+        # And the saved title has to be found after the company, not inside its name.
+        named = parse_lever_form(page(title="Intern Works - Data Engineer")).posting
+        self.assertFalse(named.matches("Intern Works", "Intern"))
+        self.assertTrue(named.matches("Intern Works", "Data Engineer"))
+
     def test_a_word_must_be_whole_not_a_piece_of_a_longer_word(self):
         posting = parse_lever_form(page(title="Marketplace Robotics - Engineering Intern")).posting
         self.assertFalse(posting.matches("Market", "Engineering Intern"))
