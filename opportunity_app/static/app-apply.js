@@ -1606,7 +1606,9 @@
           // A kind of question the student could let the app answer says where, so it is not mistaken for a never.
           if (problem.action?.allowable) row.appendChild(element("p", "profile-help", "You can let the app answer this kind of question, once you add the answer yourself, in Apply for me settings under Automation."));
           // A Lever question the app leaves to the student, or a location to choose, points at the posting where Lever's own form is.
-          if (result.ats === "lever" && ["window", "label_needed"].includes(problem.kind) && result.posting?.url) {
+          // The sensitive questions it leaves for the student are done on Lever's page too, while Finish in browser is not there for Lever.
+          const doneOnLever = ["window", "label_needed"].includes(problem.kind) || (problem.action?.type === "manual" && result.offers && !result.offers.handoff);
+          if (result.ats === "lever" && doneOnLever && result.posting?.url) {
             const link = element("p", "profile-help");
             link.appendChild(externalLink(result.posting.url, "Open the posting on Lever"));
             row.appendChild(link);
@@ -1950,8 +1952,6 @@
     heading.tabIndex = -1;
     const host = element("div", "apply-settings");
     wrap.append(heading, host, applySensitiveSettings());
-    const status = element("p", "form-status");
-    status.setAttribute("role", "status");
     const LIMIT_WORDS = {
       spacing_minutes: ["Minutes between two applications", "minutes"],
       daily_cap: ["Applications a day", ""],
@@ -1994,9 +1994,17 @@
 
     // The exact option labels the student confirmed for one ATS's lists, and a form to add one.
     function labelSet(set, named) {
+      // Each list says "Saved." or "Removed." under its own form, never under another list's.
+      const status = element("p", "form-status");
+      status.setAttribute("role", "status");
       const query = set.ats && set.ats !== "greenhouse" ? `?ats=${encodeURIComponent(set.ats)}` : "";
       host.appendChild(element("h5", "", named ? `Exact options for lists the ${set.name} form owns` : "Exact options for lists the form owns"));
-      host.appendChild(element("p", "profile-help", "Some fields, such as school and location, are lists whose wording only the form knows. Save the exact option once and the app uses it word for word."));
+      // Greenhouse's lists are school, location and more; another ATS names only the lists it has (Lever: location).
+      const own = (set.fields || []).map((field) => (FIELD_WORDS[field] || field).toLowerCase());
+      const wording = set.ats && set.ats !== "greenhouse" && own.length
+        ? `On the ${set.name} form, ${own.join(" and ")} ${own.length > 1 ? "are lists" : "is a list"} whose wording only the form knows.`
+        : "Some fields, such as school and location, are lists whose wording only the form knows.";
+      host.appendChild(element("p", "profile-help", `${wording} Save the exact option once and the app uses it word for word.`));
       const labels = Object.entries(set.labels || {});
       if (!labels.length) host.appendChild(element("p", "empty-inline", "No options saved yet."));
       const list = element("ul", "reason-list apply-labels");
@@ -2064,14 +2072,24 @@
     // Lever's two switches live in the list above; this says what each does, in the words the student agreed to (spec L1).
     function lever(state) {
       if (!state) return;
-      const words = (mode) => (mode === "on" ? "on" : "off");
+      // The on/off word is its own element, bound to its switch: syncAutomationControls repaints it when the switch changes.
+      const word = (key, mode) => {
+        const span = element("span", "", mode === "on" ? "on" : "off");
+        span.dataset.automationWord = key;
+        return span;
+      };
+      const line = (...parts) => {
+        const item = element("li", "");
+        item.append(...parts);
+        return item;
+      };
       host.appendChild(element("h5", "", "Lever"));
       const about = element("ul", "reason-list apply-lever-settings");
       about.append(
-        element("li", "", `Apply for me on Lever is ${words(state.mode)}. With it on, a saved Lever role shows what the app would fill and what is missing. Filling a Lever form in a window is not available yet.`),
-        element("li", "", `Let the app attach my résumé on Lever is ${words(state.resume_upload)}. Lever reads a résumé as soon as it is attached, so it is sent to Lever before you press Submit. With this off, you attach it yourself in the window.`),
+        line("Apply for me on Lever is ", word("apply_agent_lever", state.mode), ". With it on, a saved Lever role shows what the app would fill and what is missing. Filling a Lever form in a window is not available yet."),
+        line("Let the app attach my résumé on Lever is ", word("apply_lever_resume_upload", state.resume_upload), ". Lever reads a résumé as soon as it is attached, so it is sent to Lever before you press Submit. With this off, you attach it yourself on Lever's application page."),
       );
-      host.append(about, element("p", "profile-help", "Both are switches in the Apply for me list above. They are off until you turn them on."));
+      host.append(about, element("p", "profile-help", "Both are switches under Applications, above. Each is off until you turn it on."));
     }
 
     async function load() {

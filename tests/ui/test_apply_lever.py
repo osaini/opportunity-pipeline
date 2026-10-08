@@ -151,3 +151,80 @@ def test_the_settings_keep_levers_exact_location_apart_and_say_what_the_two_swit
         assert conn.execute("SELECT COUNT(*) FROM apply_ats_labels").fetchone()[0] == 0
     violations = Axe().run(owner_page, context=".automation-apply-agent", options=AXE_OPTIONS).get("violations", [])
     assert not violations, [(item["id"], item["help"]) for item in violations]
+
+
+def test_each_list_in_the_settings_says_saved_under_its_own_form(lever_ready, owner_page):
+    owner_page.click("#profile-nav")
+    wait_for_results(owner_page)
+    block = owner_page.locator(".automation-apply-agent")
+    expect(block.locator('form[data-ats="lever"]')).to_be_visible()
+    status = lambda ats: block.locator(f'form[data-ats="{ats}"] + .form-status')
+    # An empty box on the Greenhouse form says so under the Greenhouse form, and nothing appears under the Lever one.
+    block.locator('form[data-ats="greenhouse"]').get_by_role("button", name="Save this option").click()
+    expect(status("greenhouse")).to_have_text("Type the option first.")
+    expect(status("lever")).to_have_text("")
+    block.locator('form[data-ats="lever"]').get_by_role("button", name="Save this option").click()
+    expect(status("lever")).to_have_text("Type the option first.")
+    expect(status("greenhouse")).to_have_text("Type the option first.")
+    assert block.locator(".apply-settings > .form-status").count() == 2, "one status per list, never one shared"
+
+
+def test_the_lever_lines_in_the_settings_follow_their_switches_without_a_reload(lever_ready, owner_page):
+    owner_page.click("#profile-nav")
+    wait_for_results(owner_page)
+    block = owner_page.locator(".automation-apply-agent")
+    lines = block.locator(".apply-lever-settings")
+    expect(lines).to_contain_text("Let the app attach my résumé on Lever is off.")
+    # The switch is in the Applications group above the block; turning it on repaints the sentence at once.
+    resume = owner_page.locator("#automation-mode-apply_lever_resume_upload")
+    resume.check()
+    expect(lines).to_contain_text("Let the app attach my résumé on Lever is on.")
+    expect(lines).not_to_contain_text("Let the app attach my résumé on Lever is off.")
+    resume.uncheck()
+    expect(lines).to_contain_text("Let the app attach my résumé on Lever is off.")
+    # What the block says about the switches is true whichever way they are set, and the switches are where it says.
+    expect(block).to_contain_text("Both are switches under Applications, above. Each is off until you turn it on.")
+    group = resume.locator("xpath=ancestor::div[contains(@class, 'automation-group')]")
+    expect(group.locator("h4")).to_have_text("Applications")
+    expect(block).not_to_contain_text("Apply for me list")
+    expect(block).not_to_contain_text("in the window")
+
+
+def test_the_lever_list_help_names_only_lists_lever_has(lever_ready, owner_page):
+    owner_page.click("#profile-nav")
+    wait_for_results(owner_page)
+    block = owner_page.locator(".automation-apply-agent")
+    expect(block.get_by_role("heading", name="Exact options for lists the Lever form owns").locator("xpath=following-sibling::p[1]")).to_have_text(
+        "On the Lever form, location is a list whose wording only the form knows. Save the exact option once and the app uses it word for word."
+    )
+    expect(block.get_by_role("heading", name="Exact options for lists the Greenhouse form owns").locator("xpath=following-sibling::p[1]")).to_contain_text("such as school and location")
+
+
+def test_every_left_for_you_row_says_where_to_do_it_and_links_to_the_posting(required_location, owner_page):
+    open_saved_role(owner_page, "Orbital Ledger")
+    section = owner_page.locator(".apply-for-me")
+    expect(section).to_be_visible()
+    # Finish in browser is not there for Lever, so no row sends the student to it; each one says Lever's own page, and links to it.
+    expect(section.get_by_text("Finish in browser leaves")).to_have_count(0)
+    manual = section.locator(".apply-problem", has=owner_page.get_by_text("Do it on Lever's application page"))
+    assert manual.count() >= 2, "the demo page has several questions the app never answers (sponsorship, consent, language skills)"
+    for index in range(manual.count()):
+        expect(manual.nth(index).get_by_role("link", name="Open the posting on Lever")).to_have_attribute("href", f"{LEVER_URL}/apply")
+    # The résumé is explained once, in the note, and its row is only the instruction.
+    resume = section.locator('[data-apply-key="resume"]')
+    expect(resume).to_contain_text("Attach your résumé on Lever's application page")
+    expect(resume).not_to_contain_text("The app doesn't attach it")
+    expect(section.locator(".apply-ats-note")).to_have_text(
+        "Your résumé: you attach it yourself on Lever's application page, because Lever reads it as soon as it is attached."
+    )
+
+
+def test_the_not_offered_line_and_the_resume_note_have_room_around_them(lever_ready, owner_page):
+    open_saved_role(owner_page, LEVER_COMPANY)
+    section = owner_page.locator(".apply-for-me")
+    expect(section.locator("[data-apply-not-offered]")).to_be_visible()
+    margin = lambda selector, side: section.locator(selector).first.evaluate(f"(node) => parseFloat(getComputedStyle(node).{side})")
+    assert margin("[data-apply-not-offered]", "marginBottom") == 0, "the block's own gap spaces it, not an extra margin"
+    assert margin(".apply-ats-note", "marginBottom") >= 8, "the note does not sit on the first card's border"
+    note, cards = section.locator(".apply-ats-note").bounding_box(), section.locator(".apply-problems").first.bounding_box()
+    assert cards["y"] - (note["y"] + note["height"]) >= 8
