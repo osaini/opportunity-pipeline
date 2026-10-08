@@ -18,15 +18,15 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Apply for me | 0 | 6 | 7 | 13 |
+| Apply for me | 0 | 6 | 8 | 14 |
 | Mail, Gmail and inboxes | 0 | 4 | 9 | 13 |
-| Outreach drafting, research, forms and CLI | 0 | 5 | 3 | 8 |
+| Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
 | Web API, auth and storage | 0 | 4 | 1 | 5 |
-| Scoring, scheduling and configuration | 1 | 1 | 5 | 7 |
+| Scoring, scheduling and configuration | 1 | 2 | 6 | 9 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **29** | **32** | **62** |
+| **Total** | **1** | **31** | **34** | **66** |
 
 ## Start here: the high-severity entries
 
@@ -205,6 +205,13 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **Suggested fix:** Offer Finish in browser again only when the run's `handoff_end` says the student or the clock ended the turn (`stopped`, `closed`, `timeout`, `refused`, `early`); otherwise show only the posting link. `HANDOFF_ELSEWHERE` and `HANDOFF_UPLOAD` can follow from what the student did in the window, so a retry for those is reasonable.
 - **Regression suite:** tests/ui/test_apply_handoff.py (a run that ends `HANDOFF_NO_LOADER` shows no Finish in browser button) and tests/test_apply_handoff.py (the view's `handoff_end`)
 
+### The Greenhouse embed form is never used when a posting redirects to the company's own site
+- **Severity:** low (found 2026-10-04, comparison with another project's ATS notes)
+- **Where:** `opportunity_app/apply/greenhouse.py:48` `canonical_url`; `opportunity_app/apply/checks.py:406` (`offsite_navigation`)
+- **What happens:** A company that embeds Greenhouse on its own domain makes `job-boards.greenhouse.io/<board>/jobs/<id>` redirect to that domain. The run navigates to the canonical URL, sees the redirect leave the Greenhouse hosts, and stops with "This posting sends applicants to {host}". Greenhouse's embed address (`job-boards.greenhouse.io/embed/job_app?for=<board>&token=<id>`) usually reaches the real form, is on `BOARD_HOSTS`, and the parser already accepts it as input, but nothing builds it as a fallback. Whether the form it opens can be filled under the app's browser policy has not been tried.
+- **Suggested fix:** When the canonical URL redirects off the Greenhouse hosts, try the embed address once, and stop as now if that redirects off them too. Check on a rehearsal first that the embed form's file input is reachable.
+- **Regression suite:** tests/test_apply_checks.py (an off-site redirect on the canonical URL falls back to the embed address once)
+
 ## Mail, Gmail and inboxes
 
 ### Application inbox: a "Last, First" From name empties the sender, so the email is skipped
@@ -356,6 +363,13 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **Suggested fix:** Use the conditional-claim pattern from `queue_research` (`opportunity_app/outreach/research.py:441-457`) and cancel the job that loses.
 - **Regression suite:** tests/ unittest (`test_outreach_call_prep`: two interleaved calls leave one active job)
 
+### The web-capable model calls can fetch any address, so a hostile page can carry the student's profile out in a URL
+- **Severity:** medium, privacy (found 2026-10-04, prompt-injection audit)
+- **Where:** `opportunity_app/outreach/agents.py:29` `claude_runner` (`--tools WebSearch,WebFetch`) and `:44` `codex_runner`; the prompts in `outreach/discovery.py` (`PROMPT`, `build_prompt`), `research.py` and `email_search.py`
+- **What happens:** The deep search prompt carries the student's school, degree, skills, projects, experience, regions and home location, and the agent may fetch any URL. A page it reads can tell it to fetch an attacker's address with those facts in the query string. Every model call now says that text from pages is evidence and not instructions (`agent_providers.UNTRUSTED_TEXT_NOTICE`), which lowers the odds and stops nothing: no code limits where the agent fetches. `SafeFetcher` guards only the fetches Python makes itself. A search that went wrong this way would also write the page's `summary`, `fit_rationale` and `activity_signal` as written, and a later draft reads them as unverified research.
+- **Suggested fix:** Run the web agent with a fetch allowlist if the CLI offers one, or split the work: one call with no profile reads pages and returns what it found, and a second call with the profile, and no web tools, judges fit. Failing both, send only the facts the search needs (field, regions) and keep projects, experience and home location out of the web call.
+- **Regression suite:** a test that the discovery prompt holds none of the student's projects, experience or home location
+
 ## Agents and notifications
 
 ### Codex web research, once the student opts in, still reaches apply_patch through code mode
@@ -459,6 +473,20 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** the résumé's `contact` suggestion holds only the email, the phone it found (or an empty one) and links. Ticking it in résumé review saves that object in place of the profile's `contact`, so the mailing address the student confirmed on the Profile page, and a phone they typed there, are gone. No wrong value is sent: a contact form that requires an address box then waits for the student, as it does with no address on file.
 - **Suggested fix:** Merge `contact` key by key when it comes from a résumé (keep stored keys the résumé has no answer for), or leave the address keys out of what a résumé confirm may replace.
 - **Regression suite:** tests/ unittest (`test_bugfix_profile_save` or `test_resumes`: confirm a résumé's contact after saving an address and a phone; both are kept)
+
+### Greenhouse's posted_at is its updated_at, so any edit makes an old posting look fresh
+- **Severity:** medium, source integrity and freshness (found 2026-10-04, board adapter audit)
+- **Where:** `pipeline_core/sources.py` `greenhouse_jobs` (`"posted_at": detail.get("updated_at") or item.get("updated_at")`); `pipeline_core/scoring.py` `score_job` (the recency block)
+- **What happens:** Greenhouse also returns `first_published`, and the two differ whenever a posting is edited. One live posting was first published on 2024-12-20 and last updated on 2026-08-21, so it gets "+10 updated within 7 days" the week after an edit and is never "over 60 days old". The reason says "updated", which is true, but the same column is the posting date the `posted_since` filter and the freshness text show, so a long-open role reads as new. Ashby and Lever give their publication and creation times.
+- **Suggested fix:** Store `first_published` as `posted_at` and keep `updated_at` for the "updated" reasons, or add a second column. Decide first which one the "recency" bonus should follow, since using `first_published` lowers the score of every long-open role.
+- **Regression suite:** tests/test_pipeline.py (a Greenhouse listing with a `first_published` far older than its `updated_at`)
+
+### Board discovery reads a throttled or blocked board as "no board"
+- **Severity:** low (found 2026-10-04, board adapter audit)
+- **Where:** `pipeline_core/discovery.py` `_probe_greenhouse` (`:64`), `_probe_ashby` (`:81`), `_probe_lever` (`:97`)
+- **What happens:** Each probe calls `request_json(..., retries=0)` and catches `RuntimeError`, so an HTTP 429, a 403 or a body that fails to parse returns None, the same as a board that does not exist. A live board that was probed during a throttle is reported unresolved. Discovery only suggests boards and removes nothing, so the cost is a missed suggestion.
+- **Suggested fix:** Return a third answer for a throttle or a parse failure, and have the caller retry once after a pause or report "could not check".
+- **Regression suite:** tests/test_boards.py (a 429 from a probe is reported as unchecked, not as no board)
 
 ## Packaging and docs
 

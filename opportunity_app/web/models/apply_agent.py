@@ -58,8 +58,8 @@ class ApplyRehearsalRequest(BaseModel):
 class ApplyHandoffRequest(BaseModel):
     # Finish in browser: the ticks the student gave (each names an "ask" the start would otherwise refuse), and that they checked a
     # posting that does not look like the saved role.
-    acknowledged: list[Literal["company_limit", "released_job", "unmatched_confirmation", "applying_old"]] = Field(
-        default_factory=list, max_length=4,
+    acknowledged: list[Literal["company_limit", "released_job", "unmatched_confirmation", "applying_old", "active_at_company"]] = Field(
+        default_factory=list, max_length=5,
     )
     posting_confirmed: bool = False
 

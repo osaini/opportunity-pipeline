@@ -9,17 +9,20 @@ from typing import Any
 
 TERM_RE = re.compile(r"\b(spring|summer|fall|autumn|winter)\s*(20\d{2})?\b", re.IGNORECASE)
 YEAR_RE = re.compile(r"\b(20(?:2[4-9]|3\d))\b")
+# Each pattern keeps at most one run of optional whitespace in a row (a separator brings its own, and the second amount
+# its own): three adjacent `\s*` made these cubic in a run of spaces after a dollar figure, and one description pasted
+# from a CSV keeps its raw whitespace.
 HOURLY_PAY_RE = re.compile(
-    r"\$\s*(\d{1,3}(?:\.\d{1,2})?)\s*(?:-|–|—|to)?\s*"
-    r"(?:\$\s*)?(\d{1,3}(?:\.\d{1,2})?)?\s*(?:/|per\s+)(?:hour|hr)\b",
+    r"\$\s*(\d{1,3}(?:\.\d{1,2})?)\s*(?:(?:-|–|—|to)\s*)?"
+    r"(?:\$\s*)?(?:(\d{1,3}(?:\.\d{1,2})?)\s*)?(?:USD\s*)?(?:/|per\s+|an?\s+)(?:hour|hr)\b",
     re.IGNORECASE,
 )
 # The period suffix is required: a bare dollar figure ("$15,000 housing
 # stipend", "$120,000,000 in funding") says nothing about a yearly salary, and
 # reading it as one would present an inferred value as confirmed.
 YEARLY_PAY_RE = re.compile(
-    r"\$\s*(\d{2,3}(?:,\d{3})+)\s*(?:-|–|—|to)?\s*"
-    r"(?:\$\s*)?(\d{2,3}(?:,\d{3})+)?\s*"
+    r"\$\s*(\d{2,3}(?:,\d{3})+)\s*(?:(?:-|–|—|to)\s*)?"
+    r"(?:\$\s*)?(?:(\d{2,3}(?:,\d{3})+)\s*)?(?:USD\s*)?"
     r"(?:(?:/\s*|per\s+|an?\s+)(?:year|yr|annum)\b|annual(?:ly)?\b)",
     re.IGNORECASE,
 )

@@ -2471,7 +2471,7 @@ class HandoffStartTests(HandoffApiCase):
         self.assertEqual(json.loads(self.claim()["detail_json"])["acknowledged"], ["released_job"])
 
     def test_the_body_is_validated(self):
-        for body in ({"acknowledged": ["everything"]}, {"acknowledged": ["company_limit"] * 5}, {"posting_confirmed": "maybe"}, {"acknowledged": "company_limit"}):
+        for body in ({"acknowledged": ["everything"]}, {"acknowledged": ["company_limit"] * 6}, {"posting_confirmed": "maybe"}, {"acknowledged": "company_limit"}):
             self.assertEqual(self.handoff(body).status_code, 422, body)
         self.assertEqual(self.counts("apply_runs")["apply_runs"], 0)
 

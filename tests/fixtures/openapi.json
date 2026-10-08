@@ -218,11 +218,12 @@
                 "company_limit",
                 "released_job",
                 "unmatched_confirmation",
-                "applying_old"
+                "applying_old",
+                "active_at_company"
               ],
               "type": "string"
             },
-            "maxItems": 4,
+            "maxItems": 5,
             "title": "Acknowledged",
             "type": "array"
           },
