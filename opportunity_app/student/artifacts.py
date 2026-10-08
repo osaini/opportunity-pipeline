@@ -17,6 +17,11 @@ from ..core.timestamps import utc_now
 PDF_MEDIA_TYPE = "application/pdf"
 
 
+def content_digest(content: str) -> str:
+    """The SHA-256 of a document's text: what ``content_sha256`` records and what Apply for me puts in its plan."""
+    return hashlib.sha256(str(content).encode("utf-8")).hexdigest()
+
+
 def _safe_name(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip()).strip("-.")
     return (cleaned[:80] or "application-document") + ".pdf"
@@ -88,6 +93,29 @@ def _render_pdf(content: str, target: Path) -> None:
     document.build(story)
 
 
+def document_file_name(document: dict[str, Any]) -> str:
+    """The name the employer sees for a document's PDF (company, role, kind and version), never a storage name."""
+    return _safe_name(f"{document.get('company', '')}-{document.get('title', '')}-{document['document_type']}-v{document['version']}")
+
+
+def _stored_file(storage_root: Path, artifact: Any) -> Path | None:
+    """The artifact's file inside the generated folder, or None when it is missing or outside it."""
+    root = (storage_root.resolve() / "generated").resolve()
+    path = (root / str(artifact["storage_path"])).resolve()
+    return path if path.parent == root and path.is_file() else None
+
+
+def _is_current(artifact: Any, content: str, storage_root: Path) -> bool:
+    """The stored PDF was rendered from this exact text, and the file on disk is still the one that was stored.
+
+    An artifact made before ``content_sha256`` existed has none recorded, so it cannot be shown to match and is made again.
+    """
+    if str(artifact["content_sha256"] or "") != content_digest(content):
+        return False
+    path = _stored_file(storage_root, artifact)
+    return path is not None and hashlib.sha256(path.read_bytes()).hexdigest() == str(artifact["sha256"])
+
+
 def ensure_document_artifact(
     conn: sqlite3.Connection,
     document_id: str,
@@ -95,6 +123,12 @@ def ensure_document_artifact(
     *,
     user_id: str,
 ) -> dict[str, Any]:
+    """The PDF of an approved document, rendered from the text as it is now.
+
+    A stored PDF is returned only when it was rendered from this exact text (its recorded ``content_sha256``) and the file
+    still matches its own hash. Otherwise it is rendered again and the old file removed, so a PDF of an older draft is never
+    returned, whatever happened to the delete that was meant to remove it (the edit route commits first and deletes after).
+    """
     document = document_record(conn, document_id, user_id=user_id)
     if document["status"] != "approved":
         raise ValueError("Only approved documents can become attachable artifacts")
@@ -102,17 +136,13 @@ def ensure_document_artifact(
         "SELECT * FROM generated_document_artifacts WHERE document_id=? AND user_id=?",
         (document_id, user_id),
     ).fetchone()
-    if existing:
-        path = (storage_root.resolve() / "generated" / str(existing["storage_path"])).resolve()
-        if path.parent == (storage_root.resolve() / "generated").resolve() and path.exists():
-            return dict(existing)
+    if existing and _is_current(existing, str(document["content"]), storage_root):
+        return dict(existing)
 
     artifact_root = (storage_root.resolve() / "generated").resolve()
     artifact_root.mkdir(parents=True, exist_ok=True)
     artifact_id = f"document-artifact-{uuid4().hex}"
-    filename = _safe_name(
-        f"{document.get('company', '')}-{document.get('title', '')}-{document['document_type']}-v{document['version']}"
-    )
+    filename = document_file_name(document)
     stored_name = f"{artifact_id}.pdf"
     target = (artifact_root / stored_name).resolve()
     if target.parent != artifact_root:
@@ -134,8 +164,8 @@ def ensure_document_artifact(
                 """
                 INSERT INTO generated_document_artifacts(
                     id, document_id, user_id, filename, media_type,
-                    byte_size, sha256, storage_path, created_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    byte_size, sha256, storage_path, created_at, content_sha256
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     artifact_id,
@@ -147,8 +177,16 @@ def ensure_document_artifact(
                     digest,
                     stored_name,
                     timestamp,
+                    content_digest(str(document["content"])),
                 ),
             )
+        if existing:
+            stale = _stored_file(storage_root, existing)
+            if stale is not None and stale != target:
+                try:
+                    stale.unlink(missing_ok=True)
+                except OSError:
+                    pass   # the new artifact is committed; an old file left behind is only clutter, and never returned
         return dict(
             conn.execute(
                 "SELECT * FROM generated_document_artifacts WHERE id=? AND user_id=?",
