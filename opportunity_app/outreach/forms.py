@@ -10,8 +10,17 @@ Chromium through Playwright. The form is read again on the live page (many are
 built by scripts, some inside a frame) and every field is matched to what the
 student has confirmed. A field the app cannot answer truthfully stops it before
 anything is sent, as does a message longer than the box allows; a hidden field
-(a spam trap) is never filled, and an optional phone number, school, or link is
-left blank. A checkbox CAPTCHA is clicked like a person would; one that asks
+(a spam trap) is never filled, and an optional phone number, school, or link
+is left blank. A required address box (street, city, state, ZIP, country) is
+answered only from the mailing address the student confirmed in their profile;
+with none, it stops the send like any other unanswerable field, as does a street
+box with no city, state or ZIP box beside it. When a form requires the street
+address, the rest of the confirmed address goes into its other address boxes; a
+form that requires only a country, state, city or ZIP gets only that. A form
+that asks for any part of an address twice (a second block for a reference or an
+emergency contact) gets no address at all: the app cannot tell which block is the
+student's, so each required address box there stops the send.
+A checkbox CAPTCHA is clicked like a person would; one that asks
 for a picture challenge is left to the student, in a browser window they can
 see (``in_browser``). Nothing disguises the browser.
 
@@ -49,7 +58,7 @@ from .. import ROOT
 from ..automation import ledger as automation
 from .contact_names import NO_REPLY_SENDER, website_domain
 from .targets import UNSENT_STATUSES, DraftChangedError, list_targets, log_event, get_target, update_target, validate_web_url
-from .location import missing_location_message
+from .location import US_STATES, missing_location_message
 from .config import sender_account
 from .gmail import SendNeedsCheckError, attachment_path, attachment_problem
 from .send_claims import (
@@ -62,6 +71,7 @@ from .send_claims import (
 )
 from .render import request_allowed
 from ..student.preparation import confirmed_facts
+from ..student.profile import ADDRESS_FIELDS
 from ..core.timestamps import utc_now
 from ..integrations.web_fetch import USER_AGENT, Resolver, close_browser, resolve_host, same_site, site_robots
 
@@ -200,14 +210,126 @@ AUTOCOMPLETE_ROLES = {
     "name": "full_name", "given-name": "first_name", "family-name": "last_name", "email": "email",
     "tel": "phone", "tel-national": "phone", "organization": "company", "organization-title": "job_title", "url": "link",
 }
+# The student's mailing address, when they confirmed one in their profile (profile.ADDRESS_FIELDS).
+# Like a phone number, it goes in only where the form requires the box.
+AUTOCOMPLETE_ADDRESS = {
+    "address-line1": "address_line1", "address-line2": "address_line2", "street-address": "street_address",
+    "address-level2": "city", "address-level1": "state", "postal-code": "postal_code",
+    "country": "country", "country-name": "country",
+}
+ADDRESS_ROLES = frozenset(AUTOCOMPLETE_ADDRESS.values()) | {"street_address"}
+# What each address role is called in a note.
+ADDRESS_WORDS = {
+    "address_line1": "street address", "address_line2": "address line 2", "street_address": "street address",
+    "city": "city", "state": "state", "postal_code": "ZIP code", "country": "country",
+}
+# Every hint that names part of an address. One the student's address does not answer (a billing or work
+# address, a third line, a district) leaves the box unanswerable, whatever its label says ("Company address").
+_ADDRESS_HINTS = frozenset(AUTOCOMPLETE_ADDRESS) | {"address", "address-line3", "address-level3", "address-level4"}
+# The browser's autofill field names (the HTML standard's list). A box with one of these that is not an address
+# hint is that thing, not an address, whatever its label says ("Country" on a tel-country-code box).
+AUTOFILL_TOKEN = re.compile(
+    r"^(name|honorific-prefix|given-name|additional-name|family-name|honorific-suffix|nickname|username|new-password|"
+    r"current-password|one-time-code|organization-title|organization|street-address|address|address-line[123]|address-level[1-4]|"
+    r"country|country-name|postal-code|cc-.*|transaction-currency|transaction-amount|language|bday.*|sex|url|photo|"
+    r"tel|tel-.*|email|impp|webauthn)$"
+)
 # Hints for things the app never fills in for the student.
-AUTOCOMPLETE_NEVER = re.compile(r"^(country|country-name|address|address-line\d|address-level\d|street-address|postal-code|bday.*|sex|"
+AUTOCOMPLETE_NEVER = re.compile(r"^(address|address-line3|address-level[34]|bday.*|sex|"
                                 r"honorific-.*|additional-name|nickname|username|new-password|current-password|cc-.*|transaction-.*|language)$")
+# A label names an address box only when every word of it is one of these: "Address Line 1", "ZIP / Postal Code",
+# "Country/Region". "Please state your interest", "Company address" and "City you want to work in" are not.
+# "Nation" (a nationality), "PO Box" and "Street number" are none of the student's address lines. Nor is a
+# "Home country", "Home state" or "Permanent address": the mailing address may be a dorm, and a home country
+# may mean a nationality.
+_ADDRESS_QUALIFIERS = frozenset(
+    "your mailing current primary of the and or required optional "
+    "region line address addr street 1 2 one two apt apartment suite unit flat floor".split()
+)
+_ADDRESS_WORD_ROLES = (
+    ("country", frozenset({"country"})),
+    ("postal_code", frozenset({"zip", "postal", "postcode"})),
+    ("state", frozenset({"state", "province", "territory"})),
+    ("city", frozenset({"city", "town", "suburb"})),
+    ("address_line2", frozenset({"apt", "apartment", "suite", "unit", "flat", "floor", "2", "two"})),
+    ("address_line1", frozenset({"address", "addr", "street"})),
+)
+# "Unit" alone is as often a department; beside one of these it is an apartment.
+_UNIT_COMPANIONS = frozenset({"apt", "apartment", "suite", "address", "addr", "line"})
+_ADDRESS_WORDS = _ADDRESS_QUALIFIERS | {word for _role_name, words in _ADDRESS_WORD_ROLES for word in words} | {"code"}
+# Not the student's own home address, whatever the box is called.
+_NOT_HOME_SECTION = {"billing", "shipping", "work"}
+# A name or id with one of these words is some organization's address ("company_address", "officeCity").
+# Words that make a country or place a fact about the student's papers or birth, not where mail reaches them
+# ("nationality", "citizenshipCountry", "Country of birth"), in a name or id or in the words the student sees.
+_NOT_A_MAILING_PLACE = frozenset({"nationality", "national", "citizenship", "citizen", "birth", "origin", "passport", "issuing"})
+# Words that make an address someone else's: a reference's, an emergency contact's, a parent's, a past one.
+_SOMEONE_ELSE = frozenset({"reference", "emergency", "alternate", "alternative", "secondary", "other", "previous", "prior",
+                           "mother", "father", "parent", "guardian", "spouse"})
+_NOT_HOME_ATTRIBUTE = frozenset({
+    "company", "org", "organization", "organisation", "business", "office", "work", "billing", "shipping", "employer",
+    "school", "campus", "hq", "headquarters", "kin", "relative", "supervisor", "manager", "landlord", "recipient",
+    "delivery", "venue", "event", "property", "alt",
+}) | _NOT_A_MAILING_PLACE | _SOMEONE_ELSE
+
+
+def _attribute_words(field: dict[str, Any]) -> list[str]:
+    """The words of a field's name and id in order, split on anything not a letter and between camelCase words."""
+    raw = f"{field.get('name') or ''} {field.get('id') or ''}"
+    return [word.lower() for word in re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+", raw)]
+
+
+def _someone_elses(words: list[str], vetoed: frozenset[str]) -> bool:
+    """Whether these words (in order) name a box that is not the student's own address."""
+    return bool(vetoed & set(words)) or " contact person " in f" {' '.join(words)} "
+
+
+def _someones_elses_attribute(field: dict[str, Any]) -> bool:
+    return _someone_elses(_attribute_words(field), _NOT_HOME_ATTRIBUTE)
 
 
 def _autocomplete(field: dict[str, Any]) -> str:
     tokens = str(field.get("autocomplete") or "").lower().split()
     return tokens[-1] if tokens else ""
+
+
+def _address_role(field: dict[str, Any]) -> str:
+    """The address box a field is ("city", "postal_code", ...), "" when it is not one the student's address answers."""
+    if field["type"] in {"checkbox", "radio", "file", "email", "tel", "url", "hidden"} or _is_email_field(field):
+        return ""
+    tokens = str(field.get("autocomplete") or "").lower().split()
+    if tokens and _NOT_HOME_SECTION & set(tokens[:-1]):
+        return ""
+    if _someones_elses_attribute(field):
+        return ""
+    seen = " ".join(str(field.get(key) or "") for key in ("label", "placeholder", "aria_label"))
+    if _someone_elses(re.findall(r"[a-z]+", seen.lower()), _NOT_A_MAILING_PLACE | _SOMEONE_ELSE):
+        return ""
+    if tokens and tokens[-1] in AUTOCOMPLETE_ADDRESS:
+        return AUTOCOMPLETE_ADDRESS[tokens[-1]]
+    # Any other real hint ("tel-country-code", "organization", "address-level3") says what the box is.
+    if tokens and AUTOFILL_TOKEN.search(tokens[-1]):
+        return ""
+    # The words the student sees; a field with none is named by its attributes ("address_line_1").
+    shown = next((str(field.get(key) or "") for key in ("label", "placeholder", "aria_label") if re.search(r"[a-z]", str(field.get(key) or ""), re.I)), "")
+    words = re.findall(r"[a-z]+|\d+", (shown or f"{field.get('name') or ''} {field.get('id') or ''}").lower())
+    words = [word for word in dict.fromkeys(words) if word not in {"required", "optional"}]
+    if not words or any(word not in _ADDRESS_WORDS for word in words):
+        return ""
+    roles = [role for role, named in _ADDRESS_WORD_ROLES if named & set(words)]
+    if "address_line2" in roles and "address_line1" in roles:
+        roles.remove("address_line1")  # "Address Line 2" says address too
+    # "Country code" picks a phone's prefix; "City / State" is two answers in one box.
+    if len(roles) != 1:
+        return ""
+    # "Territory" alone is a sales territory; "State/Territory" is where the student lives.
+    if "territory" in words and not {"state", "province"} & set(words):
+        return ""
+    if "unit" in words and not _UNIT_COMPANIONS & set(words):
+        return ""
+    if roles[0] == "country" and ("code" in words or re.search(r"code|dial|calling|phone|(?<![a-z])tel", f"{field.get('name') or ''} {field.get('id') or ''}", re.I)):
+        return ""
+    return roles[0]
 
 
 def _is_email_field(field: dict[str, Any]) -> bool:
@@ -417,8 +539,22 @@ def _role(field: dict[str, Any]) -> str:
     text = _field_text(field)
     if kind == "file":
         return "file"
-    if kind in {"checkbox", "radio"} or field["tag"] == "select":
-        return kind if kind in {"checkbox", "radio"} else "select"
+    if kind in {"checkbox", "radio"}:
+        return kind
+    # Before the list and the message box: a country list is not a topic, a street box is not a message.
+    address = _address_role(field)
+    if address:
+        return address
+    # An address hint the student's address does not answer ("work street-address" on "Company address")
+    # is never the school or the student's name.
+    if _autocomplete(field) in _ADDRESS_HINTS and kind not in {"email", "tel", "url"} and not _is_email_field(field):
+        return "unknown"
+    # Nor is a box whose label names an address and whose name or id says whose ("Address" named school_address,
+    # "City" named hq_city): it is not the student's, and not the school's name either.
+    if _someones_elses_attribute(field) and _address_role({**field, "name": "", "id": ""}):
+        return "unknown"
+    if field["tag"] == "select":
+        return "select"
     if _is_email_field(field):
         return "email"
     if field["tag"] == "textarea":
@@ -440,6 +576,61 @@ def _role(field: dict[str, Any]) -> str:
         if pattern.search(text):
             return role
     return "unknown"
+
+
+def _plain(text: Any) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", str(text).casefold()))
+
+
+# Names a list may use for the same country; a list names the student's own however it likes.
+COUNTRY_SPELLINGS = (
+    ("United States", "United States of America", "USA", "US", "U.S.", "U.S.A."),
+    ("United Kingdom", "UK", "Great Britain", "GB"),
+)
+# The ISO 3166 codes among them: a box hinted "country" wants the code, so it goes first among the short ones.
+COUNTRY_CODES = frozenset({"US", "GB"})
+
+
+def _spellings(role: str, value: str, *, code: bool = False) -> list[str]:
+    """The ways a form may write one address value, the student's own first (shortest first when ``code``)."""
+    spellings = [value]
+    plain = _plain(value)
+    if role == "state":
+        abbreviation = next((short for short, name in US_STATES.items() if plain in {short.casefold(), name}), "")
+        if abbreviation:
+            spellings += [abbreviation, US_STATES[abbreviation].title()]
+    elif role == "country":
+        for names in COUNTRY_SPELLINGS:
+            if plain in {_plain(name) for name in names}:
+                spellings += names
+    spellings = list(dict.fromkeys(spellings))
+    return sorted(spellings, key=lambda text: (len(text), text not in COUNTRY_CODES)) if code else spellings
+
+
+def _address_option(role: str, value: str, options: list[dict[str, str]]) -> dict[str, str] | None:
+    """The list choice that is the student's own state or country, matched whole ("Kansas" is not "Arkansas")."""
+    wanted = {_plain(spelling) for spelling in _spellings(role, value)}
+    if role == "state":
+        wanted |= {f"{short} {name}" for short in wanted for name in wanted if short != name}  # "TX - Texas"
+    return next((
+        option for option in options
+        if option.get("value", "") != "" and not PLACEHOLDER_OPTION.search(option.get("text", ""))
+        and (_plain(option.get("text", "")) in wanted or _plain(option.get("value", "")) in wanted)
+    ), None)
+
+
+def _address_value(role: str, identity: dict[str, str]) -> str:
+    if role == "street_address":  # one box for both lines
+        return ", ".join(part for part in (identity.get("address_line1", ""), identity.get("address_line2", "")) if part)
+    return identity.get(role, "")
+
+
+def _shown_answer(field: dict[str, Any]) -> dict[str, str] | None:
+    """The choice a list already shows, when it is an answer and not a "Select…" prompt."""
+    shown = next((option for option in field.get("options") or [] if option.get("value") == field.get("selected")), None)
+    if shown and not PLACEHOLDER_OPTION.search(shown.get("text", "")) and shown.get("value", "") != "":
+        return shown
+    return None
 
 
 def _choose_option(options: list[dict[str, str]], question: str = "") -> dict[str, str] | None:
@@ -497,18 +688,21 @@ def plan_fill(
         return str(field.get("name") or field["type"]).strip()[:60]
 
     reported: set[str] = set()
+    missing_address = False
 
     def unanswerable(field: dict[str, Any], role: str = "") -> None:
         """One note per thing the form asks that the student has not confirmed, in one wording."""
+        nonlocal missing_address
         label = label_of(field)
         key = role if role in {"phone", "company", "link", "job_title"} else re.sub(r"[^a-z0-9]", "", label.lower())
+        missing_address = missing_address or role in ADDRESS_ROLES
         if key in reported:
             return
         reported.add(key)
         problems.append(f"The form requires \"{label}\", and your confirmed profile has no answer for it")
 
     # With a real message box on the form, a one-line box is a subject or a question, never the message.
-    has_textarea = any(field["tag"] == "textarea" and field.get("visible", True) for field in fields)
+    has_textarea = any(field["tag"] == "textarea" and field.get("visible", True) and _role(field) == "message" for field in fields)
 
     def put(field: dict[str, Any], role: str, value: str, action: str = "fill") -> None:
         fills.append({"index": field["index"], "action": action, "value": value, "role": role, "label": label_of(field)})
@@ -519,6 +713,41 @@ def plan_fill(
         first, last = last, ""
     # "Name" beside a separate "Last name" field asks for the first name only.
     split_name = any(_role(field) == "last_name" for field in fields if field.get("visible", True))
+    # The address boxes the form has, answered or not. With no box for the second line the street box takes both;
+    # with no city, state or ZIP box it would have to hold the whole address in a format the app would invent.
+    form_roles = {_role(field) for field in fields if field.get("visible", True) or (field["tag"] == "select" and field.get("required"))}
+    has_line2 = bool({"address_line2", "street_address"} & form_roles)
+    lone_street = not {"city", "state", "postal_code"} & form_roles
+    street_roles = {"address_line1", "address_line2", "street_address"}
+
+    def address_role_here(field: dict[str, Any]) -> str:
+        role = _role(field)
+        return "street_address" if role == "address_line1" and not has_line2 else role
+
+    # A form that asks for a part of the address twice has a second address block (a reference's, an emergency
+    # contact's), and nothing says which block is the student's: no address goes in at all, and each required
+    # address box stops the send. Otherwise each part has one box.
+    claimed: set[str] = set()
+    two_blocks = False
+    for field in fields:
+        if field["type"] in {"hidden", "submit", "button", "image", "reset", "password"} or CAPTCHA_FIELD.search(_field_text(field)):
+            continue
+        if not field.get("visible", True) and not (field["tag"] == "select" and field.get("required")):
+            continue
+        role = address_role_here(field)
+        if role in ADDRESS_ROLES:
+            parts = {"address_line1", "address_line2"} if role == "street_address" else {role}
+            two_blocks = two_blocks or bool(parts & claimed)
+            claimed |= parts
+    # Optional address boxes, filled from the same address once the form has required the street.
+    optional_address: list[tuple[dict[str, Any], str]] = []
+    typed_street = False
+
+    def address_text(field: dict[str, Any], role: str, value: str) -> str | None:
+        """The spelling of the student's value that fits the box: "TX" or "GB" for a box of two letters."""
+        limit = field.get("maxlength")
+        code = role == "country" and (_autocomplete(field) == "country" or limit in (2, 3))
+        return next((text for text in _spellings(role, value, code=code) if not limit or len(text) <= limit), None)
     for field in fields:
         if field["type"] in {"hidden", "submit", "button", "image", "reset", "password"}:
             continue
@@ -579,12 +808,44 @@ def plan_fill(
                 put(field, role, value)
             elif required:
                 unanswerable(field, role)
+        elif role in ADDRESS_ROLES:
+            # Like a phone number, the student's confirmed address goes in only where the form requires the box,
+            # or where a list already shows a country or state that would be sent as theirs.
+            is_list = field["tag"] == "select"
+            role = address_role_here(field)
+            if two_blocks:
+                if required or (is_list and _shown_answer(field) is not None):
+                    unanswerable(field)  # no role: which block is the student's is the student's to say
+                continue
+            if not (required or (is_list and _shown_answer(field) is not None)):
+                optional_address.append((field, role))
+                continue
+            if role in street_roles and lone_street:
+                unanswerable(field)  # no role: an address in the profile would not answer it either
+                continue
+            value = _address_value(role, identity)
+            if not value:
+                unanswerable(field, role)
+            elif is_list:
+                option = _address_option(role, value, [o for o in field.get("options") or [] if (field["index"], o.get("value", "")) not in avoid])
+                if option is None:
+                    problems.append(f"The form requires a choice for \"{label_of(field)}\", and none of its choices is the {ADDRESS_WORDS[role]} in your profile")
+                else:
+                    fills.append({"index": field["index"], "action": "select", "value": option["value"], "role": role,
+                                  "label": f"{label_of(field)}: {option.get('text', '')}"[:120]})
+            else:
+                fitting = address_text(field, role, value)
+                if fitting is None:
+                    problems.append(f"The box \"{label_of(field)}\" takes {limit} characters, and the {ADDRESS_WORDS[role]} in your profile is longer")
+                else:
+                    put(field, role, fitting)
+                    typed_street = typed_street or (required and role in {"address_line1", "street_address"})
         elif role == "select":
             options = field.get("options") or []
             # A list that already shows an answer ("Customer", "Strike systems") would
             # send that answer as the student's, so it is chosen like a required one.
-            shown = next((option for option in options if option.get("value") == field.get("selected")), None)
-            preset = bool(shown) and not PLACEHOLDER_OPTION.search(shown.get("text", "")) and shown.get("value", "") != ""
+            shown = _shown_answer(field)
+            preset = shown is not None
             if not required and not preset:
                 continue
             option = _choose_option([o for o in options if (field["index"], o.get("value", "")) not in avoid], label_of(field))
@@ -609,8 +870,23 @@ def plan_fill(
                 put(field, "file", attachment, action="upload")
             elif required:
                 problems.append("The form requires a file, and no resume is set to attach")
-        elif required:
+        elif required or (field["tag"] == "select" and _shown_answer(field) is not None):
+            # A list that already shows an answer (a billing country) would send it as the student's.
             unanswerable(field, role)
+    # A form that required the street address gets the rest of it in its optional address boxes, so the
+    # apartment or the city is not left off; a box the student's address does not fit is left alone. A form
+    # that required only a country, state, city or ZIP gets only that (the least the student discloses).
+    for field, role in optional_address if typed_street else []:
+        value = _address_value(role, identity)
+        if not value or (role in street_roles and lone_street):
+            continue
+        if field["tag"] == "select":
+            option = _address_option(role, value, [o for o in field.get("options") or [] if (field["index"], o.get("value", "")) not in avoid])
+            if option is not None:
+                fills.append({"index": field["index"], "action": "select", "value": option["value"], "role": role,
+                              "label": f"{label_of(field)}: {option.get('text', '')}"[:120]})
+        elif (fitting := address_text(field, role, value)) is not None:
+            put(field, role, fitting)
     for name, group in radio_groups.items():
         if not any(field.get("required") for field in group):
             continue
@@ -629,6 +905,8 @@ def plan_fill(
         _role(field) in {"full_name", "first_name"} for field in fields if field.get("visible", True)
     ):
         problems.append("Confirm your name in your profile first")
+    if missing_address:
+        problems.append("Add your mailing address on the Profile page, under About you, and the app can fill in address boxes")
     return {"fills": fills, "problems": list(dict.fromkeys(problems))}
 
 
@@ -1186,9 +1464,11 @@ def identity_for(conn: sqlite3.Connection, user_id: str) -> dict[str, str]:
     if not email:
         raise ValueError("Set the address replies should go to (your outreach Gmail account) before sending a contact form")
     link = next((str(contact.get(key) or "").strip() for key in ("linkedin", "portfolio", "github") if str(contact.get(key) or "").strip()), "")
+    # The mailing address, if they confirmed one: the form gets it only for a box it requires (plan_fill).
+    address = {key: " ".join(str(contact.get(key) or "").split()) for key in ADDRESS_FIELDS}
     return {
         "name": name, "email": email, "phone": str(contact.get("phone") or "").strip(),
-        "school": str(facts.get("school") or "").strip(), "link": link, "title": "Student",
+        "school": str(facts.get("school") or "").strip(), "link": link, "title": "Student", **address,
     }
 
 

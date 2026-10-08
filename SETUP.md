@@ -109,6 +109,7 @@ into `config/profile.json`. The field names are the keys in
 | --- | --- | --- |
 | Name, school, degree | `name`, `school`, `degree` | e.g. "B.S. Chemical Engineering". Start with the level (B.S., M.S., Ph.D., MBA): a posting whose title asks only for another level, such as "MS/PhD", scores lower. |
 | How is their name written on an application? | `name_parts` | `{"first": ..., "last": ..., "preferred": ...}`. Apply for me (see 7c) types `first` and `last` into an employer's two name boxes, and `preferred` only where a form has a preferred-name box. It never splits a longer name itself, so ask for it whenever the name has more than two words. Editable on the Profile page as **Name for applications**. |
+| Mailing address (optional) | `contact`: `address_line1`, `address_line2`, `city`, `state`, `postal_code`, `country` | Some company contact forms require an address box. The app types this into a form's address boxes only when the form requires one, only once the student has confirmed it, and nowhere else (never a home, permanent, nationality or birth box, nor any box on a form that asks for an address twice, such as one with a reference's address block): when a form requires the street address, the rest of the confirmed address goes into its other address boxes; a form that requires only a country, state, city or ZIP gets only that; with none on file such a form waits for the student. Ask whether they are happy for that, and if so have them enter it on the Profile page (**About you › Mailing address**) rather than writing the file, because saving the page is what confirms it. Never guess one from a résumé or a school. |
 | Graduation year | `graduation_year` | a number |
 | Words that name their field in a posting | `degree_keywords` | e.g. `["chemical engineering", "process engineering"]`. Postings that match rank higher. |
 | Kinds of roles they want | `preferred_role_types` | from `internship`, `externship`, `co-op`, `research`, `part_time`, `early_career` |
@@ -361,8 +362,8 @@ themselves (rule 3). The details:
   **Contact forms** reach companies that publish no email: the crawl notes the
   form on the company's contact page, and the approved first email goes in
   through it as the student, filled only from their confirmed profile (name,
-  and `PIPELINE_OUTREACH_ACCOUNT` as the reply address; school, phone, and a
-  link only when a form insists). It runs in Playwright's Chromium, so install
+  and `PIPELINE_OUTREACH_ACCOUNT` as the reply address; school, phone, a
+  link, and the mailing address from step 3 only when a form insists). It runs in Playwright's Chromium, so install
   it if this computer does not have it yet: `pip install -r requirements-optional.txt`
   then `python -m playwright install chromium`. Tell them it is their name on every
   form it sends, and that it sends only a draft they approved: the switch sends

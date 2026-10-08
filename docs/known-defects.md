@@ -20,13 +20,13 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Browser extension | 0 | 1 | 0 | 1 |
 | Apply for me | 0 | 6 | 7 | 13 |
 | Mail, Gmail and inboxes | 0 | 4 | 9 | 13 |
-| Outreach drafting, research, forms and CLI | 0 | 4 | 2 | 6 |
+| Outreach drafting, research, forms and CLI | 0 | 5 | 3 | 8 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
 | Web API, auth and storage | 0 | 4 | 1 | 5 |
-| Scoring, scheduling and configuration | 1 | 1 | 4 | 6 |
+| Scoring, scheduling and configuration | 1 | 1 | 5 | 7 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **28** | **30** | **59** |
+| **Total** | **1** | **29** | **32** | **62** |
 
 ## Start here: the high-severity entries
 
@@ -307,6 +307,20 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **Suggested fix:** After `route()`, add `route_web_socket('**/*', lambda s: s.close())`. Better, build both browser contexts with one shared guarded-context helper.
 - **Regression suite:** tests/ unittest (`test_outreach_forms`: a fake context asserts that `route_web_socket` is installed)
 
+### A required box about the company (its address, website, size) is typed with the student's school
+- **Severity:** medium, wrong value sent (found while adding the mailing address to contact forms)
+- **Where:** `opportunity_app/outreach/forms.py`: the `company` entry of `_ROLE_PATTERNS` (it matches before `link`), and the `company`/`phone`/`link`/`job_title` branch of `plan_fill`
+- **What happens:** the `company` role matches any text box whose label, name or id says company, organization, business, employer, school, university or institution, and a required one is typed with `identity["school"]`. A required "Company website", "Company address" or "Company size" box therefore gets the school's name, which answers none of those questions, and the form goes out with it when the page accepts any text. A `type="url"` box is read as a link first, so only text boxes are affected. (A box whose label is only address words, such as "Address" or "City", and whose name or id says company, school, business or the like is no longer affected: `_role` makes it unanswerable. A label that itself says company still is.)
+- **Suggested fix:** Give the `company` role only to a label that asks for the name ("Company", "Company name", "Organization", "School"). A label that also says address, website, phone, email, size or industry is unanswerable, so the form waits for the student.
+- **Regression suite:** tests/ unittest (`test_outreach_forms`: required "Company website", "Company address" and "Company size" text boxes are named as unanswerable and nothing is typed in them)
+
+### One address block can read as two, so a contact form that wants the student's address waits for them
+- **Severity:** low, the send stops when it could have gone (found in review of the mailing-address change)
+- **Where:** `opportunity_app/outreach/forms.py` `plan_fill()` (the pre-pass that sets `two_blocks` when an address part appears in more than one box)
+- **What happens:** a box hinted `autocomplete="street-address"` counts as both street lines, so a separate "Apt / Suite" box in the same block looks like a second line 2; a "State" list with a "State/Province" text fallback looks like two state boxes. Either way every required address box is named unanswerable and nothing is filled. Nothing wrong is sent.
+- **Suggested fix:** do not count a `street_address` box and a line-2 box as a repeat; count a state list and a state text box as one only when both are visible.
+- **Regression suite:** tests/ unittest (`test_outreach_forms` `AddressPlanTests`)
+
 ### outreach_cli recontact crashes with KeyError('') when PIPELINE_OUTREACH_DISCOVERY_PROVIDER is blank (the .env.example default)
 - **Severity:** medium, crash (notes 12, 18, 98, 99)
 - **Where:** `opportunity_app/outreach_cli.py:112-116` `build_parser()` recontact `--provider` default; `:237` `_recontact()` `RUNNERS[args.provider]`
@@ -438,6 +452,13 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** The form saves new regions with `state_markers: []`, and a string graduation year passes the web validator. `setup status` then reports ok=False with three errors. An agent following SETUP.md may "fix" valid student data.
 - **Suggested fix:** Reuse `profile.validate_profile_types` for type errors, and downgrade an empty `state_markers` or `places` to a warning.
 - **Regression suite:** tests/ unittest (`test_setup`: a profile shaped like the web form's output is ok)
+
+### Confirming "contact" in résumé review replaces the whole contact object, wiping a confirmed mailing address and a hand-typed phone
+- **Severity:** low (found while adding the mailing address to contact forms)
+- **Where:** `opportunity_app/student/profile.py` `update_profile()` (`merged = {**_stored_profile(...), **updates}` replaces each top-level key); `opportunity_app/student/resumes.py` `confirm_resume()`; `opportunity_app/static/app-profile.js` `createResumeCard()` (the "Confirm selected facts" submit sends the résumé's whole `contact` suggestion)
+- **What happens:** the résumé's `contact` suggestion holds only the email, the phone it found (or an empty one) and links. Ticking it in résumé review saves that object in place of the profile's `contact`, so the mailing address the student confirmed on the Profile page, and a phone they typed there, are gone. No wrong value is sent: a contact form that requires an address box then waits for the student, as it does with no address on file.
+- **Suggested fix:** Merge `contact` key by key when it comes from a résumé (keep stored keys the résumé has no answer for), or leave the address keys out of what a résumé confirm may replace.
+- **Regression suite:** tests/ unittest (`test_bugfix_profile_save` or `test_resumes`: confirm a résumé's contact after saving an address and a phone; both are kept)
 
 ## Packaging and docs
 

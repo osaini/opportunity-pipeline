@@ -419,6 +419,7 @@
     control.name = name;
     if (!options.multiline) control.type = options.type || "text";
     if (options.placeholder) control.placeholder = options.placeholder;
+    if (options.autocomplete) control.autocomplete = options.autocomplete;
     if (options.min !== undefined) control.min = String(options.min);
     if (options.max !== undefined) control.max = String(options.max);
     control.value = value ?? "";
