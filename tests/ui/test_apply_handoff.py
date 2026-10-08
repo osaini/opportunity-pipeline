@@ -368,8 +368,9 @@ def test_a_turn_with_nothing_left_shows_no_left_for_you_list_and_says_so_in_the_
 def test_stop_during_the_turn_ends_it_and_offers_finish_in_browser_again(apply_ready, owner_page, live_server, canned_agent):
     section = reach_the_turn(owner_page, canned_agent, wait=60.0)
     stop = section.locator(".apply-turn").get_by_role("button", name="Stop")
-    stop.click()
-    expect(stop).to_have_text("Stopping…")
+    # The busy label is set in the click handler itself, before its first await; read it in the same task as the click,
+    # because the canned run can end and replace the turn before a later look.
+    assert stop.evaluate("(button) => { button.click(); return button.textContent; }") == "Stopping…"
     result = section.locator(".apply-result")
     expect(result.locator(".apply-result-title")).to_contain_text(NOT_SUBMITTED, timeout=30_000)
     expect(section.locator(".apply-turn")).to_have_count(0)
