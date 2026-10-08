@@ -122,13 +122,19 @@ export function settle() {
 // options.slowContext: application ids whose apply-context response waits for release().
 // options.withDocument: every context offers one approved document and the scan finds a file field;
 //   the next attach request to the page waits for releaseAttach() after holdNextAttach().
-export async function loadSidepanel({ applications, slowContext = [], withDocument = false }) {
+// options.unpaired: the browser holds no device credential yet, so the panel opens on the pairing form.
+// options.holdStartupStorage: the panel's first chrome.storage read (its startup render) waits for releaseStartupStorage().
+export async function loadSidepanel({ applications = [], slowContext = [], withDocument = false, unpaired = false, holdStartupStorage = false }) {
   const digests = makeDigestCrypto();
   const emptySha256 = createHash("sha256").update(Buffer.alloc(0)).digest("hex");
   let holdAttach = false;
   let releaseAttach = null;
   const elements = pageElements();
-  const store = { serverOrigin: "http://127.0.0.1:8765", deviceToken: "device-token", deviceId: "device-1", pendingMetadata: [], unsupportedCounts: {} };
+  const store = unpaired
+    ? { pendingMetadata: [], unsupportedCounts: {} }
+    : { serverOrigin: "http://127.0.0.1:8765", deviceToken: "device-token", deviceId: "device-1", pendingMetadata: [], unsupportedCounts: {} };
+  let holdStorage = holdStartupStorage;
+  let releaseStorage = null;
   const requests = [];
   const held = new Map();
   // The tab the panel is looking at; navigate() moves it and tells the panel, as Chrome would,
@@ -144,7 +150,7 @@ export async function loadSidepanel({ applications, slowContext = [], withDocume
   const fetchStub = async (url, options = {}) => {
     const parsed = new URL(url);
     const method = options.method || "GET";
-    requests.push({ method, path: parsed.pathname, search: parsed.search, body: options.body ? JSON.parse(options.body) : undefined });
+    requests.push({ method, origin: parsed.origin, path: parsed.pathname, search: parsed.search, body: options.body ? JSON.parse(options.body) : undefined });
     if (parsed.pathname === "/api/v1/extension/application-candidates") {
       if (holdCandidates) {
         holdCandidates = false;
@@ -169,6 +175,7 @@ export async function loadSidepanel({ applications, slowContext = [], withDocume
       return json(payload);
     }
     if (parsed.pathname.endsWith("/confirm-submitted")) return json({ inferred: false, stage: "applied" });
+    if (parsed.pathname === "/api/v1/extension/pairings/redeem") return json({ device_token: "paired-token", device_id: "paired-device" });
     if (method === "PUT" && parsed.pathname.startsWith("/api/v1/extension/sessions/") && sessionWriteStatus !== 200) {
       return { ok: false, status: sessionWriteStatus, json: async () => ({}) };
     }
@@ -177,7 +184,13 @@ export async function loadSidepanel({ applications, slowContext = [], withDocume
   const chromeStub = {
     storage: {
       local: {
-        get: async (defaults = {}) => ({ ...defaults, ...store }),
+        get: async (defaults = {}) => {
+          if (holdStorage) {
+            holdStorage = false;
+            await new Promise((resolve) => { releaseStorage = resolve; });
+          }
+          return { ...defaults, ...store };
+        },
         set: async (values) => { Object.assign(store, values); },
         remove: async (keys) => { for (const key of keys) delete store[key]; },
       },
@@ -236,6 +249,16 @@ export async function loadSidepanel({ applications, slowContext = [], withDocume
     // chrome.storage.local as the panel left it (pendingMetadata is the retry queue).
     store,
     setSessionWriteStatus: (status) => { sessionWriteStatus = status; },
+    releaseStartupStorage: () => releaseStorage?.(),
+    // What a student does in the pairing form: type into a field (an input event fires), or press Pair.
+    typeInto(id, value) {
+      $(id).value = value;
+      $(id).dispatch("input");
+    },
+    async pair() {
+      $("pair").click();
+      await settle();
+    },
     release: (id) => held.get(id)?.(),
     holdNextDigest: () => digests.holdNextDigest(),
     releaseDigest: () => digests.releaseDigest(),
