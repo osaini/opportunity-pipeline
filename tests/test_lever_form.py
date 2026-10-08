@@ -629,7 +629,7 @@ class LabelMemoParityTests(unittest.TestCase):
                 self.assertEqual(before, after)
 
     def test_pages_where_controls_share_a_label_read_the_same(self):
-        words = "a long sentence of words " * 40
+        words = "a long sentence of words " * 18  # under MAX_LABEL_CHARS: a longer label is cut on purpose, which the tests of that limit cover
         pages = (
             page(f'<label for="shared">{words}</label>', *(f'<input id="shared" name="extra{i}">' for i in range(30))),
             page(f"<label>{words}" + "".join(f'<input type="checkbox" name="{name_of(0)}" value="v{i}">' for i in range(30)) + "</label>"),
@@ -646,13 +646,13 @@ class LabelMemoParityTests(unittest.TestCase):
 class MalformedMarkupTests(unittest.TestCase):
     """Deep or unbalanced markup costs time in proportion to its size, never in proportion to its size squared."""
 
-    def timed(self, *body):
+    def timed(self, *body, bound=3):
         text = page(*body)
         self.assertLess(len(text), 400_000)
         started = time.monotonic()
         form = parse_lever_form(text)
         elapsed = time.monotonic() - started
-        self.assertLess(elapsed, 3, "a page of this size was read in %.1f seconds" % elapsed)
+        self.assertLess(elapsed, bound, "a page of this size was read in %.1f seconds" % elapsed)
         return form
 
     def test_end_tags_that_match_nothing_under_deep_open_tags_are_cheap(self):
@@ -672,9 +672,50 @@ class MalformedMarkupTests(unittest.TestCase):
     def test_one_very_long_label_shared_by_thousands_of_controls_is_read_in_one_pass(self):
         # One label[for] names an id that many controls repeat, and the label's text is long: the words are worked out once, not once per control.
         words = "a long sentence of words " * 6000
-        form = self.timed(f'<label for="shared">{words}</label>', *(f'<input id="shared" name="extra{i}">' for i in range(6000)))
+        expected = " ".join(words.split())
+        form = self.timed(f'<label for="shared">{words}</label>', *(f'<input id="shared" name="extra{i}">' for i in range(6000)), bound=0.5)
         self.assertEqual(len(form.unknown), 6000)
-        self.assertTrue(all(item.label == " ".join(words.split()) for item in form.unknown))
+        self.assertTrue(all(expected.startswith(item.label.rstrip("…")) and len(item.label) <= lever_form.MAX_SHOWN_LABEL_CHARS + 1 for item in form.unknown))
+
+    def test_a_label_longer_than_the_app_reads_is_cut_and_the_control_is_left_to_the_student(self):
+        words = "a long sentence of words " * 400
+        limit = lever_form.MAX_LABEL_CHARS
+        self.assertGreater(len(words), limit)
+        plain = f'<input id="shared" name="extra">'
+        form = parse_lever_form(page(f'<label for="shared">{words}</label>', plain, text_control(0)))
+        self.assertEqual(len(form.unknown), 1)
+        self.assertLessEqual(len(form.unknown[0].label), lever_form.MAX_SHOWN_LABEL_CHARS + 1)
+        short = parse_lever_form(page('<label for="shared">Favourite colour</label>', plain))
+        self.assertEqual(short.unknown[0].label, "Favourite colour")
+        # A fixed field whose label is too long is no longer a field the plan fills: it is an unreadable one, with the reason.
+        grouped = parse_lever_form(page(f'<label for="name">{words}</label><input id="name" name="name">'))
+        self.assertEqual(grouped.fields, ())
+        self.assertEqual(len(grouped.unreadable), 1)
+        self.assertEqual(grouped.unreadable[0].name, "name")
+        self.assertIn("too long", grouped.unreadable[0].reason)
+        self.assertLessEqual(len(grouped.unreadable[0].label), lever_form.MAX_SHOWN_LABEL_CHARS + 1)
+
+    def test_the_whole_check_of_a_page_with_one_long_label_shared_by_many_controls_is_cheap(self):
+        # The cost of the plan is the controls times the label each carries, so the parse alone is not the measure.
+        from opportunity_app.apply import ats as apply_ats
+        from opportunity_app.apply.policy import build_plan
+        from helpers_apply import sources
+        words = "a long sentence of words " * 1500
+        radios = "".join(f'<input type="radio" name="eeo[race]" value="v{i}">' for i in range(300))
+        pages = {
+            "controls": page(f'<label for="shared">{words}</label>', *(f'<input id="shared" name="extra{i}">' for i in range(400))),
+            "options": page(f"<label>{words}{radios}</label>"),
+        }
+        for kind, text in pages.items():
+            with self.subTest(page=kind):
+                started = time.monotonic()
+                form = parse_lever_form(text)
+                schema = apply_ats.lever_parse_schema({"lever_form": form})
+                plan = build_plan(schema, None, sources(), "Fixture Co", "handoff", ats_name="Lever", ats="lever")
+                elapsed = time.monotonic() - started
+                self.assertGreater(len(plan.fields), 0)
+                self.assertLess(elapsed, 1.0, "the check of a page of %d bytes took %.1f seconds" % (len(text), elapsed))
+                self.assertLess(len(json.dumps([item.question for item in plan.fields])), 150_000)
 
     def test_deeply_nested_label_and_answer_markup_is_cheap(self):
         form = self.timed('<div class="application-label">' + "<i>" * 20000 + "</u>" * 20000, '<span class="application-answer-alternative">' + "<i>" * 20000 + "</u>" * 20000)

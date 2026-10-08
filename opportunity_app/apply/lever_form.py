@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html.parser import HTMLParser
 from typing import Any, Mapping
 
@@ -41,6 +41,8 @@ MAX_TEMPLATE_FIELDS = 200
 MAX_FIELD_OPTIONS = 20_000
 MAX_NESTED_FIELDSETS = 100  # disabled fieldsets open inside one another
 MAX_OPEN_LABELS = 50  # <label> elements open inside one another (real pages have none, HTML allows none)
+MAX_LABEL_CHARS = 500  # the label the page gives a control, or one of its options: longer is left to the student (one label can be shared by thousands of controls)
+MAX_SHOWN_LABEL_CHARS = 200  # how much of a label too long to read is kept to name the question
 CARD_TYPES = ("text", "textarea", "dropdown", "multiple-choice", "multiple-select", "file-upload")
 
 # Lever's field type -> the type the same control has in Greenhouse's listing, which ``policy.control_of`` reads.
@@ -183,6 +185,16 @@ class _Open:
         return gone
 
 
+def _bounded(text: str) -> str:
+    """``text`` as it is kept: whole up to ``MAX_LABEL_CHARS``, else its first ``MAX_LABEL_CHARS + 1`` characters (so it still reads as too long).
+
+    One label can be shared by thousands of controls, and everything downstream (the plan, its hash, the check's answer) pays for the
+    label once per control. Keeping a label at this size bounds that, and ``_left_to_the_student`` turns what is cut into a question
+    the app does not read.
+    """
+    return text if len(text) <= MAX_LABEL_CHARS else text[:MAX_LABEL_CHARS + 1]
+
+
 class _LabelEl:
     """One ``<label>`` element: where its text starts and ends in the page's shared run of text chunks, and its ``for``."""
 
@@ -204,7 +216,7 @@ class _LabelEl:
         shared run of chunks no longer grows.
         """
         if self.__collapsed is None:
-            self.__collapsed = _collapse("".join(self.chunks[self.start:self.end]))
+            self.__collapsed = _bounded(_collapse("".join(self.chunks[self.start:self.end])))
         return self.__collapsed
 
 
@@ -231,7 +243,7 @@ class _Control:
         self.outside = False  # written outside the form element and joined to it by its ``form`` attribute
 
     def option_label(self) -> str:
-        found = _collapse("".join(self.span)) if self.span is not None else ""
+        found = _bounded(_collapse("".join(self.span))) if self.span is not None else ""
         if not found and self.label_el is not None:
             found = self.label_el.text()
         return found or _collapse(self.value or "")
@@ -370,7 +382,7 @@ class _Scanner(HTMLParser):
             self.__label_div.close(tag)
             if not self.__label_div:
                 self.__label_div = None
-                self.__label_text, self.__label_starred = _collapse("".join(self.__label_buf)), self.__starred_now
+                self.__label_text, self.__label_starred = _bounded(_collapse("".join(self.__label_buf))), self.__starred_now
         if self.__span is not None:
             self.__span.close(tag)
             if not self.__span:
@@ -652,6 +664,25 @@ def _unknown(name: str, controls: list[_Control]) -> UnknownControl:
     )
 
 
+def _shown(label: str) -> str:
+    return label if len(label) <= MAX_SHOWN_LABEL_CHARS else label[:MAX_SHOWN_LABEL_CHARS].rstrip() + "…"
+
+
+def _left_to_the_student(item: SchemaField | UnreadableField | UnknownControl) -> SchemaField | UnreadableField | UnknownControl:
+    """``item`` with a label too long to read made short: a field that has one becomes an unreadable question, with the reason in words.
+
+    A card or survey question is exempt: its label and options come from the page's description (limited as a whole by ``MAX_TEMPLATE_BYTES``),
+    each its own text, not from a label that many controls share.
+    """
+    if isinstance(item, SchemaField):
+        if item.section == "custom" or (len(item.label) <= MAX_LABEL_CHARS and all(len(option) <= MAX_LABEL_CHARS for option in item.options)):
+            return item
+        return UnreadableField(item.name, _shown(item.label), item.required, "the label of this question or of one of its answers is too long for the app to read")
+    if len(item.label) <= MAX_LABEL_CHARS:
+        return item
+    return replace(item, label=_shown(item.label))
+
+
 def parse_lever_form(html: str) -> LeverForm | None:
     """The form a Lever application page carries, or None when the page has no ``form#application-form`` (5.4 item 1).
 
@@ -732,6 +763,7 @@ def parse_lever_form(html: str) -> LeverForm | None:
                 name, _first_label(controls) or name, any(c.required for c in controls), "the page has a control that its description does not list",
             )))
 
+    entries = [(seq, sub, _left_to_the_student(item)) for seq, sub, item in entries]
     entries.sort(key=lambda entry: (entry[0], entry[1]))
     fields = tuple(item for _, _, item in entries if isinstance(item, SchemaField))
     unreadable = tuple(item for _, _, item in entries if isinstance(item, UnreadableField))
