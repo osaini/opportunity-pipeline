@@ -18,15 +18,24 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
+<<<<<<< HEAD
 | Apply for me | 0 | 3 | 5 | 8 |
 | Mail, Gmail and inboxes | 0 | 4 | 8 | 12 |
+=======
+| Apply for me | 0 | 4 | 5 | 9 |
+| Mail, Gmail and inboxes | 0 | 4 | 9 | 13 |
+>>>>>>> osaini/phase5-apply-handoff-hardening
 | Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
 | Web API, auth and storage | 0 | 4 | 1 | 5 |
-| Scoring, scheduling and configuration | 1 | 2 | 6 | 9 |
+| Scoring, scheduling and configuration | 1 | 2 | 8 | 11 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
+<<<<<<< HEAD
 | **Total** | **1** | **28** | **30** | **59** |
+=======
+| **Total** | **1** | **29** | **33** | **63** |
+>>>>>>> osaini/phase5-apply-handoff-hardening
 
 ## Start here: the high-severity entries
 
@@ -112,7 +121,11 @@ The entry flagged for an owner decision is
 
 ## Apply for me
 
+<<<<<<< HEAD
 The first three were left open by PR #54 (the fail-closed net) and recorded here on 2026-10-03; each was narrowed on 2026-10-08 (the lists were widened, a page's headings now count, and the chain follows every follow-up-shaped child). Apply for me never carries an answer across companies, so it can at worst affect one company's own saved answer, and the student still presses Submit (D1 B). The next six were found while building the rehearsal engine (M5a), and the last four while building Finish in browser (M5b part 2); none was fixed there.
+=======
+The first three were left open by PR #54 (the fail-closed net) and recorded here on 2026-10-03. Apply for me never carries an answer across companies, so each of those can at worst affect one company's own saved answer, and the student still presses Submit (D1 B). The next six were found while building the rehearsal engine (M5a), and the next four while building Finish in browser (M5b part 2); none was fixed there. The last two were found on 2026-10-04 and 2026-10-08.
+>>>>>>> osaini/phase5-apply-handoff-hardening
 
 ### Agreement-shaped choices and signatures in wordings no list has still fill from a same-company saved answer
 - **Severity:** medium (PR #54 review; narrowed on 2026-10-08)
@@ -170,6 +183,13 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** A company that embeds Greenhouse on its own domain makes `job-boards.greenhouse.io/<board>/jobs/<id>` redirect to that domain. The run navigates to the canonical URL, sees the redirect leave the Greenhouse hosts, and stops with "This posting sends applicants to {host}". Greenhouse's embed address (`job-boards.greenhouse.io/embed/job_app?for=<board>&token=<id>`) usually reaches the real form, is on `BOARD_HOSTS`, and the parser already accepts it as input, but nothing builds it as a fallback. Whether the form it opens can be filled under the app's browser policy has not been tried.
 - **Suggested fix:** When the canonical URL redirects off the Greenhouse hosts, try the embed address once, and stop as now if that redirects off them too. Check on a rehearsal first that the embed form's file input is reachable.
 - **Regression suite:** tests/test_apply_checks.py (an off-site redirect on the canonical URL falls back to the embed address once)
+
+### An interview the student never moved on keeps asking before every application to that company
+- **Severity:** low (found 2026-10-08, review of PR #81)
+- **Where:** `opportunity_app/apply/runs.py` `_active_elsewhere()` (reads `applications.stage IN ('interview', 'offer')` only), called from `duplicate_block()` (`ASK_ACTIVE_AT_COMPANY`)
+- **What happens:** The check reads the stage alone. An application left at "interview" after the process quietly ended (no rejection email, a stage the student never updated) counts as an interview in progress indefinitely, so every later Apply for me run at that company stops to ask "You have an interview in progress at ...", and unattended mode can never pass it. Nothing is sent and the student can tick past it, so the cost is a repeated question, not a wrong application.
+- **Suggested fix:** Count an interview only while its `updated_at` is recent (for example 60 days), and say "an interview last updated on {date}" so the student can see why it was asked; or offer "this ended" beside the tick, which moves the old application out of the interview stage.
+- **Regression suite:** tests/test_apply_active_interview.py (an interview last updated 90 days ago does not ask, or asks with its date)
 
 ## Mail, Gmail and inboxes
 
@@ -439,6 +459,20 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** Each probe calls `request_json(..., retries=0)` and catches `RuntimeError`, so an HTTP 429, a 403 or a body that fails to parse returns None, the same as a board that does not exist. A live board that was probed during a throttle is reported unresolved. Discovery only suggests boards and removes nothing, so the cost is a missed suggestion.
 - **Suggested fix:** Return a third answer for a throttle or a parse failure, and have the caller retry once after a pause or report "could not check".
 - **Regression suite:** tests/test_boards.py (a 429 from a probe is reported as unchecked, not as no board)
+
+### The sponsorship reader still misreads some wording, both ways
+- **Severity:** low (found 2026-10-08, third review of the posting-language fixes; every version of the reader, main included, gets these wrong)
+- **Where:** `pipeline_core/scoring.py` `sponsorship_closure()`, `_NO_SPONSORSHIP_RE`, `_also_sponsors_a_visa()` (`_ROLE_KIND_RE`)
+- **What happens:** three kinds of wording are read wrongly. (1) Welcoming CPT or OPT wording is read as closed: in "Candidates authorized to work in the US, including F-1 students on CPT who can intern without visa sponsorship, are welcome; we sponsor H-1B after graduation" the role-kind check matches the verb "intern", so the "we sponsor H-1B" clause does not soften it and a student who needs sponsorship loses 35 points. (2) A refusal limited to green cards ("we do not sponsor green cards") is read as closed for an internship, which needs no green card. (3) Some refusals are not read at all, so no flag and no penalty: "Must not require sponsorship now or in the future", "This role is not eligible for visa sponsorship", "We are not sponsoring visas for this role", and "without the need for employer sponsorship" (`employer` is not in `_VISA_KIND`).
+- **Suggested fix:** Match only role nouns in `_ROLE_KIND_RE` (interns, internship, co-op, this role or position), not the verb "intern" after "can" or "to". Treat a refusal that names only green cards or permanent residence as a FLAG without the penalty. Add "not require sponsorship", "not eligible for (visa) sponsorship", "not sponsoring" and `employer` to the refusal patterns, each with a test that the welcoming forms ("no sponsorship required to apply") stay open.
+- **Regression suite:** tests/test_scoring_posting_language.py (each sentence above, with `requires_sponsorship` true)
+
+### The unpaid reader is a wording heuristic and misreads some sentences
+- **Severity:** low (found 2026-10-08, fifth review of the posting-language fixes; it applies only to a student whose profile sets `compensation_preferences.paid_only` true)
+- **Where:** `pipeline_core/scoring.py` `_calls_the_role_unpaid()`, `_UNPAID_ROLE_RE`, `_asks_about_the_past()`, `_THIS_ROLE_BEFORE_RE`
+- **What happens:** the reader decides from the words around "unpaid <role>" whether the posting calls this role unpaid, and some sentences fall on the wrong side. "Unpaid community service opportunity: interns volunteer one Friday a month." costs 35 although the role is not unpaid. "Experience such as an unpaid internship or volunteer work is a plus." costs 35 for a sentence about the candidate's past (the reader before PR #81 did the same). "Do not miss this unpaid internship opportunity" is not read as unpaid, because "not" within three words reads as a negation. Each rule added for one wording moves the line for others, so more cases of both kinds are likely.
+- **Suggested fix:** Give the 35 points only for an unambiguous statement about this role ("this is an unpaid internship", "the internship is unpaid", "this role carries no compensation"), and turn every other "unpaid <role>" match into a FLAG ("mentions an unpaid role—verify pay") with no change to the score, so a misread costs a look rather than a rank.
+- **Regression suite:** tests/test_scoring_pay_preferences.py (the three sentences above: the first two flagged without the penalty, the third flagged)
 
 ## Packaging and docs
 
