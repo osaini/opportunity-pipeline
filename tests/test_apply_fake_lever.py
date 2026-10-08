@@ -28,6 +28,7 @@ from apply_fake_ats import (
     LEVER_CLOUDFLARE_BEACON_PATH,
     LEVER_EU_APPLY_URL,
     LEVER_HCAPTCHA_HOSTS,
+    LEVER_NOISE_HOSTS,
     LEVER_PARSE_MODES,
     LEVER_SCENARIOS,
     LEVER_THANKS_PATH,
@@ -94,6 +95,21 @@ class FakeLeverReplyTests(unittest.TestCase):
                 raw = lever_fixture_text(name)
                 self.assertEqual(parse_lever_form(served), parse_lever_form(raw))
                 self.assertIsNotNone(parse_lever_form(raw), name)
+
+    def test_the_page_carries_the_tag_manager_script_and_a_bugsnag_beacon_unless_switched_off(self):
+        fake = FakeLever()
+        body = self.get(fake, LEVER_APPLY_URL).body
+        self.assertIn('src="https://www.googletagmanager.com/gtm.js?id=GTM-FAKE"', body)
+        self.assertIn("https://notify.bugsnag.com/", body)
+        fake.third_party_noise = False
+        quiet = self.get(fake, LEVER_APPLY_URL).body
+        self.assertNotIn("googletagmanager.com", quiet)
+        self.assertNotIn("bugsnag.com", quiet)
+        self.assertEqual(set(LEVER_NOISE_HOSTS), {"www.googletagmanager.com", "notify.bugsnag.com"})
+        beacon = fake.answer("POST", "https://notify.bugsnag.com/", b"{}")
+        self.assertEqual(beacon.status, 200)
+        self.assertEqual(fake.non_get_requests(), [fake.requests[-1]])
+        self.assertEqual(fake.non_get_requests(noise=False), [])
 
     def test_the_banner_and_the_extra_scripts_are_switches(self):
         fake = FakeLever()
@@ -352,7 +368,7 @@ class ResumeReaderBrowserTests(FakeLeverBrowserCase):
         resume = post.part("resume")
         self.assertEqual((resume.filename, resume.sha256, resume.content_type), (SAFE_RESUME_NAME, hashlib.sha256(RESUME_BYTES).hexdigest(), "application/pdf"))
         self.assertEqual((post.part("accountId").text, post.status, post.host, post.path), (account, 200, "jobs.lever.co", "/parseResume"))
-        self.assertEqual(fake.non_get_requests(), [post])
+        self.assertEqual(fake.non_get_requests(noise=False), [post])
 
     def test_the_parser_fills_the_github_link_on_a_board_that_names_it_that_way(self):
         fake, page = self.open(FakeLever(page="cards_files_consent.html"))
@@ -775,6 +791,16 @@ class PageBrowserTests(FakeLeverBrowserCase):
     def test_the_first_response_sets_the_cloudflare_cookie(self):
         fake, page = self.open()
         self.assertIn("__cf_bm", [cookie["name"] for cookie in page.context.cookies()])
+
+    def test_the_page_makes_the_tag_manager_and_bugsnag_requests_a_live_page_makes(self):
+        fake, page = self.open()
+        self.assertTrue(self.wait_until(page, lambda: fake.requests_to(host="notify.bugsnag.com") and fake.requests_to(host="www.googletagmanager.com")))
+        (tag,) = fake.requests_to(host="www.googletagmanager.com")
+        (beacon,) = fake.requests_to(host="notify.bugsnag.com")
+        self.assertEqual((tag.method, tag.path, tag.status, tag.resource_type), ("GET", "/gtm.js", 200, "script"))
+        self.assertEqual((beacon.method, beacon.status), ("POST", 200))
+        self.assertEqual(fake.non_get_requests(), [beacon])
+        self.assertEqual(fake.non_get_requests(noise=False), [])
 
     def test_the_cloudflare_script_loads_on_the_page_and_posts_a_beacon_when_asked(self):
         fake = FakeLever()

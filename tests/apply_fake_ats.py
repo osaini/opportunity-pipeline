@@ -1006,6 +1006,8 @@ def kill_if_same_process(pid: int, started: str | None) -> bool:
 #     js.hcaptcha.com                    /1/api.js (a stand-in hCaptcha script, tests/fixtures/apply/lever/hcaptcha_api.js)
 #     api.hcaptcha.com                   /checksiteconfig (whether the next execute() shows a challenge: the switch ``challenge``)
 #     newassets.hcaptcha.com             /captcha/v1/fake/hcaptcha.html (the challenge frame and the invisible checkbox frame)
+#     www.googletagmanager.com           GET /gtm.js and notify.bugsnag.com POST (a fictional error report): the noise every live page makes,
+#                                        on by default (``third_party_noise``); answered, and recorded like any request
 #
 # The fixture pages carry no scripts (their inline scripts were removed), so the fake adds what a Lever page does by script, written
 # from the OBSERVED behaviour in spec section 3 and not copied from Lever: the résumé reader (parseResume.js), the page's own wiring
@@ -1033,6 +1035,7 @@ LEVER_HCAPTCHA_SCRIPT_HOST = "js.hcaptcha.com"
 LEVER_HCAPTCHA_API_HOST = "api.hcaptcha.com"
 LEVER_HCAPTCHA_FRAME_HOST = "newassets.hcaptcha.com"
 LEVER_HCAPTCHA_HOSTS = (LEVER_HCAPTCHA_SCRIPT_HOST, LEVER_HCAPTCHA_API_HOST, LEVER_HCAPTCHA_FRAME_HOST)
+LEVER_NOISE_HOSTS = ("www.googletagmanager.com", "notify.bugsnag.com")   # the analytics and error-report hosts every Lever page calls (spec 3 item 14)
 LEVER_APPLY_PATH = f"/{LEVER_SITE}/{LEVER_JOB_ID}/apply"
 LEVER_THANKS_PATH = f"/{LEVER_SITE}/{LEVER_JOB_ID}/thanks"
 LEVER_APPLY_URL = f"{LEVER_URL}/apply"
@@ -1153,6 +1156,7 @@ class FakeLever:
         self.interstitial_s = 0.0                     # the first GET of the form starts this many seconds of the Cloudflare interstitial
         self.cloudflare_beacon = False                # Cloudflare's script posts a beacon under /cdn-cgi/ when it runs
         self.cookie_banner = True
+        self.third_party_noise = True                 # the page loads Google Tag Manager's script and posts an error report to Bugsnag, as a live one does
         self.inject: list[str] = []                   # extra page scripts (JS source) added to every form page: a telemetry beacon, a WebSocket
         # Read by the page at load:
         self.parse_delay_s = 0.15                     # how long the page shows "working" before it applies a /parseResume reply (the reply itself comes at once)
@@ -1184,8 +1188,10 @@ class FakeLever:
     def search_gets(self) -> list[LeverSeen]:
         return [seen for seen in self.requests if seen.method == "GET" and seen.host in FAKE_LEVER_HOSTS and seen.path == LEVER_SEARCH_PATH]
 
-    def non_get_requests(self) -> list[LeverSeen]:
-        return [seen for seen in self.requests if seen.method not in ("GET", "HEAD", "OPTIONS")]
+    def non_get_requests(self, *, noise: bool = True) -> list[LeverSeen]:
+        """Every request that is not a GET, HEAD or OPTIONS. ``noise=False`` leaves out the Bugsnag error report (``LEVER_NOISE_HOSTS``) that a page makes by itself."""
+        return [seen for seen in self.requests
+                if seen.method not in ("GET", "HEAD", "OPTIONS") and (noise or seen.host not in LEVER_NOISE_HOSTS)]
 
     @staticmethod
     def clicks(page: Any) -> dict[str, int]:
@@ -1303,6 +1309,8 @@ class FakeLever:
             if method == "GET" and path == "/captcha/v1/fake/hcaptcha.html":
                 return Reply(200, lever_fixture_text("hcaptcha_frame.html"))
             return Reply(404, "")
+        if host == "www.googletagmanager.com" and method == "GET":
+            return Reply(200, "/* a stand-in for Google Tag Manager */", "application/javascript", self._cors)
         if host not in FAKE_LEVER_HOSTS:
             return Reply(200, "{}" if method != "GET" else "", "application/json" if method != "GET" else "text/plain", self._cors)
         if method == "GET":
@@ -1382,6 +1390,11 @@ class FakeLever:
             "challengeDuringFill": list(self.challenge_during_fill) if self.challenge_during_fill else None,
         }
         extra = "".join(f"<script>{source}</script>" for source in self.inject)
+        noise = (
+            '<script src="https://www.googletagmanager.com/gtm.js?id=GTM-FAKE" async></script>'
+            '<script>try { fetch("https://notify.bugsnag.com/", {method: "POST", body: JSON.stringify({apiKey: "fake", events: [{exceptions: [{message: "a fictional error report"}]}]})})'
+            '.catch(function () {}); } catch (error) {}</script>'
+        ) if self.third_party_noise else ""
         banner = (
             '<div class="cc-window cc-banner cc-type-opt-out" role="dialog" aria-label="cookieconsent" style="position:fixed;top:8px;right:8px;width:260px;'
             'z-index:1000;background:#222;color:#fff;padding:8px"><span class="cc-message">This site uses cookies (a fictional notice).</span>'
@@ -1398,7 +1411,7 @@ class FakeLever:
             f"{style}{banner}<script>window.__fakeLever = {json.dumps(config)};</script>"
             + "".join(f'<script src="{path}" defer></script>' for path in LEVER_PAGE_SCRIPTS)
             + f'<script src="https://{LEVER_HCAPTCHA_SCRIPT_HOST}/1/api.js?onload=hcaptchaOnLoad&render=explicit" async defer></script>'
-            + f'<script src="{LEVER_CLOUDFLARE_SCRIPT_PATH}" defer></script>{extra}'
+            + f'<script src="{LEVER_CLOUDFLARE_SCRIPT_PATH}" defer></script>{noise}{extra}'
         )
 
     # --- the reader and the submit -----------------------------------------------------------
