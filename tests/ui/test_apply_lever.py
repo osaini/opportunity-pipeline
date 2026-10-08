@@ -143,7 +143,9 @@ def test_the_settings_keep_levers_exact_location_apart_and_say_what_the_two_swit
     expect(block.locator('ul[data-ats="greenhouse"]')).not_to_contain_text("Austin")
     expect(block.locator(".apply-lever-settings")).to_contain_text("Apply for me on Lever is on.")
     expect(block.locator(".apply-lever-settings")).to_contain_text(
-        "Let the app attach my résumé on Lever is off. Lever reads a résumé as soon as it is attached, so it is sent to Lever before you press Submit."
+        "Let the app attach my résumé on Lever is off. The app cannot attach it on Lever yet, because Finish in browser is not available for Lever: "
+        "you attach it yourself on Lever's application page. Once it can, Lever reads a résumé as soon as it is attached, "
+        "so with this on it is sent to Lever before you press Submit."
     )
     block.get_by_role("button", name="Remove the saved Lever Location option").click()
     expect(block.locator('ul[data-ats="lever"] li')).to_have_count(0)
@@ -167,6 +169,56 @@ def test_each_list_in_the_settings_says_saved_under_its_own_form(lever_ready, ow
     expect(status("lever")).to_have_text("Type the option first.")
     expect(status("greenhouse")).to_have_text("Type the option first.")
     assert block.locator(".apply-settings > .form-status").count() == 2, "one status per list, never one shared"
+
+
+def _status(block, ats):
+    return block.locator(f'form[data-ats="{ats}"] + .form-status')
+
+
+def test_a_saved_or_removed_option_says_so_under_its_own_form_after_the_block_repaints(lever_ready, owner_page):
+    owner_page.click("#profile-nav")
+    wait_for_results(owner_page)
+    block = owner_page.locator(".automation-apply-agent")
+    lever = block.locator('form[data-ats="lever"]')
+    lever.get_by_label("Exact option").fill("Austin, Texas, United States")
+    lever.get_by_role("button", name="Save this option").click()
+    expect(block.locator('ul[data-ats="lever"]')).to_contain_text("Location: Austin")
+    # Saving repaints the whole block; the message must be in the element that is on the page afterwards.
+    expect(_status(block, "lever")).to_have_text("Saved.")
+    expect(_status(block, "greenhouse")).to_have_text("")
+    expect(_status(block, "lever")).to_have_attribute("role", "status")
+    block.get_by_role("button", name="Remove the saved Lever Location option").click()
+    expect(block.locator('ul[data-ats="lever"] li')).to_have_count(0)
+    expect(_status(block, "lever")).to_have_text("Removed.")
+
+
+def test_a_saved_option_says_so_when_greenhouse_is_the_only_list(apply_ready, owner_page):
+    owner_page.click("#profile-nav")
+    wait_for_results(owner_page)
+    block = owner_page.locator(".automation-apply-agent")
+    expect(block.locator("form.apply-answer-form")).to_have_count(1)
+    form = block.locator("form.apply-answer-form")
+    form.get_by_label("List").select_option("school")
+    form.get_by_label("Exact option").fill("The University of Example at City")
+    form.get_by_role("button", name="Save this option").click()
+    expect(block.locator(".apply-labels")).to_contain_text("The University of Example at City")
+    expect(block.locator(".apply-settings > .form-status")).to_have_text("Saved.")
+    block.get_by_role("button", name="Remove the saved School option").click()
+    expect(block.locator(".apply-labels li")).to_have_count(0)
+    expect(block.locator(".apply-settings > .form-status")).to_have_text("Removed.")
+
+
+def test_the_resume_line_says_the_switch_does_nothing_yet_whichever_way_it_is_set(lever_ready, owner_page):
+    owner_page.click("#profile-nav")
+    wait_for_results(owner_page)
+    block = owner_page.locator(".automation-apply-agent")
+    resume = owner_page.locator("#automation-mode-apply_lever_resume_upload")
+    resume.check()
+    line = block.locator(".apply-lever-settings li").nth(1)
+    expect(line).to_contain_text("is on.")
+    expect(line).to_contain_text("The app cannot attach it on Lever yet")
+    expect(line).to_contain_text("you attach it yourself on Lever's application page")
+    expect(block).not_to_contain_text("Apply agent settings")
 
 
 def test_the_lever_lines_in_the_settings_follow_their_switches_without_a_reload(lever_ready, owner_page):

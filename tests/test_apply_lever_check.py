@@ -6,6 +6,7 @@ Covers the check for a Lever role (6.0), the two switches' effect on it, and tha
 The plan's Lever rows are in test_apply_lever_plan.py, the refusal of every mode but Finish in browser in test_apply_lever_modes.py.
 """
 
+import dataclasses
 import json
 import sys
 import unittest
@@ -17,7 +18,7 @@ import realdata_guard
 
 realdata_guard.install()
 
-from opportunity_app.apply import preflight as apply_preflight, runs as apply_runs, sensitive as apply_sensitive
+from opportunity_app.apply import ats as apply_ats, preflight as apply_preflight, runs as apply_runs, sensitive as apply_sensitive
 
 from apply_fake_ats import FakeLeverPageClient, LEVER_COMPANY, LEVER_JOB_ID, LEVER_ROLE_ID, LEVER_SITE, LEVER_TITLE, LEVER_URL, seed_lever_role
 from helpers_apply import USER, setUpModule, tearDownModule  # noqa: F401
@@ -79,8 +80,24 @@ class LeverCheckTests(PolicyCase):
         self.switch("apply_lever_resume_upload", "on")
         notes = self.lever_check()["notes"]
         self.assertIn("sent to Lever before you press Submit", notes[0])
+        # There is no window to attach it in yet, so the note cannot say the app does it: the student still attaches it on Lever's page.
+        self.assertIn("you attach it yourself on Lever's application page", notes[0])
+        self.assertNotIn("the app attaches it itself", notes[0])
+        self.assertIn("cannot do that on Lever yet", notes[0])
+        self.assertIn("Apply for me settings", notes[0])
+        self.assertNotIn("Apply agent settings", notes[0])
         field = next(item for item in self.lever_check()["fields"] if item["key"] == "resume")
         self.assertEqual(field["source"], "Your confirmed résumé")
+
+    def test_once_lever_has_a_window_the_resume_note_says_the_app_attaches_it(self):
+        # LV4 builds Lever's driver and flips one flag (adapter_built); the note then goes back to the app doing it.
+        built = dataclasses.replace(apply_ats.LEVER, adapter_built=True)
+        on = apply_preflight.lever_resume_note(built, True)
+        self.assertIn("the app attaches it itself", on)
+        self.assertIn("Apply for me settings", on)
+        self.assertNotIn("Apply agent settings", on)
+        self.assertIn("in the window", apply_preflight.lever_resume_note(built, False))
+        self.assertIn("on Lever's application page", apply_preflight.lever_resume_note(apply_ats.LEVER, False))
 
     def test_with_the_lever_switch_off_the_answer_says_how_to_turn_it_on_and_asks_lever_nothing(self):
         self.switch("apply_agent_lever", "off")
