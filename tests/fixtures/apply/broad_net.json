@@ -1,5 +1,5 @@
 {
-  "_comment": "Vectors for the broad net (docs/phase5-apply-agent-spec.md 7.3, 'As built'). 'topics' is the sorted list of topics the net finds in the text (immigration, work_authorization, criminal, demographic, money, security, agreement, relative, and 'adult' for an 18-or-older wording), 'possibly_sensitive' is whether it finds any, and 'never_storable' whether it finds criminal, demographic, money or security: the topics no answer may be saved for or filled from the answer library. The net never says a question IS sensitive; the precise classifier still decides categories. apply_policy.net_topics, possibly_sensitive and never_storable and the engine's netTopics, possiblySensitive and neverStorable (apps/extension/apply-engine.js) must agree on every row. Node runs this in tests/extension/run_tests.mjs; the Python suites reuse this file. Rows added after review round 2 pin wordings the first lists missed (a guilty plea, a police caution, a person of color, income, CTC, TS/SCI, EAD, H-4, a blue card...). A few rows document deliberate over-reading ('Would you like to opt in to updates?', 'Are you interested in security engineering?'): over-blocking costs only some reuse, under-blocking is the bug. Rows added after review round 4 pin the wordings the second round of lists missed (legal matters, a restraining order, a suspended licence, litigation, law enforcement, an offender; a learning difference, a caregiver, children, caste, Aboriginal, Deaf, a first language; total comp, a fixed component, your ask, bankruptcy, a credit score; vetting, poly, NATO, access authorization) and the common prompts they must not catch (comp sci, a Docker registry, computer vision, a driver's licence).",
+  "_comment": "Vectors for the broad net (docs/phase5-apply-agent-spec.md 7.3, 'As built'). 'topics' is the sorted list of topics the net finds in the text (immigration, work_authorization, criminal, demographic, money, security, agreement, relative, 'personal' for a non-compete, and 'adult' for an 18-or-older wording), 'possibly_sensitive' is whether it finds any, and 'never_storable' whether it finds criminal, demographic, money, security or personal: the topics no answer may be saved for or filled from the answer library. The net never says a question IS sensitive; the precise classifier still decides categories. apply_policy.net_topics, possibly_sensitive and never_storable and the engine's netTopics, possiblySensitive and neverStorable (apps/extension/apply-engine.js) must agree on every row. Node runs this in tests/extension/run_tests.mjs; the Python suites reuse this file. Rows added after review round 2 pin wordings the first lists missed (a guilty plea, a police caution, a person of color, income, CTC, TS/SCI, EAD, H-4, a blue card...). A few rows document deliberate over-reading ('Would you like to opt in to updates?', 'Are you interested in security engineering?'): over-blocking costs only some reuse, under-blocking is the bug. Rows added after review round 4 pin the wordings the second round of lists missed (legal matters, a restraining order, a suspended licence, litigation, law enforcement, an offender; a learning difference, a caregiver, children, caste, Aboriginal, Deaf, a first language; total comp, a fixed component, your ask, bankruptcy, a credit score; vetting, poly, NATO, access authorization) and the common prompts they must not catch (comp sci, a Docker registry, computer vision, a driver's licence). Rows added with the fail-closed work on the net pin fresh wordings the lists missed (a lawsuit, a disciplinary action, a justice system, a driving record, a debarment; a first-generation student, dependents, heritage, a tribe, faith, a Pell grant; a desired base, a package, equity, financial expectations; an active Secret, ITAR spelled out, classified information, foreign contacts, a CAC card) and the standard profile fields (name, email, phone, links, resume) and common prompts that must not be caught (a software package, fraud detection, disciplines, a dependency conflict, good faith). 'sections' pins the headings that make every question under them never storable (section_never in Python, sectionNeverText in the engine).",
   "vectors": [
     {
       "text": "Why are you interested in this role?",
@@ -2035,6 +2035,677 @@
       "topics": [],
       "possibly_sensitive": false,
       "never_storable": false
+    },
+    {
+      "text": "Have you ever been found liable in a civil lawsuit?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Have you been involved in any legal disputes?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Have you ever been disciplined by a professional body?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you currently under investigation by any government agency?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Have you ever been sued?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Have you ever been cited for a traffic violation?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you have any outstanding judgments?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Have you ever been the defendant in a case?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you have a history of fraud?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Have you ever been debarred from government contracting?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Have you ever been the subject of disciplinary action?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Has your driving record been clean for the past 5 years?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Is there anything in your past that would affect a background screening?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Please disclose any history with the justice system",
+      "topics": [
+        "agreement",
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Have you ever been terminated from a job for misconduct?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Were you ever asked to resign?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "How do you identify",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you a first-generation college student?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you a parent or guardian?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you have any dependents?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you need any workplace adjustments?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Were you eligible for free or reduced lunch?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What is your heritage?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you a Pell grant recipient?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What is your tribal affiliation?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you consider yourself a person of faith?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you a single parent?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you identify as Asian?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Which of these groups do you belong to?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What's your desired base?",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What is your current package?",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What do you expect to earn per month?",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Rate expectations",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What are your financial expectations for this internship?",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What would be your minimum acceptable rate?",
+      "topics": [
+        "agreement",
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Total cash expectations",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What equity are you seeking?",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "How much equity do you want?",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you have an active Secret?",
+      "topics": [
+        "security"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you subject to the International Traffic in Arms Regulations?",
+      "topics": [
+        "security"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you eligible for access to classified information?",
+      "topics": [
+        "security"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Have you ever been granted an SCI?",
+      "topics": [
+        "security"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Any foreign contacts?",
+      "topics": [
+        "security"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you have a CAC card?",
+      "topics": [
+        "security"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Have you ever worked for a foreign government?",
+      "topics": [
+        "security"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you a citizen of a country of concern?",
+      "topics": [
+        "immigration",
+        "security"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "First name",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Last name",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Preferred first name",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Email",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Phone",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "LinkedIn Profile",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Website",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "GitHub",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Portfolio URL",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Resume/CV",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Cover Letter",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Address",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "City",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "School",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Degree",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Which engineering disciplines interest you?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Describe your experience with fraud detection systems",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Tell us about a time you showed good judgment",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "How do you identify bottlenecks in a system?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Why do you identify with our mission?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Describe a cross-disciplinary project",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Tell us about your multi-disciplinary team",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Why do you want to make an impact here?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Describe your experience with a software package you built",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Do you act in good faith with teammates?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "What are you looking to make with this internship?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "How do you stay current with the latest technology?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Describe an anti-fraud project",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Tell us how you resolved a dependency conflict",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "What are you looking to learn from this role?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Describe a violation of a coding standard you found in review",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Are you subject to a non-compete agreement?",
+      "topics": [
+        "agreement",
+        "personal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you bound by a non-compete?",
+      "topics": [
+        "agreement",
+        "personal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you have a noncompete with your current employer?",
+      "topics": [
+        "personal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you compete in robotics events?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    }
+  ],
+  "sections": [
+    {
+      "text": "Voluntary Self-Identification",
+      "never": true
+    },
+    {
+      "text": "Demographic information",
+      "never": true
+    },
+    {
+      "text": "U.S. Equal Employment Opportunity Information",
+      "never": true
+    },
+    {
+      "text": "EEOC",
+      "never": true
+    },
+    {
+      "text": "eeoc_fields",
+      "never": true
+    },
+    {
+      "text": "Compliance",
+      "never": true
+    },
+    {
+      "text": "Data compliance",
+      "never": true
+    },
+    {
+      "text": "Background check disclosure",
+      "never": true
+    },
+    {
+      "text": "Criminal history",
+      "never": true
+    },
+    {
+      "text": "Diversity survey",
+      "never": true
+    },
+    {
+      "text": "Voluntary disclosure",
+      "never": true
+    },
+    {
+      "text": "Your information",
+      "never": false
+    },
+    {
+      "text": "Application questions",
+      "never": false
+    },
+    {
+      "text": "Contact details",
+      "never": false
+    },
+    {
+      "text": "Education",
+      "never": false
+    },
+    {
+      "text": "Resume and cover letter",
+      "never": false
+    },
+    {
+      "text": "Links",
+      "never": false
+    },
+    {
+      "text": "Your background in robotics",
+      "never": false
+    },
+    {
+      "text": "Work experience",
+      "never": false
+    },
+    {
+      "text": "",
+      "never": false
     }
   ]
 }

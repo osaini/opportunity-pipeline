@@ -291,3 +291,89 @@ tests.a_follow_up_of_a_never_storable_question_offers_no_save_and_an_independent
   const independent = scanned({ tag: "textarea", id: "question_2", name: "question_2", label: "Describe your experience with distributed systems in detail" });
   assert.equal(fieldById(independent, "question_2").never_storable, false, "an independent question after one is still offered for saving");
 };
+
+tests.the_never_storable_chains_match_the_shared_vectors_the_python_plan_also_runs = () => {
+  // apply_classify (field_net through build_plan) reads the same chains: tests/fixtures/apply/net_chains.json.
+  const yesNo = [{ value: "y", label: "Yes" }, { value: "n", label: "No" }];
+  const { chains } = loadApplyFixture("net_chains.json");
+  assert.ok(chains.length >= 4);
+  for (const chain of chains) {
+    const controls = [{ tag: "select", id: "question_0", name: "question_0", label: chain.parent, options: yesNo }];
+    chain.children.forEach((label, index) => controls.push({ tag: "textarea", id: `question_${index + 1}`, name: `question_${index + 1}`, label }));
+    const scanned = loadContentScript(pageOf(...controls)).scan(profile, [], "Acme Robotics");
+    chain.children.forEach((label, index) => {
+      assert.equal(fieldById(scanned, `question_${index + 1}`).never_storable, chain.never[index], `${chain.parent} / ${label}`);
+    });
+  }
+};
+
+tests.a_one_option_select_and_an_agreement_in_other_words_never_carry_a_reusable_row_to_another_company = () => {
+  // apply.classify.field_net marks the same fields (tick or agreement) so the plan never fills them from the answer library.
+  const cases = [
+    { label: "Work arrangement", options: [{ value: "h", label: "Hybrid, three days on site" }] },
+    // A long label travels between companies, so only the one-option rule stops its reusable row; a placeholder is not a choice.
+    { label: "Which arrangement would suit you best during the summer internship", options: [{ value: "h", label: "Hybrid, three days on site" }] },
+    { label: "Which arrangement would suit you best during the summer internship", options: [{ value: "", label: "Select..." }, { value: "h", label: "Hybrid, three days on site" }] },
+    { label: "Which arrangement would suit you best during the summer internship", options: [{ value: "", label: "--" }, { value: "h", label: "Hybrid, three days on site" }] },
+    { label: "Code of conduct", options: [{ value: "y", label: "I will comply" }, { value: "n", label: "I will not comply" }] },
+    { label: "Handbook", options: [{ value: "y", label: "I will abide by it" }, { value: "n", label: "I will not" }] },
+  ];
+  for (const { label, options } of cases) {
+    const page = pageOf({ tag: "select", id: "question_20", name: "question_20", label, options });
+    const rows = [{ id: "r", question: label, answer: options[options.length - 1].label, company: "Acme Robotics", tags: ["reusable"] }];
+    assert.equal(preTicked(loadContentScript(page).scan(profile, rows, "Orbit Systems"), "question_20"), false, label);
+  }
+  for (const label of ["Signed by", "Sign below", "Countersignature", "Name of signatory"]) {
+    const page = pageOf({ tag: "input", type: "text", id: "question_21", name: "question_21", label });
+    const rows = [{ id: "r", question: label, answer: "SR", company: "Acme Robotics", tags: ["reusable"] }];
+    assert.equal(preTicked(loadContentScript(page).scan(profile, rows, "Orbit Systems"), "question_21"), false, label);
+  }
+  // A name line whose help text is the attestation, in the wordings forms use most (apply.classify._SIGNATURE, _SIGNED_HEADING).
+  for (const help of ["By entering your full name, you are electronically signing this application.", "By typing your name, you certify that the information above is accurate.",
+    "I certify that the information in this application is true and complete.", "I hereby declare that my answers are correct."]) {
+    const page = Object.assign(pageOf({ tag: "input", type: "text", id: "question_23", name: "question_23", label: "Name of the person completing this application", ariaDescribedby: "help_23" }), { texts: { help_23: help } });
+    const rows = [{ id: "r", question: "Name of the person completing this application", answer: "Sam Rivera", company: "Acme Robotics", tags: ["reusable"] }];
+    assert.equal(preTicked(loadContentScript(page).scan(profile, rows, "Orbit Systems"), "question_23"), false, help);
+  }
+  for (const [label, options] of [["Release", ["I release the company from liability", "No"]], ["Code of conduct", ["I will follow it", "I will not"]]]) {
+    const page = pageOf({ tag: "select", id: "question_24", name: "question_24", label, options: options.map((text, index) => ({ value: String(index), label: text })) });
+    const rows = [{ id: "r", question: label, answer: options[0], company: "Acme Robotics", tags: ["reusable"] }];
+    assert.equal(preTicked(loadContentScript(page).scan(profile, rows, "Orbit Systems"), "question_24"), false, label);
+  }
+  const plain = pageOf({ tag: "select", id: "question_22", name: "question_22", label: "Which team are you most interested in?", options: [{ value: "p", label: "Perception" }, { value: "c", label: "Controls" }, { value: "x", label: "Planning" }] });
+  const row = [{ id: "r", question: "Which team are you most interested in?", answer: "Controls", company: "Acme Robotics", tags: ["reusable"] }];
+  assert.equal(loadContentScript(plain).scan(profile, row, "Acme Robotics").fields[0].confidence, 0.9, "an ordinary choice still matches at its own company");
+};
+
+tests.the_section_headings_match_the_shared_vectors_the_python_plan_also_runs = () => {
+  // apply.classify.section_never repeats this rule; tests/fixtures/apply/broad_net.json ("sections").
+  const { sections } = loadApplyFixture("broad_net.json");
+  const ext = loadContentScript(pageOf({ tag: "input", type: "text", id: "q", label: "Q" }), { contentScript: false });
+  assert.ok(sections.length >= 15);
+  for (const { text, never } of sections) assert.equal(ext.engine.sectionNeverText(text), never, text);
+  assert.equal(ext.engine.sectionNeverText(undefined), false);
+};
+
+tests.every_question_under_a_demographic_compliance_or_background_heading_is_never_storable = () => {
+  // A wording no list knows, under three headings: the question is left for the student, nothing carries onto it, and the panel offers no Save.
+  const question = "What do you enjoy most about robotics projects";
+  const underHeading = (section) => pageOf(
+    { tag: "input", type: "text", id: "question_1", name: "question_1", label: "Tell us about your best project" },
+    { tag: "input", type: "text", id: "question_2", name: "question_2", label: question, section },
+  );
+  const row = [{ id: "r", question, answer: "Answer", company: "Acme Robotics", tags: ["reusable"] }];
+  for (const section of [{ heading: "Voluntary Self-Identification" }, { heading: "Demographic information" }, { id: "eeoc_fields" }, { ariaLabel: "Background check disclosure" }, { heading: "Compliance" }]) {
+    const scanned = loadContentScript(underHeading(section)).scan(profile, row, "Orbit Systems");
+    assert.equal(fieldById(scanned, "question_2").never_storable, true, JSON.stringify(section));
+    assert.equal(preTicked(scanned, "question_2"), false, JSON.stringify(section));
+    assert.equal(fieldById(scanned, "question_1").never_storable, false, "a question outside it is untouched");
+  }
+  for (const section of [{ heading: "Your information" }, { heading: "Application questions" }, { heading: "Your background in robotics" }, undefined]) {
+    const scanned = loadContentScript(underHeading(section)).scan(profile, row, "Acme Robotics");
+    assert.equal(fieldById(scanned, "question_2").never_storable, false, JSON.stringify(section));
+    assert.equal(fieldById(scanned, "question_2").confidence, 0.9, "an ordinary section leaves the same company's row exact");
+  }
+  // The standard profile fields are filled from the profile whatever the heading says; only their Save is hidden.
+  const standard = loadContentScript(pageOf({ tag: "input", type: "text", id: "first_name", name: "first_name", label: "First Name", section: { heading: "Demographic information" } })).scan(profile, [], "Acme Robotics");
+  assert.equal(fieldById(standard, "first_name").proposed_value, "Test");
+};

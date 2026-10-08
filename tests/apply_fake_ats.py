@@ -102,6 +102,18 @@ SCENARIOS = (
     "captcha_body_leak",            # a page script POSTs a field value to a CAPTCHA endpoint
     "websocket",                    # a page script opens a WebSocket
     "s3_upload",                    # data-allow-s3="true", and attaching makes a PUT to an S3 host
+    "next_button",                  # a multi-page form: a Next button sits under the questions
+    "continue_link",                # a multi-page form: a "Save and continue" link outside the form, in the page around it
+    "step_indicator",               # a multi-page form: "Step 1 of 3" above the questions
+    "continue_to_step",             # a multi-page form: a "Continue to step 2" button under the questions
+    "next_section",                 # a multi-page form: a "Next section" button under the questions
+    "next_review",                  # a multi-page form: a "Next: Review" button under the questions
+    "page_slash_counter",           # a multi-page form: "Page 1/3" above the questions
+    "next_button_aria",             # a multi-page form: a button with only an icon and the label "Go to the next page"
+    "counter_outside",              # a multi-page form: "Step 2 of 4" in a header outside the form's own element
+    "next_review_submit",           # a multi-page form: a "Next: Review and submit" button under the questions
+    "continue_to_submit",           # a multi-page form: a "Continue to submit" button under the questions
+    "go_to_step",                   # a multi-page form: a "Go to step 2" button under the questions
 )
 
 _FORM = 'document.getElementById("application-form")'
@@ -141,6 +153,77 @@ _SCRIPTS = {
     "s3_upload": """document.getElementById("resume").addEventListener("change", function (e) {
       fetch("https://example-robotics-uploads.s3.amazonaws.com/resume", {method: "PUT", body: e.target.files[0]}).catch(function () {});
     });""",
+    "next_button": """(function () {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Next";
+      """ + _FORM + """.appendChild(button);
+    })();""",
+    "continue_to_step": """(function () {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Continue to step 2";
+      """ + _FORM + """.appendChild(button);
+    })();""",
+    "next_section": """(function () {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Next section";
+      """ + _FORM + """.appendChild(button);
+    })();""",
+    "next_review": """(function () {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Next: Review";
+      """ + _FORM + """.appendChild(button);
+    })();""",
+    "page_slash_counter": """(function () {
+      var note = document.createElement("p");
+      note.textContent = "Page 1/3";
+      """ + _FORM + """.insertBefore(note, """ + _FORM + """.firstChild);
+    })();""",
+    "next_button_aria": """(function () {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.setAttribute("aria-label", "Go to the next page");
+      button.textContent = "→";
+      document.body.appendChild(button);
+    })();""",
+    "counter_outside": """(function () {
+      var note = document.createElement("div");
+      note.textContent = "Step 2 of 4";
+      document.body.insertBefore(note, document.body.firstChild);
+    })();""",
+    "next_review_submit": """(function () {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Next: Review and submit";
+      """ + _FORM + """.appendChild(button);
+    })();""",
+    "continue_to_submit": """(function () {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Continue to submit";
+      """ + _FORM + """.appendChild(button);
+    })();""",
+    "go_to_step": """(function () {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Go to step 2";
+      """ + _FORM + """.appendChild(button);
+    })();""",
+    "continue_link": """(function () {
+      var link = document.createElement("a");
+      link.href = "#page-2";
+      link.setAttribute("role", "button");
+      link.textContent = "Save and continue";
+      """ + _FORM + """.parentElement.appendChild(link);
+    })();""",
+    "step_indicator": """(function () {
+      var note = document.createElement("p");
+      note.textContent = "Step 1 of 3";
+      """ + _FORM + """.insertBefore(note, """ + _FORM + """.firstChild);
+    })();""",
     "request_submit_during_fill": """(function () {
       var form = """ + _FORM + """, fired = false;
       form.addEventListener("input", function () {
@@ -553,6 +636,12 @@ class CannedAgent:
         stopped = RunResult("needs_you", [HANDOFF_NOT_SUBMITTED], plan=entries, plan_hash=plan_hash, handed_over=False, after_click=False,
                             evidence={**evidence, "handoff_end": "stopped"})
         self.on_progress("open", PROGRESS_STEPS["open"])
+        if self.handoff.get("outcome") == "no_loader":
+            # A property of the board: the form sends applications somewhere the app does not know. Stops before any input, as the real agent does.
+            from opportunity_app.apply.agent_types import HANDOFF_NO_LOADER
+
+            return RunResult("needs_you", [HANDOFF_NO_LOADER], plan=entries, plan_hash=plan_hash, handed_over=False, after_click=False,
+                             evidence={**evidence, "handoff_end": "board"})
         filling = sum(1 for entry in entries if entry["disposition"] == "fill")
         for step, text in (("read", PROGRESS_STEPS["read"]), ("fill", PROGRESS_STEPS["fill"].format(n=filling)),
                            ("check", PROGRESS_STEPS["check"]), ("picture", PROGRESS_STEPS["picture"])):
@@ -573,6 +662,9 @@ class CannedAgent:
                 message["handoff_in_s"] = self.handoff["in_s"]   # how long the window really stays the student's (the real agent says it)
             link.ready(message)
         self.on_progress("your_turn", PROGRESS_STEPS["your_turn"])
+        if self.handoff.get("elsewhere"):
+            # The student pressed Submit and the form tried to send somewhere the app does not recognize: refused, and the turn goes on.
+            self.on_progress("form_elsewhere", PROGRESS_STEPS["form_elsewhere"].format(host=str(self.handoff["elsewhere"])))
         self._after_ready()
         waited, beat = 0.0, 0.0
         wait = float(self.handoff.get("wait", 1.5))

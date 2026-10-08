@@ -133,6 +133,28 @@ class WatchCase(ApplyCase):
         return {**dict.fromkeys(apply_watch.WATCH_COUNTS, 0), **changed}
 
 
+class OneCopyOfTheTimeHelpersTests(unittest.TestCase):
+    """The watch and the security-code reader format instants with runs.py's helpers, not copies of their own (AGENTS.md section 8, rules 3 and 6)."""
+
+    def test_neither_module_defines_a_copy_and_every_caller_uses_the_runs_helpers(self):
+        from opportunity_app.apply import runner as apply_runner, security_code as apply_security_code
+
+        for module in (apply_watch, apply_security_code):
+            for name in ("_at", "at_utc", "stamp_now", "iso_utc", "_stamp", "_iso"):
+                self.assertFalse(hasattr(module, name), f"{module.__name__} still has {name}")
+        for module in (apply_watch, apply_security_code, apply_runner):
+            self.assertTrue(hasattr(module, "apply_runs"), module.__name__)
+
+    def test_the_helpers_format_one_instant_one_way_whatever_the_zone_it_arrives_in(self):
+        moment = datetime(2026, 10, 8, 9, 30, 15, 123456, tzinfo=timezone(timedelta(hours=-5)))
+        self.assertEqual(apply_runs.iso_utc(moment), "2026-10-08T14:30:15.123456+00:00")
+        self.assertEqual(apply_runs.stamp_now(moment), apply_runs.iso_utc(moment))
+        self.assertEqual(apply_runs.at_utc(moment), moment)
+        self.assertEqual(apply_runs.at_utc(moment).utcoffset(), timedelta(0))
+        # With no time given, a write gets utc_now's stamp, which is never repeated in this process.
+        self.assertNotEqual(apply_runs.stamp_now(None), apply_runs.stamp_now(None))
+
+
 # --- What confirms ---------------------------------------------------------------------------
 
 
@@ -571,6 +593,48 @@ class HonestClockTests(WatchCase):
         self.assertEqual([title for title in self.notices() if title.startswith("No confirmation email yet")], [])
         self.assertEqual(apply_watch.ats_statistics(self.conn, USER)["no_email_24h"], 0)
 
+    def test_an_email_set_aside_from_a_sender_that_is_not_greenhouse_does_not_stall_the_watch(self):
+        # The reader knew who sent it (it parsed; deciding failed), and it is not an address a confirmation comes from.
+        token = self.expired()
+        self.mail("", kind="", state="error", subject="", domain="newsletter.example.test", matched_by="none", verified=0, received=self.at(hours=-20), linked=False)
+        self.assertEqual(self.watch(), self.zero(no_email_24h=1))
+        self.assertEqual(self.claim_row(token)["verification"], "no_email_24h")
+
+    def test_an_email_set_aside_from_the_companys_own_domain_that_matched_the_application_still_stalls_the_watch(self):
+        # Some companies send Greenhouse's candidate email from their own domain: it could be the confirmation that failed to be read.
+        token = self.expired()
+        for matched_by in ("job_id", "company_title", "company_single"):
+            self.mail("", kind="", state="error", subject="", domain="bluefinrobotics.example", matched_by=matched_by, verified=0,
+                      received=self.at(hours=-20), linked=False)
+            self.assertEqual(self.watch(), self.zero(paused=1), matched_by)
+            self.assertEqual(self.detail(token)["watch_paused"], apply_watch.READER_SET_ASIDE)
+            with self.conn:
+                self.conn.execute("DELETE FROM application_mail_messages WHERE state='error'")
+                self.conn.execute("UPDATE application_submit_claims SET detail_json=? WHERE token=?", (json.dumps({}), token))
+
+    def test_an_email_set_aside_from_another_domain_whose_match_is_unknown_stalls_the_watch(self):
+        # A row from before the reader recorded a match, or one that could not be matched at all: it might be the confirmation.
+        token = self.expired()
+        self.mail("", kind="", state="error", subject="", domain="bluefinrobotics.example", matched_by="", verified=0, received=self.at(hours=-20), linked=False)
+        self.assertEqual(self.watch(), self.zero(paused=1))
+        self.assertEqual(self.detail(token)["watch_paused"], apply_watch.READER_SET_ASIDE)
+
+    def test_an_email_set_aside_from_greenhouse_still_stalls_the_watch(self):
+        token = self.expired()
+        self.mail("", kind="", state="error", subject="", domain="greenhouse-mail.io", matched_by="", verified=0, received=self.at(hours=-20), linked=False)
+        self.assertEqual(self.watch(), self.zero(paused=1))
+        self.assertEqual(self.detail(token)["watch_paused"], apply_watch.READER_SET_ASIDE)
+
+    def test_an_email_the_reader_reads_again_and_no_longer_sets_aside_clears_the_pause(self):
+        token = self.expired()
+        gmail_id = self.aside(self.at(hours=-20))
+        self.assertEqual(self.watch(), self.zero(paused=1))
+        # The reader retries a set-aside email (inbox._retry_errors): it was not the confirmation, so the row is no longer an error.
+        with self.conn:
+            self.conn.execute("UPDATE application_mail_messages SET state='skipped' WHERE user_id=? AND gmail_id=?", (USER, gmail_id))
+        self.assertEqual(self.watch()["extended"], 1, "the stall is added to the deadline")
+        self.assertNotIn("watch_paused", self.detail(token))
+
     def test_an_email_set_aside_long_before_the_hand_over_does_not_stall(self):
         token = self.expired()
         self.aside(self.at(hours=-30))
@@ -588,6 +652,36 @@ class HonestClockTests(WatchCase):
         self.assertEqual(self.detail(token)["watch_paused"], apply_watch.READER_UNKNOWN_ADDRESS)
         self.reader()
         self.assertEqual(self.watch()["extended"], 1, "back on the right account: the stall is added to the deadline")
+
+    def test_the_watch_compares_the_account_with_the_address_the_claim_recorded_not_the_profile_now(self):
+        token = self.expired(detail={"mailbox_hash": apply_runs.address_hash(EMAIL)})
+        # The student edits the profile email after submitting; the connected account is still the one the application used.
+        update_profile(self.conn, {"contact": {"email": "new.address@example.test"}}, ["contact"], user_id=USER)
+        self.assertEqual(self.watch(), self.zero(no_email_24h=1), "the reader looked in the right mailbox and no email came")
+        self.assertEqual(self.claim_row(token)["verification"], "no_email_24h")
+
+    def test_a_connected_account_that_is_not_the_recorded_address_pauses_even_when_it_is_the_profile_email(self):
+        token = self.expired(detail={"mailbox_hash": apply_runs.address_hash("first.address@example.test")})
+        # The profile says EMAIL and the account is EMAIL, but the application went out under another address.
+        self.assertEqual(self.watch(), self.zero(paused=1))
+        self.assertEqual(apply_watch.watch_available(self.conn, USER), "", "the profile and the account agree, so the settings have nothing to say")
+        self.assertEqual(self.detail(token)["watch_paused"], apply_watch.READER_APPLIED_OTHER, "the card does not blame the profile email")
+        self.assertNotEqual(apply_watch.READER_APPLIED_OTHER, apply_watch.READER_OTHER_ADDRESS)
+        self.reader(account="first.address@example.test")
+        self.assertEqual(self.watch()["extended"], 1, "back on the account the application used")
+
+    def test_a_claim_without_a_recorded_address_falls_back_to_the_profile_email(self):
+        token = self.expired()
+        self.reader(account="someone.else@example.test")
+        self.assertEqual(self.watch(), self.zero(paused=1))
+        self.assertEqual(self.detail(token)["watch_paused"], apply_watch.READER_OTHER_ADDRESS)
+
+    def test_claims_with_different_recorded_addresses_are_judged_each_on_its_own(self):
+        right = self.expired(detail={"mailbox_hash": apply_runs.address_hash(EMAIL)})
+        wrong = self.expired(detail={"mailbox_hash": apply_runs.address_hash("first.address@example.test")})
+        self.assertEqual(self.watch(), self.zero(no_email_24h=1, paused=1))
+        self.assertEqual(self.claim_row(right)["verification"], "no_email_24h")
+        self.assertEqual(self.claim_row(wrong)["verification"], "awaiting_email")
 
     def test_a_stall_that_would_push_the_deadline_past_the_14_days_ends_the_watch_as_not_watched(self):
         handed = self.at(days=-12, hours=-23, minutes=-30)  # 12.98 days ago
