@@ -1206,11 +1206,11 @@ class ApplyAgent:
                     self._early = True
                 elif (
                     _host_of(request.url) not in self._policy.telemetry_hosts
-                    and (is_upload(facts) or (_host_of(request.url) in self._policy.form_post_hosts and not self._policy.is_challenge_request(_host_of(request.url), urlsplit(request.url).path)))
+                    and (is_upload(facts) or decision.rule == "upload_elsewhere" or (_host_of(request.url) in self._policy.form_post_hosts and not self._policy.is_challenge_request(_host_of(request.url), urlsplit(request.url).path)))
                 ):
                     # During the fill either one is fatal: a page that uploads or posts as it is filled is not one the app can leave alone.
                     # (The page's own usage reporting is neither: it is refused, recorded a few times, and the fill goes on.)
-                    self._upload_refused = {"host": safe_host(_host_of(request.url), self._state.values), "rule": decision.rule, "file": is_upload(facts)}
+                    self._upload_refused = {"host": safe_host(_host_of(request.url), self._state.values), "rule": decision.rule, "file": is_upload(facts) or decision.rule == "upload_elsewhere"}
             elif unsafe and self._phase == PHASE_STUDENT:
                 # A POST to a form address (with or without a file in it) is the form sending somewhere the app did not agree to;
                 # an upload to any other address is a file leaving. Either ends the turn: the window is closed, nothing was sent.
@@ -1218,7 +1218,7 @@ class ApplyAgent:
                 # the app did not agree to. A file going to any other address (a résumé or cover-letter parse on a board's API, a
                 # storage host) is a file leaving, whatever the address: that one is an upload, and gets the upload sentence.
                 host = _host_of(request.url)
-                file_leaving = is_upload(facts) and host not in self._policy.telemetry_hosts
+                file_leaving = (is_upload(facts) or decision.rule == "upload_elsewhere") and host not in self._policy.telemetry_hosts
                 if file_leaving and host not in self._policy.submit_hosts:
                     self._closing, self._why_closing = True, "upload"
                 elif student_submit_elsewhere(facts, self._state, self._policy):

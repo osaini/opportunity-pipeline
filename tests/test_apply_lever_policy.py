@@ -83,6 +83,15 @@ def state(**fields):
     return RouteState(**base)
 
 
+# The planned file of the file-leaving tests holds none of the student's values, as a compressed file does not: only its bytes can give it away.
+PLANNED = zlib.compress(b"a fictional file with nothing of the student in it " * 9)
+PLANNED_SHA = hashlib.sha256(PLANNED).hexdigest()
+
+
+def planned(**fields):
+    return state(**{"resume_sha256": PLANNED_SHA, **fields})
+
+
 def decide(phase, facts, st=None, mode="handoff"):
     return route_decision(mode, phase, facts, st if st is not None else state(), POLICY)
 
@@ -310,8 +319,65 @@ class BeforeHandOverCellTests(Cases):
                         facts = request("POST", host, path, **send)
                         self.assertTrue(checks.is_upload(facts))
                         self.assertAborted(decide(FILL, facts, state(resume_upload_allowed=resume_allowed)), "upload_elsewhere")
-            with self.subTest(host=host, phase="the student's turn"):
-                self.assertAllowed(decide(STUDENT, request("POST", host, path, **sends[0])))
+            with self.subTest(host=host, phase="the student's turn, before their first press"):
+                self.assertAborted(decide(STUDENT, request("POST", host, path, **sends[0])), "upload_elsewhere")
+            with self.subTest(host=host, phase="the student's turn, after their press: hCaptcha runs now, and a file of the student's own choosing is left as it was"):
+                self.assertAllowed(decide(STUDENT, request("POST", host, path, **sends[0]), state(last_press_at=1.0)))
+
+    def targets(self):
+        found = [(host, "/x") for host in ("hcaptcha.com", "api.hcaptcha.com", "api2.hcaptcha.com")]
+        return found + [(host, "/cdn-cgi/challenge-platform/h/g/jsd/oneshot/x") for host in (HOST, EU)]
+
+    def test_the_planned_file_as_the_raw_body_of_a_write_is_refused_whatever_type_it_claims_and_whatever_the_phase(self):
+        """``fetch(address, {method: 'POST', body: input.files[0]})`` sends the file's own bytes under the file's own type. Neither the shape nor the type
+        says file; the bytes do (the digest the plan holds)."""
+        for host, path in self.targets():
+            for content_type in ("application/pdf", "text/plain", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", None):
+                headers = {"Content-Type": content_type} if content_type else {}
+                for phase, st in ((FILL, planned()), (FILL, planned(resume_upload_allowed=False)), (STUDENT, planned()), (STUDENT, planned(last_press_at=1.0)), (AFTER, planned(submit_posts_passed=1))):
+                    with self.subTest(host=host, content_type=content_type, phase=phase, press=st.last_press_at):
+                        self.assertAborted(decide(phase, request("POST", host, path, body=PLANNED, headers=headers), st), "upload_elsewhere")
+
+    def test_a_part_of_a_form_that_is_the_planned_file_is_refused_with_or_without_a_file_name(self):
+        for host, path in self.targets():
+            for parts in (
+                (("file", "x.pdf", "application/pdf", PLANNED),),
+                (("note", None, "", PLANNED),),
+                (("a", None, "", b"1"), ("blob", "blob", "", PLANNED)),
+            ):
+                for phase, st in ((FILL, planned()), (STUDENT, planned(last_press_at=1.0))):
+                    with self.subTest(host=host, phase=phase, parts=[part[0] for part in parts]):
+                        facts = request("POST", host, path, body=multipart(*parts), headers=form_headers())
+                        self.assertAborted(decide(phase, facts, st), "upload_elsewhere")
+
+    def test_a_body_of_a_kind_no_form_or_beacon_writes_is_a_file_in_the_fill_and_before_the_students_first_press(self):
+        for host, path in self.targets():
+            for content_type in ("application/pdf", "image/png", "application/zip", "application/gzip", "application/vnd.ms-word"):
+                for phase, st, expected in (
+                    (FILL, planned(), "upload_elsewhere"), (STUDENT, planned(), "upload_elsewhere"), (STUDENT, planned(last_press_at=1.0), None), (AFTER, planned(submit_posts_passed=1), None),
+                ):
+                    with self.subTest(host=host, content_type=content_type, phase=phase, press=st.last_press_at):
+                        facts = request("POST", host, path, body=PLANNED[::-1], headers={"Content-Type": content_type})
+                        if expected:
+                            self.assertAborted(decide(phase, facts, st), expected)
+                        else:
+                            self.assertAllowed(decide(phase, facts, st))
+
+    def test_what_the_forms_hcaptcha_and_cloudflare_write_is_never_taken_for_a_file(self):
+        for host, path in self.targets():
+            for content_type, body in (
+                ("application/json", b'{"sitekey":"x"}'), ("application/json;charset=UTF-8", b"{}"), ("application/x-www-form-urlencoded", b"a=1&b=2"), ("text/plain;charset=UTF-8", b"ok"),
+                ("application/reports+json", b"[]"), (None, b"\x00\x01"), ("text/plain", b""),
+            ):
+                headers = {"Content-Type": content_type} if content_type else {}
+                for phase, st in ((FILL, planned()), (STUDENT, planned()), (STUDENT, planned(last_press_at=1.0))):
+                    with self.subTest(host=host, content_type=content_type, phase=phase):
+                        self.assertAllowed(decide(phase, request("POST", host, path, body=body, headers=headers), st), "challenge" if path.startswith("/cdn-cgi") else "captcha")
+
+    def test_with_no_planned_file_there_is_no_digest_to_compare_and_the_type_check_still_holds(self):
+        st = planned(resume_sha256="")
+        self.assertAllowed(decide(FILL, request("POST", "hcaptcha.com", "/x", body=b"", headers={"Content-Type": "application/json"}), st), "captcha")
+        self.assertAborted(decide(FILL, request("POST", "hcaptcha.com", "/x", body=PLANNED, headers={"Content-Type": "application/pdf"}), st), "upload_elsewhere")
 
     def test_a_write_that_is_not_a_file_still_reaches_those_places_in_the_fill(self):
         self.assertAllowed(decide(FILL, request("POST", "api.hcaptcha.com", "/checksiteconfig", body=b"{}", headers={"Content-Type": "application/json"})), "captcha")

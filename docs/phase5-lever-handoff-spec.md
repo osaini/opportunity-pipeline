@@ -461,10 +461,10 @@ do not hold it, and `AtsSpec.adapter_built` stays false, so the runner still ans
 - **After the first review of the driver.** (1) The wait for the read comes right after the file is in the input, before the app looks at the input at all (`_attach_entry`'s `after`): a
   check of the input that then fails (the page shows the name with its spaces squeezed, or not at all) can no longer let the fill go on while the page's reply is still to come. The file
   name is compared with spaces read as text reads them. After the fill a last check (`hidden_mismatch`) stops the run if the location and the hidden `selectedLocation` beside it disagree
-  (6.8). (2) A file sent to a CAPTCHA endpoint or Cloudflare's path while the form is filled is refused as `upload_elsewhere` and ends the run like any other refused upload; the hCaptcha
+  (6.8). (2) A file sent to a CAPTCHA endpoint or Cloudflare's path is refused as `upload_elsewhere` and ends the run like any other refused upload (the student's turn is closed the same way). A file is: the planned file's own bytes, as the whole body under any type or none or as a part of a form with or without a file name (checked by SHA-256, in every phase); and, in the app's fill and in the student's turn until the student's first press, a multipart body with a named file part, an octet-stream body or a body of any declared type that is not text, URL-encoded or JSON (a body with no declared type is left alone). After the press hCaptcha is running and a false reading would close the turn in the middle of it, so only the planned file's bytes are looked for. The hCaptcha
   endpoints are written only by the methods the recording saw (`Endpoint.methods`: POST to `api`, `api2` and `hcaptcha.com`; the script and frame hosts are only read). Cloudflare's
   allowed path stays `/cdn-cgi/challenge-platform/`, wider than the one beacon path recorded, because no interstitial has been recorded and its own requests are unseen; the file check
-  above is what closes that path to a file. (3) Each run launches its own browser with the resolver rule of its own ATS (`ApplyAgent.run_launch_options`). (4) The independent check reads
+  above is what closes that path to the file as itself, and not to a copy a script has re-encoded (known defects). (3) Each run launches its own browser with the resolver rule of its own ATS (`ApplyAgent.run_launch_options`). (4) The independent check reads
   the page's `eeo[...]` controls under the plan's names (`plan_key`). (5) The file posted under the attached name rewritten by the page (each run of odd characters one underscore) is
   not read for a planned value. (6) A Cloudflare check served with 403 or 503 (`cf-mitigated: challenge`, or the title "Just a moment...") is waited for like a 200 with no form (6.3);
   the page is a challenge whenever a Lever host shows no form and is not `/thanks`, which is wider than 6.3's title or body test. (7) FakeLever's page makes the writes a live one makes
@@ -715,6 +715,7 @@ Phase 5 6.9 for the cover letter (M7 wires it). A Lever `file-upload` card is ne
 the app's fill under L1 A, and any file the student attaches during the student's turn (section 7). Any other upload
 attempt, including a second résumé POST during the app's fill, ends the run `needs_you`,
 `after_click=0`, "The form tried to send a file the app did not plan, so the app stopped it. Nothing was sent."
+The student's turn is no different until their first press of Submit: a file sent to a CAPTCHA endpoint or to Cloudflare's path in that stretch ends the turn the same way (section 7).
 
 **Wording once the résumé has gone.** Phase 5's `needs_you`, `after_click=0` sentences end "Nothing was sent." That is
 false once `resume_sent_to_lever` or `student_attached_resume` is true, because Lever has the file. For such a run each
@@ -833,7 +834,7 @@ be reachable by GET: on the page read, Submit does nothing without it (3.10).
 
 | Mode and phase | Allowed | Aborted and recorded |
 | --- | --- | --- |
-| `handoff`, before hand-over | GET, HEAD, OPTIONS (subject to rule 4). `GET /searchLocations` for the field being typed. Non-GET to a CAPTCHA endpoint, by the method the recording saw there (`Endpoint.methods`), and to Cloudflare's challenge path (rule 4 applies, so their bodies carry no planned value); during the app's fill never a file (`upload_elsewhere`). **The résumé POST** (below): once during the app's fill if L1 is A, and during the student's turn for any file the student attaches. | Every other non-GET, on any host, including every other upload, and a second résumé POST during the app's fill. |
+| `handoff`, before hand-over | GET, HEAD, OPTIONS (subject to rule 4). `GET /searchLocations` for the field being typed. Non-GET to a CAPTCHA endpoint, by the method the recording saw there (`Endpoint.methods`), and to Cloudflare's challenge path (rule 4 applies, so their bodies carry no planned value); never a file (`upload_elsewhere`): not in the app's fill, not in the student's turn before their first press of Submit (hCaptcha asks nothing of these addresses until then), and never the planned file's own bytes in any phase. **The résumé POST** (below): once during the app's fill if L1 is A, and during the student's turn for any file the student attaches. | Every other non-GET, on any host, including every other upload, and a second résumé POST during the app's fill. |
 | `handoff`: the student's first POST to the apply URL | The handler asks the parent for the hand-over and calls `route.continue_()` only on a committed True. | The POST, on a False reply, an error, or no reply within 10 s. |
 | `handoff`, after hand-over | One POST to the apply URL per attempt. Non-GET to a CAPTCHA endpoint. GETs. | Every other non-GET. |
 

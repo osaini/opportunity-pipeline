@@ -585,9 +585,10 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
                 return abort("code_post_before_press", "A request that would send the security code was refused because you had not pressed Submit")
             return Allow("security_code", code_post=True)
         return abort("second_submit_post", "A second submit request was refused")
-    if phase == PHASE_FILL and is_upload(request) and (_endpoint_matches(captcha_endpoints, host, path) or policy.is_challenge_request(host, path)):
+    if (_endpoint_matches(captcha_endpoints, host, path) or policy.is_challenge_request(host, path)) and file_leaving(request, phase, state):
         # The attached file is in the input, and a page's script can read it and send it anywhere a write is let through. A compressed file holds none of
-        # the student's words, so the value guard cannot tell. Nothing the fill lets through to these addresses is a file.
+        # the student's words, so the value guard cannot tell. Nothing the fill lets through to these addresses is a file, and neither is anything before the
+        # student's first press (hCaptcha runs on Submit, so it asks nothing of these addresses until then); the planned file's own bytes never go, in any phase.
         return abort("upload_elsewhere", "The page tried to send a file to an address that is not the file read the app allowed")
     if _endpoint_matches(captcha_endpoints, host, path, method=method):
         return Allow("captcha")
@@ -598,11 +599,16 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
     return abort("non_get_before_hand_over", "Nothing that could carry the application may leave before hand-over")
 
 
-def _content_type(request: RouteRequest) -> str:
+def _content_type_header(request: RouteRequest) -> str:
+    """The Content-Type header as sent (any case of the name; the value keeps its case, which a multipart boundary needs)."""
     for name, value in request.headers.items():
         if str(name).lower() == "content-type":
-            return str(value).lower()
+            return str(value)
     return ""
+
+
+def _content_type(request: RouteRequest) -> str:
+    return _content_type_header(request).lower()
 
 
 # ---------------------------------------------------------------------------------------------
@@ -763,6 +769,37 @@ def looks_like_a_send(request: RouteRequest, state: RouteState, policy: RoutePol
     if not request.body or not _content_type(request).startswith(_FORM_BODY_TYPES):
         return False
     return True
+
+
+_PLAIN_BODY_TYPES = ("text/", "application/x-www-form-urlencoded", "application/json")
+
+
+def carries_planned_file(request: RouteRequest, state: RouteState) -> bool:
+    """Whether the body is the planned file's bytes (``RouteState.resume_sha256``), or a multipart part of it is: the file sent as itself, under any type or none."""
+    wanted = state.resume_sha256.lower()
+    body = request.body
+    if not wanted or not isinstance(body, (bytes, bytearray)) or not body:
+        return False
+    body = bytes(body)
+    if hashlib.sha256(body).hexdigest() == wanted:
+        return True
+    parts = read_multipart(_content_type_header(request), body)
+    return parts is not None and any(hashlib.sha256(part.data).hexdigest() == wanted for part in parts)
+
+
+def file_leaving(request: RouteRequest, phase: str, state: RouteState) -> bool:
+    """Whether a write to an address that is let through for its own sake (a CAPTCHA endpoint, the page's bot check) is a file leaving.
+
+    The planned file's own bytes: in every phase. A body ``is_upload`` calls a file, or one whose declared type is none a form, a script's JSON or a beacon
+    writes (not text, URL-encoded or JSON; a body with no type is left alone): in the app's fill, and in the student's turn until their first press.
+    After the press the page's widget is running and a false reading would close the turn in the middle of it, so only the planned file is looked for.
+    """
+    if carries_planned_file(request, state):
+        return True
+    if phase == PHASE_FILL or (phase == PHASE_STUDENT and not state.last_press_at):
+        kind = _content_type(request)
+        return is_upload(request) or bool(request.body and kind and not kind.startswith(_PLAIN_BODY_TYPES) and not re.match(r"application/[\w.+-]*\+json", kind))
+    return False
 
 
 def is_upload(request: RouteRequest) -> bool:

