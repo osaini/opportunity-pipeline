@@ -105,13 +105,13 @@ jobs:
       - run: python -m playwright install --with-deps chromium
       # Visual baselines are per-platform and are not committed for Linux, so the
       # `visual` marker stays deselected here (see tests/ui/visual.py).
-      - run: python -m pytest tests/ui -v --tracing=retain-on-failure --output=data/ui-artifacts
+      - run: python -m pytest tests/ui -v --tracing=retain-on-failure --output=output/ui-artifacts
       - name: Upload failure traces
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: playwright-traces
-          path: data/ui-artifacts
+          path: output/ui-artifacts
           retention-days: 7
 
   browser-python:

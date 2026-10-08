@@ -62,10 +62,10 @@ in any shell and ignores execution policy:
 | `py -3 scripts/run_api_fuzz.py` | Fuzz every OpenAPI operation for unhandled exceptions |
 | `py -3 scripts/run_api_fuzz.py --strict` | Add response-schema and status-code conformance checks |
 
-Failure traces land in `data/ui-artifacts`. Open one with:
+Failure traces land in `output/ui-artifacts`. Open one with:
 
 ```bash
-.venv-ui/Scripts/playwright show-trace data/ui-artifacts/<test>/trace.zip
+.venv-ui/Scripts/playwright show-trace output/ui-artifacts/<test>/trace.zip
 ```
 
 ## How the suite stays deterministic
