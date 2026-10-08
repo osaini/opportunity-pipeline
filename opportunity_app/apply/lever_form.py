@@ -414,9 +414,11 @@ def _card_field(json_field: Any, controls: list[_Control] | None, name: str, pre
     """One card or survey question: the JSON entry for it, joined to the page's controls under the same name."""
     dom_label = _first_label(controls) if controls else ""
     dom_required = _required(controls) if controls else False
+    # Any control that asks for it makes the question required (a radio group, a box that must be ticked), even where the page is not uniform.
+    page_asks = any(control.required for control in controls if control.kind != "hidden") if controls else False
 
     def unreadable(reason: str, label: str = "", required: bool = False) -> UnreadableField:
-        return UnreadableField(name, label or dom_label or name, bool(required or dom_required), reason)
+        return UnreadableField(name, label or dom_label or name, bool(required or page_asks), reason)
 
     if not isinstance(json_field, dict):
         return unreadable("the page describes this question in a way the app does not read")
@@ -424,7 +426,7 @@ def _card_field(json_field: Any, controls: list[_Control] | None, name: str, pre
     label = _collapse(text)
     json_required = json_field.get("required", False)
     if not isinstance(json_required, bool):
-        return unreadable("the page describes this question in a way the app does not read", label)
+        return unreadable("the page describes this question in a way the app does not read", label, bool(json_required))
     if not isinstance(kind, str) or kind not in CARD_TYPES or not isinstance(text, str) or not label:
         return unreadable("the app does not read this kind of question", label, json_required)
     description = json_field.get("description", "")

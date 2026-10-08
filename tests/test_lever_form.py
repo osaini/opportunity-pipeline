@@ -562,6 +562,27 @@ class CrossCheckTests(unittest.TestCase):
         page_only = parse_lever_form(one_card("text", required=False, control=text_control(0, required=True))).unreadable[0]
         self.assertEqual((json_only.required, page_only.required), (True, True))
 
+    def test_an_unreadable_group_where_only_some_controls_ask_for_required_is_still_required(self):
+        # In HTML a radio group with any required radio is required, and each required box must be ticked. The no-template path agrees.
+        for kind, builder in (("multiple-choice", "radio"), ("multiple-select", "checkbox")):
+            with self.subTest(kind=kind):
+                control = group_control(0, builder, ["A", "B"], required=[True, False])
+                form = parse_lever_form(one_card(kind, required=False, options=["A", "B"], control=control))
+                self.assertEqual((form.fields, [item.required for item in form.unreadable]), ((), [True]))
+                bare = parse_lever_form(page(control))
+                self.assertEqual([item.required for item in bare.unreadable], [True])
+
+    def test_an_unreadable_question_stays_required_when_the_jsons_flag_is_not_a_boolean_or_the_field_is_not_an_object(self):
+        control = text_control(0, required=False)
+        for flag, expected in (("true", True), (1, True), ("yes", True), (0, False), ("", False), (None, False)):
+            with self.subTest(flag=flag):
+                field = question("text", "Q?")
+                field["required"] = flag
+                self.assertEqual([item.required for item in parse_lever_form(card_page([field], [control])).unreadable], [expected])
+        broken = parse_lever_form(card_page(["not an object"], [text_control(0, required=True)]))
+        self.assertEqual([item.required for item in broken.unreadable], [True])
+        self.assertEqual([item.required for item in parse_lever_form(card_page(["not an object"], [control])).unreadable], [False])
+
     def test_a_group_where_only_some_boxes_ask_for_required_is_unreadable_even_if_the_json_says_required(self):
         control = group_control(0, "checkbox", ["A", "B", "C"], required=[True, False, True])
         form = parse_lever_form(one_card("multiple-select", required=True, options=["A", "B", "C"], control=control))
