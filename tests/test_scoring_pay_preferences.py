@@ -345,5 +345,38 @@ class ThirdReviewTests(unittest.TestCase):
         self.assertEqual(_pay_reasons("We do not\xa0offer an unpaid internship.", paid_only=True), [])
 
 
+class FourthReviewTests(unittest.TestCase):
+    """Found in the fourth review: the background-clause rule missed real unpaid roles; each failed before its fix."""
+
+    UNPAID = "-35 unpaid, and you asked for paid roles only"
+
+    def test_experience_this_role_gives_is_still_an_unpaid_role(self):
+        for text in (
+            "Gain real-world experience through an unpaid internship with our team.",
+            "Students build experience in an unpaid internship setting with mentorship.",
+            "No prior experience is required for an unpaid internship like this one.",
+            "Unpaid summer internship for credit.",
+            "Overview\nUnpaid summer research internship, 10 weeks.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(_pay_reasons(text, paid_only=True), [self.UNPAID])
+
+    def test_the_candidates_past_unpaid_roles_are_still_not_this_role(self):
+        for text in (
+            "Relevant experience, including internships or unpaid volunteer work, is a plus.",
+            "Experience in a paid or unpaid research position is preferred.",
+            "Interns can take part in unpaid volunteer opportunities and community events.",
+            "Experience in an unpaid internship is a plus.",
+            "Experience with any unpaid research position counts.",
+            "Prior unpaid internship work is welcome.",
+            "Applicants with previous experience in an unpaid lab position are encouraged to apply.",
+            "Relevant work, including an unpaid internship, is preferred.",
+            "Background in an unpaid internship or volunteer role is welcome.",
+            "Students in unpaid summer internship programs elsewhere may apply.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(_pay_reasons(text, paid_only=True), [])
+
+
 if __name__ == "__main__":
     unittest.main()

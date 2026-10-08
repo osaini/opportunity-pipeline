@@ -241,15 +241,30 @@ _NEGATION_BEFORE_RE = re.compile(
 # "Paid or unpaid", "paid and unpaid", "paid/unpaid": both kinds, not this role.
 _PAID_OR_BEFORE_RE = re.compile(r"\bpaid(?:[^\S\n]+(?:or|and)[^\S\n]+|[^\S\n]*/[^\S\n]*)$", re.IGNORECASE)
 # With words between "unpaid" and the role, the phrase must name one role: "this unpaid, for-credit internship",
-# "an unpaid summer research internship", not "in unpaid volunteer opportunities".
+# "an unpaid summer research internship", "Unpaid summer internship for credit." at the start of a sentence or line,
+# not "in unpaid volunteer opportunities".
 _DETERMINER_BEFORE_RE = re.compile(r"\b(?:this|the|our|an?)[^\S\n]+$", re.IGNORECASE)
-# A clause about the candidate's background ("experience in an unpaid research position", "prior unpaid internships
-# count") speaks of past roles, unless the phrase points at this one ("no prior experience is needed for this unpaid
-# internship").
-_CANDIDATE_BACKGROUND_RE = re.compile(
-    r"\b(?:experience|including|counts?[^\S\n]+toward|prior|previous|background)\b", re.IGNORECASE
+# The phrase points at this role: "this unpaid internship", "gain real-world experience through an unpaid internship",
+# "no prior experience is required for an unpaid internship like this one".
+_THIS_ROLE_BEFORE_RE = re.compile(
+    r"\b(?:this|the|our)[^\S\n]+$"
+    r"|\b(?:gain|gains|gaining|build|builds|building|get|gets|getting|earn|earns|earning)[^\S\n]+"
+    r"(?:[\w'-]+[^\S\n]+){0,2}?experience[^\S\n]+(?:through|in|with)[^\S\n]+(?:(?:an?|this|our|the)[^\S\n]+)?$"
+    r"|\b(?:required|needed|necessary)[^\S\n]+(?:for|in)[^\S\n]+(?:an?|this|our|the)[^\S\n]+$",
+    re.IGNORECASE,
 )
-_THIS_ROLE_BEFORE_RE = re.compile(r"\b(?:this|the|our)[^\S\n]+$", re.IGNORECASE)
+# The phrase asks about the candidate's past: "experience in a paid or unpaid ...", "background in an unpaid ...",
+# "prior unpaid internship work", "relevant work, including an unpaid internship, is preferred".
+_PAST_EXPERIENCE_BEFORE_RE = re.compile(
+    r"\b(?:experience|background)[^\S\n]+(?:in|as|with|from)[^\S\n]+(?:(?:a|an|any)[^\S\n]+)?"
+    r"(?:paid[^\S\n]+or[^\S\n]+)?$",
+    re.IGNORECASE,
+)
+_PAST_WORDS_RE = re.compile(r"\b(?:prior|previous|past)\b", re.IGNORECASE)
+_INCLUDING_RE = re.compile(r"\bincluding\b", re.IGNORECASE)
+_PREFERENCE_LIST_RE = re.compile(
+    r"\b(?:preferred|required|a[^\S\n]+plus|counts?[^\S\n]+toward|qualifies|qualify|welcome)\b", re.IGNORECASE
+)
 _CLAUSE_START_RE = re.compile(r"[.;:!?\n]")
 # Pay stated per month, week or day, or a yearly salary written in thousands ("$80K per year"): pay with a period the
 # hourly reader does not compare, and a posting that states it is not unpaid.
@@ -287,6 +302,17 @@ _WAGE_WORDS_RE = re.compile(r"\b(?:salary|salaries|compensation|pay|pays|paid|ba
 _PAY_SENTENCE_BREAK_RE = re.compile(r"[;!?\n]|\.(?=\s)")
 
 
+def _asks_about_the_past(text: str, match: re.Match[str], clause: str, before: str) -> bool:
+    """Whether an "unpaid <role>" phrase is about roles the candidate held before, not this one."""
+    if _PAST_EXPERIENCE_BEFORE_RE.search(before) or _PAST_WORDS_RE.search(clause):
+        return True
+    if _INCLUDING_RE.search(clause):
+        found = _CLAUSE_START_RE.search(text, match.end())
+        sentence = clause + text[match.start():found.start() if found is not None else len(text)]
+        return bool(_PREFERENCE_LIST_RE.search(sentence))
+    return False
+
+
 def _calls_the_role_unpaid(text: str) -> bool:
     for match in _UNPAID_ROLE_RE.finditer(text):
         before = text[max(0, match.start() - 60):match.start()]
@@ -295,11 +321,12 @@ def _calls_the_role_unpaid(text: str) -> bool:
         if match.group("noun") is not None:
             if _PAID_OR_BEFORE_RE.search(before):
                 continue
-            if match.group("gap") and not _DETERMINER_BEFORE_RE.search(before):
-                continue
             starts = [found.end() for found in _CLAUSE_START_RE.finditer(text, 0, match.start())]
             clause = text[starts[-1] if starts else 0:match.start()]
-            if _CANDIDATE_BACKGROUND_RE.search(clause) and not _THIS_ROLE_BEFORE_RE.search(before):
+            at_start = not clause.strip(" \t -•*")
+            if match.group("gap") and not at_start and not _DETERMINER_BEFORE_RE.search(before):
+                continue
+            if not _THIS_ROLE_BEFORE_RE.search(before) and _asks_about_the_past(text, match, clause, before):
                 continue
         return True
     return False
