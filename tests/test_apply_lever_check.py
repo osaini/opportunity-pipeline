@@ -17,7 +17,7 @@ import realdata_guard
 
 realdata_guard.install()
 
-from opportunity_app.apply import preflight as apply_preflight, sensitive as apply_sensitive
+from opportunity_app.apply import preflight as apply_preflight, runs as apply_runs, sensitive as apply_sensitive
 
 from apply_fake_ats import FakeLeverPageClient, LEVER_COMPANY, LEVER_JOB_ID, LEVER_ROLE_ID, LEVER_SITE, LEVER_TITLE, LEVER_URL, seed_lever_role
 from helpers_apply import USER, setUpModule, tearDownModule  # noqa: F401
@@ -120,15 +120,46 @@ class LeverCheckTests(PolicyCase):
         self.lever_check(cache=fresh, page_client=closed)
         self.assertIsNone(fresh.get(("lever", LEVER_SITE, LEVER_JOB_ID)), "a 404 is asked about again")
 
-    def test_a_page_for_another_company_is_flagged_and_the_students_word_is_needed(self):
+    def many_cards(self, company="Orbital Ledger"):
+        """Serve the page whose location is required and whose cards the app has no saved answer for, with a saved role that names (or does not name) it."""
         with self.conn:
-            self.conn.execute("UPDATE opportunities SET company='Orbit Systems' WHERE id=?", (LEVER_ROLE_ID,))
+            self.conn.execute("UPDATE opportunities SET company=?, title='Operations Associate' WHERE id=?", (company, LEVER_ROLE_ID))
+        self.pages = FakeLeverPageClient(page="many_cards.html")
+
+    def card(self, result, text="Please tell us how you heard"):
+        return next(item for item in result["problems"] if item["kind"] == "missing_answer" and item["question"].startswith(text))
+
+    def test_a_page_for_another_company_is_flagged_and_the_students_word_is_needed(self):
+        self.many_cards(company="Orbit Systems")
         result = self.lever_check()
         self.assertTrue(result["posting"]["differs"])
         self.assertIn("Lever's page is titled", result["posting"]["difference"])
         self.assertEqual(result["status"], "needs_you")
-        with self.assertRaises(apply_preflight.AnswerRefused):
-            apply_preflight.answer_missing(self.conn, USER, LEVER_ROLE_ID, key="org", answer="x", client=StaticClient({}), page_client=self.pages, resume_root=self.resumes)
+        card = self.card(result)
+        kwargs = dict(key=card["key"], answer=card["action"]["options"][0], client=StaticClient({}), page_client=self.pages, resume_root=self.resumes)
+        with self.assertRaises(apply_preflight.AnswerRefused) as refused:
+            apply_preflight.answer_missing(self.conn, USER, LEVER_ROLE_ID, **kwargs)
+        self.assertIn("Confirm it is the right posting before saving an answer for Orbit Systems", str(refused.exception))
+        self.assertIn("Lever's page is titled", str(refused.exception))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM answer_library").fetchone()[0], 0, "nothing was saved without the student's word")
+        saved = apply_preflight.answer_missing(self.conn, USER, LEVER_ROLE_ID, posting_confirmed=True, **kwargs)
+        self.assertTrue(saved["answer_id"])
+
+    def test_the_location_is_chosen_for_lever_and_a_greenhouse_choice_is_not_borrowed(self):
+        self.many_cards()
+        result = self.lever_check()
+        location = next(item for item in result["problems"] if item["key"] == "location")
+        self.assertEqual(location["kind"], "label_needed")
+        self.assertEqual(location["action"], {"type": "ats_label", "field": "location", "suggestion": "", "ats": "lever", "lookup": False})
+        # The option the student confirmed for Greenhouse's list is not Lever's list.
+        apply_runs.set_ats_label(self.conn, USER, "location", "Elsewhere, Greenhouse's spelling", ats="greenhouse")
+        again = next(item for item in self.lever_check()["problems"] if item["key"] == "location")
+        self.assertEqual(again["kind"], "label_needed")
+        apply_runs.set_ats_label(self.conn, USER, "location", "Austin, Texas, United States", ats="lever")
+        after = self.lever_check()
+        self.assertNotIn("location", [item["key"] for item in after["problems"]])
+        field = next(item for item in after["fields"] if item["key"] == "location")
+        self.assertEqual(field["source"], "Option you confirmed")
 
     def test_a_role_whose_title_has_a_dash_in_it_still_matches_its_page(self):
         with self.conn:
