@@ -1036,6 +1036,8 @@ LEVER_HCAPTCHA_SCRIPT_HOST = "js.hcaptcha.com"
 LEVER_HCAPTCHA_API_HOST = "api.hcaptcha.com"
 LEVER_HCAPTCHA_FRAME_HOST = "newassets.hcaptcha.com"
 LEVER_HCAPTCHA_HOSTS = (LEVER_HCAPTCHA_SCRIPT_HOST, LEVER_HCAPTCHA_API_HOST, LEVER_HCAPTCHA_FRAME_HOST)
+LEVER_LOAD_CONFIG_HOSTS = ("api.hcaptcha.com", "api2.hcaptcha.com", "hcaptcha.com")   # the three hosts the widget POSTs /checksiteconfig to as the page loads (spec 11, Q3)
+LEVER_CLOUDFLARE_PREFIX = "/cdn-cgi/challenge-platform/"
 LEVER_NOISE_HOSTS = ("www.googletagmanager.com", "notify.bugsnag.com")   # the analytics and error-report hosts every Lever page calls (spec 3 item 14)
 LEVER_APPLY_PATH = f"/{LEVER_SITE}/{LEVER_JOB_ID}/apply"
 LEVER_THANKS_PATH = f"/{LEVER_SITE}/{LEVER_JOB_ID}/thanks"
@@ -1156,7 +1158,7 @@ class FakeLever:
         self.hcaptcha_loads = True                    # False: js.hcaptcha.com cannot be reached (Submit then does nothing)
         self.hcaptcha_posts_refused = False           # True: every non-GET to api.hcaptcha.com (getcaptcha, checkcaptcha) is aborted (Submit then does nothing)
         self.interstitial_s = 0.0                     # the first GET of the form starts this many seconds of the Cloudflare interstitial
-        self.cloudflare_beacon = False                # Cloudflare's script posts a beacon under /cdn-cgi/ when it runs
+        self.cloudflare_beacon = True                 # Cloudflare's script posts a beacon under /cdn-cgi/ when it runs, once per page, as a live one does
         self.cookie_banner = True
         self.third_party_noise = True                 # the page loads Google Tag Manager's script and posts an error report to Bugsnag, as a live one does
         self.inject: list[str] = []                   # extra page scripts (JS source) added to every form page: a telemetry beacon, a WebSocket
@@ -1190,10 +1192,19 @@ class FakeLever:
     def search_gets(self) -> list[LeverSeen]:
         return [seen for seen in self.requests if seen.method == "GET" and seen.host in FAKE_LEVER_HOSTS and seen.path == LEVER_SEARCH_PATH]
 
+    def page_writes(self) -> list[LeverSeen]:
+        """The writes a Lever page makes by itself as it loads, before anyone does anything: the widget's POST /checksiteconfig to three hCaptcha hosts and Cloudflare's
+        beacon (``cloudflare_beacon``), recorded in the load recording (spec 11, Q3), and the Bugsnag error report (``LEVER_NOISE_HOSTS``)."""
+        return [seen for seen in self.requests if seen.method == "POST" and (
+            seen.host in LEVER_NOISE_HOSTS
+            or (seen.host in LEVER_LOAD_CONFIG_HOSTS and seen.path == "/checksiteconfig")
+            or (seen.host in FAKE_LEVER_HOSTS and seen.path.startswith(LEVER_CLOUDFLARE_PREFIX))
+        )]
+
     def non_get_requests(self, *, noise: bool = True) -> list[LeverSeen]:
-        """Every request that is not a GET, HEAD or OPTIONS. ``noise=False`` leaves out the Bugsnag error report (``LEVER_NOISE_HOSTS``) that a page makes by itself."""
-        return [seen for seen in self.requests
-                if seen.method not in ("GET", "HEAD", "OPTIONS") and (noise or seen.host not in LEVER_NOISE_HOSTS)]
+        """Every request that is not a GET, HEAD or OPTIONS. ``noise=False`` leaves out ``page_writes``: what a page writes by itself as it loads."""
+        mine = self.page_writes() if not noise else []
+        return [seen for seen in self.requests if seen.method not in ("GET", "HEAD", "OPTIONS") and not any(seen is other for other in mine)]
 
     @staticmethod
     def clicks(page: Any) -> dict[str, int]:

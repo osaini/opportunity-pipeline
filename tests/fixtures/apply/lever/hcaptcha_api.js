@@ -15,6 +15,9 @@
    its container, as the real one does (the page's own h-captcha-response input is a second control of that name); both are
    posted with the form.
 
+   As the page loads, render() also POSTs /checksiteconfig to api.hcaptcha.com, api2.hcaptcha.com and hcaptcha.com, as the real widget does
+   (the load recording, spec 11 Q3); the answers are not read.
+
    window.__fakeLever.challengeDuringFill = [start, end] (seconds after the widget renders) draws the same frame with no
    press, for a challenge that shows while a form is being filled; its "solve" only removes it, and it asks for no token. */
 (function () {
@@ -133,6 +136,11 @@
         });
       }
       widgets.push(widget);
+      // What the real widget does by itself as the page loads (tests/fixtures/apply/lever/endpoints.json): POST /checksiteconfig to three hosts.
+      ["api.hcaptcha.com", "api2.hcaptcha.com", "hcaptcha.com"].forEach(function (host) {
+        fetch("https://" + host + "/checksiteconfig?v=fake&host=" + encodeURIComponent(location.hostname) + "&sitekey=" + encodeURIComponent(widget.params.sitekey || ""),
+          { method: "POST", body: "{}" }).catch(function () { /* a refused write is the test's point */ });
+      });
       var during = config.challengeDuringFill;
       if (during && during.length === 2) {
         setTimeout(function () { drawChallenge(widget, true); }, during[0] * 1000);
