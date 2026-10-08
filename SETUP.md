@@ -720,10 +720,9 @@ fields too.
    (`jobs.lever.co`, or `jobs.eu.lever.co`) gets the same "what's missing" view as a
    Greenhouse role, read from the posting's own application page. Its only action is
    **Finish in browser** (no rehearsal, no Look up options): the app fills the form in
-   a window and the student presses Submit application, as on Greenhouse. Until the
-   app has Lever's window, the view says Finish in browser for Lever postings is not
-   available yet. Two switches in Profile › Automation, both off until the student turns
-   them on, and the app never turns either on itself:
+   a window and the student presses Submit application, as on Greenhouse. Two switches
+   in Profile › Automation, both off until the student turns them on, and the app never
+   turns either on itself:
 
    - **Apply for me on Lever** lets Apply for me read a saved Lever role. It needs
      **Apply for me** on first.
@@ -737,6 +736,15 @@ fields too.
      the window, and it stays on their "left for you" list. A run that ends before Submit
      then reads "Your application was not sent. Lever received your résumé." once a résumé
      has gone. It needs the first switch on.
+
+   Say two more things when you set this up. If the student attaches a résumé in the
+   window themselves, Lever reads it at once too: the window then names the fields Lever
+   filled from it (never their values), and the student checks them before pressing
+   Submit. And Lever shows an hCaptcha when Submit is pressed; it is the student's,
+   and the app never touches it. The first Finish in browser at a posting they really
+   want is the first time anyone sees what Lever answers after Submit, so sit with them
+   for it, with the confirmation email, and write down what you saw (the spec's open
+   questions Q1 and Q2).
 
    Lever's lists have one that matters here: **Location**. The student types the
    exact name as Lever's list spells it under Profile › Automation › Apply for me

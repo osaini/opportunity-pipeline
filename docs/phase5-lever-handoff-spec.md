@@ -1,8 +1,11 @@
 # Phase 5 addendum: "Apply for me" on Lever (Finish in browser only)
 
-- **Status:** draft 1, 2026-10-04; L1 and L2 answered 2026-10-07 (LV0 done, section 4). Nothing here is built. It is
-  the "Later: Lever" row of the Phase 5 milestone table (`phase5-apply-agent-spec.md` section 14, which said "Separate
-  specs"). Building LV1a onward still needs the student's go.
+- **Status:** draft 1, 2026-10-04; L1 and L2 answered 2026-10-07 (LV0 done, section 4). Built: LV1a and LV1b (the ATS seam), LV2 (read-only),
+  LV3 (the driver, `FakeLever`, the load-time recording of Q3 and Q4) and LV4 (Finish in browser works on a saved Lever posting: hand-over on the
+  apply POST, the outcome table, the record, the watch, the student's own attach; "As built (LV4)" after the milestone table says how and what
+  differs). Not built: LV5. Not yet seen on a real posting: Q1 and Q2, and the hCaptcha endpoints used after Submit (Q3). It is the "Later: Lever"
+  row of the Phase 5 milestone table (`phase5-apply-agent-spec.md` section 14, which said "Separate specs"). The rollout checklist's first real
+  Finish in browser still needs the student's go.
 - **Base:** `origin/main` 946c524 plus PR #81 (the `active_at_company` tick and the notice that every model call
   carries). Line numbers below are as of that tree.
 - **Relation to Phase 5:** this file changes only what Lever forces to change. Every Phase 5 rule not named here
@@ -411,8 +414,8 @@ behavior pinned (section 12, LV1). It does these things and nothing else:
   there, as in every other phase (the value guard still reads it). The Hosts paragraph names Cloudflare's beacons, so this follows that text; the owner decides whether the row should refuse it.
 - The value guard sees no cookies: the route handler gives `route_decision` Playwright's `request.headers`, which leaves them out (listed in `docs/known-defects.md`).
 
-**As built in LV3, the driver** (`apply/lever_adapter.py`, and the hooks it uses in `apply/agent.py`; reachable only in tests: no module of the app imports it, `ADAPTERS` and the factory
-do not hold it, and `AtsSpec.adapter_built` stays false, so the runner still answers `ats_not_built`; `tests/test_apply_lever_adapter.py` pins all of that and LV4 changes it):
+**As built in LV3, the driver** (`apply/lever_adapter.py`, and the hooks it uses in `apply/agent.py`; reachable only in tests at the time: no module of the app imported it, `ADAPTERS` and the factory
+did not hold it, and `AtsSpec.adapter_built` was false, so the runner answered `ats_not_built`; LV4 connected it, see "As built (LV4)" after the milestone table):
 
 - The hCaptcha hosts are now in the resolver rule. `LEVER_CAPTCHA_ENDPOINTS` holds what the load recording saw (Q3): `js.hcaptcha.com`, `hcaptcha.com`, `api.hcaptcha.com`,
   `api2.hcaptcha.com`, and `newassets.hcaptcha.com` under `/captcha/v1/`; `cdn.lever.co` and the logo bucket are static hosts; `bugs.lever.co` (exactly, never `lever.co` by suffix) and
@@ -454,9 +457,9 @@ do not hold it, and `AtsSpec.adapter_built` stays false, so the runner still ans
 - `option_pick` is a `CLICK_PURPOSES` entry. The denylist (`DENYLIST`: the two Submit controls) is the adapter's, it is the only place in `apply/` that names them, and `refuses` is a second
   lock behind the allowlist. The agent also gained the posting's host from the address the run was asked to open (`RouteState.board_host`, from the first request), the host fields of the
   outcome table's observation (`board_host`, `main_host`) and the observer's record of the apply path.
-- **Not built here.** The student's own attach in the window (10.4 item 11): `PRESS_LISTENER` still names Greenhouse's hosts and Submit control, and nothing raises
-  `RouteState.student_files_chosen`, so a file the student attaches would be refused and end their turn; both are LV4. The hand-over and the four outcome rows against FakeLever (10.4
-  items 6 and 7) are LV4's; the generic hand-over path in `_route` is unchanged and its inputs for Lever are in place. Scrolling a target that the cookie banner covers and trying again
+- **Not built in LV3 (built in LV4).** The student's own attach in the window (10.4 item 11): `PRESS_LISTENER` named Greenhouse's hosts and Submit control, and nothing raised
+  `RouteState.student_files_chosen`, so a file the student attached would have been refused and ended their turn. The hand-over and the four outcome rows against FakeLever (10.4
+  items 6 and 7) were LV4's; the generic hand-over path in `_route` was unchanged and its inputs for Lever were in place. Scrolling a target that the cookie banner covers and trying again
   (6.6) is not built: a covered control is left for the student by the usual failure path. A preflight that checks the shape of Lever's pages (R1) is not built.
 
 ### 5.3 The Lever modules
@@ -1119,6 +1122,37 @@ change to AGENTS.md "Never auto-apply".
 | LV3 | Lever driver | `apply/lever_adapter.py`, the Lever `RoutePolicy`, the résumé flow (L1, L2), EEO and consent rules, `FakeLever`, the load-time recording of Q3 and the reply shape of Q4, both from a browser page load with GETs only, pinned in `endpoints.json`. Reachable only in tests and the sandbox. | 10.7 LV3 row green; the load-time part of Q3 and Q4 recorded. |
 | LV4 | Finish in browser on Lever | Hand-over interception on the apply POST, the outcome table, record, the watch, the `SETUP.md` step (the two switches, L1's wording), `docs/assisted-apply.md` and the Threat model row in `docs/THREAT_MODEL.md` for the résumé POST. | 10.7 LV4 row green; the e2e test green; `portability` workflow dispatched and green (this change touches processes). |
 | LV5 | Look up options for Lever's location (optional) | A browser lookup run for the `location` label, so the student picks from the page's own options. | The label store fills from a real option list in the sandbox. |
+
+**As built (LV4).** `adapter_built` is True for Lever and `agent.ADAPTERS` holds `LeverAdapter`; the check offers Finish in browser as Lever's one action when
+`apply_agent` and `apply_agent_lever` are on, and the start routes refuse any other mode with `ats_mode` (`ats_not_built` stays for an ATS whose driver is
+not connected). The hand-over interception, the outcome table and the record are the shared handoff code, run with Lever's `RoutePolicy`
+(`agent._hand_over_and_continue`, `checks.lever_outcome`, `runner.handoff_settlement`); the watch reads Lever's sender through `AtsSpec`.
+Where the build differs from, or adds to, the text above:
+
+- **The student's own attach (6.12 step 7, 10.4 item 11).** The agent's press listener (an isolated world the page cannot reach) also reports a *trusted*
+  `change` on a file box of `form#application-form` (`file`) and, a moment later, that file's SHA-256 worked out in the page (`sha:<hex>`). The first
+  raises `RouteState.student_files_chosen`, which is what lets one `/parseResume` through in the student's turn (`resume_post_decision`); the request
+  can be judged before the report arrives, so a refusal for "unasked" waits `PRESS_GRACE_S` for it, as a code POST does for a press. The hash cannot
+  come from the request: the bytes of a file picked from the disk are sent by the browser itself and the route never sees them (measured: an empty
+  `resume` part). After the page applies its answer (the "working" sign gone and the reply seen), the agent compares the reader's fields with what
+  they held at the last look before the read (`parser_values`) and says, by question, which changed: progress steps `resume_attached` (the file went; the
+  parent records `student_attached_resume` at once, so a stop or a restart afterwards reads "Lever received your résumé") and `resume_changed` (the
+  sentence, a student's-turn phase). The same fields join the "left for you" list in the final evidence. A field the student typed in the same quarter
+  second as the read is named too (the sentence says "check"). `resume_sent_to_lever` stays the app's own attach only.
+- **The ready message** carries `resume_sent_to_lever`, so a run that ends with no result after the window is ready still says Lever holds the file.
+- **The second plan** the runner builds once the page is read now carries the student's L1 choice (it did not: a run with the setting on would have left the
+  résumé for the student). Fixed in a commit of its own, with the test that failed first.
+- **The field a refusal names (6.13 row 2)** is the first control the page marked `aria-invalid`; the browser's own `:invalid` on an empty required box
+  is used only when the page marked none (after a refusal Lever draws its form again, empty).
+- **Row 3 of 6.13 after a hand-over.** Once the parent has committed and the POST was continued, "nothing left the window" is never said: the agent turns
+  it into `unconfirmed`, as it does for Greenhouse. The row is reachable only as the pure table (`tests/test_apply_lever_outcome.py`).
+- **No "the form tried to send somewhere" notice on Lever** for a refused request after the press: the press listener recognises Greenhouse's Submit
+  control only, and Lever's visible button is the one the adapter never names outside its denylist. The turn still ends on a refused send to an unknown
+  address (`student_submit_elsewhere`); only the mid-turn sentence is missing.
+- **Tests.** 10.2 outcome rows (`test_apply_lever_outcome.py`, wired by `test_apply_lever_handoff_browser.py`); 10.4 items 6, 7, 11, 13, 14 and 15 in
+  `test_apply_lever_handoff_browser.py` (items 12 and 16 were already in `test_apply_lever_browser.py`); the e2e through the real runner and a spawned
+  child in `test_apply_lever_handoff_e2e.py`; the runner's side of the student's attach in `test_apply_lever_student_attach.py`; the sandbox's canned
+  handoff and the screens in `tests/ui/test_apply_lever_handoff.py`.
 
 **Rollout checklist** (after merge, in the student's own app; not a PR condition):
 
