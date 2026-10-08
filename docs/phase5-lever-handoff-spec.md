@@ -385,6 +385,33 @@ behavior pinned (section 12, LV1). It does these things and nothing else:
 - The parser's scanner took time in proportion to the controls times the label text when many controls shared one long `label[for]`; a label now works
   out its words once.
 
+**As built in LV3, the request policy** (`checks.LEVER_ROUTE_POLICY`, `checks.lever_outcome`; pure rules, no browser; the adapter and the hand-over are built on top):
+
+- `RoutePolicy` gained five fields Greenhouse leaves at their defaults: `challenge_path_prefixes` (Cloudflare's bot check), `resume_post_path` (`/parseResume`),
+  `submit_content_types` (the apply POST must be multipart), `bind_submit_host` (the apply POST must go to the posting's own host, `RouteState.board_host`; with none bound
+  nothing is one) and `outcome_table` (`decide_outcome` hands over to `lever_outcome`). Its telemetry list is a `DomainSet`, so `googletagmanager.com`, `google-analytics.com`
+  and `bugsnag.com` cover every subdomain. `RouteState` gained `board_host`, `resume_upload_allowed`, `resume_sha256`, `page_account_id` and `resume_posts_passed`; `Allow` gained
+  `resume_post` and `digest`; `Observation` gained `board_host` and `main_host`.
+- The resume POST is `checks.resume_post_decision`, reached from `route_decision` for a handoff POST to `/parseResume` on the posting's own host, in the fill or the student's
+  turn. Each condition of section 7 is its own rule: `resume_post_off`, `resume_post_second`, `resume_post_content_type`, `resume_post_parts` (not exactly the two parts, in a
+  clean multipart body), `resume_post_file` (the fill only), `resume_post_account`, and `value_guard` for a planned value in the URL, a header, or anywhere outside the `resume` part.
+  Anything else to that path or host is refused by the general rules.
+- Two places where the build is narrower than the text above, until the recording of Q3 shows otherwise: Cloudflare's allowed writes are under `/cdn-cgi/challenge-platform/`
+  and not all of `/cdn-cgi/` (`LEVER_CLOUDFLARE_PATH_PREFIXES`), and the hCaptcha hosts are the three section 7 names (`LEVER_CAPTCHA_ENDPOINTS`, the one tuple the recording extends).
+  Those three hosts are not yet in `resolvable_hosts` (`LEVER_CAPTCHA_RESOLVABLE_HOSTS`): the resolver rule is one list for every ATS, so joining them lets a Greenhouse run's browser
+  look up hCaptcha, which `tests/test_apply_agent_static.py` rules out today. That goes with the driver.
+- The outcome table has the four rows of 6.13 and the challenge rule; a challenge with no POST sent answers `challenge_wait` with detail `{"waiting": "challenge"}` until the waiting is
+  over. It is not named `waiting`: the shared loop reads that as a security-code prompt, and Lever emails no code.
+- Lever's `RoutePolicy` sets `security_code_posts=False`, so the one-more-POST rule for an emailed code does not exist there: a second POST to the apply URL is refused
+  (`second_submit_post`) whatever the shared prompt counter says.
+- The resume POST in the student's turn needs a file the student chose: `RouteState.student_files_chosen` (the driver raises it on a trusted selection in the page's file input,
+  as the press listener reports Submit) pays for one read each, counted in `student_file_reads_passed`; a read with none left is refused (`resume_post_unasked`). Without that a page
+  script could post any bytes as a "file" before Submit. The part's content type is always read for a planned value, and in the fill so is its file name unless it is exactly
+  `RouteState.resume_file_name`, the name the app attached the file under. The student's own file name is not read.
+- Where the build is wider than the table: the `after hand-over` row lists writes to a CAPTCHA endpoint only, and `route_decision` also allows a write to Cloudflare's challenge path
+  there, as in every other phase (the value guard still reads it). The Hosts paragraph names Cloudflare's beacons, so this follows that text; the owner decides whether the row should refuse it.
+- The value guard sees no cookies: the route handler gives `route_decision` Playwright's `request.headers`, which leaves them out (listed in `docs/known-defects.md`).
+
 ### 5.3 The Lever modules
 
 | Module | Holds | Imports |
