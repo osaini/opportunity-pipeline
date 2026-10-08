@@ -386,8 +386,9 @@ def test_a_form_that_tried_to_send_to_an_address_the_app_does_not_know_is_said_i
     start_finish(section)
     turn = section.locator(".apply-turn")
     expect(turn).to_be_visible(timeout=30_000)
-    expect(turn.locator(".apply-run-step")).to_contain_text("The form tried to send to apply.example.test, which the app doesn't recognize")
-    expect(turn.locator(".apply-run-step")).to_contain_text("Nothing was sent")
+    expect(turn.locator(".apply-run-step")).to_contain_text("The form tried to send a request to apply.example.test, which the app doesn't recognize")
+    expect(turn.locator(".apply-run-step")).to_contain_text("stopped that request")
+    expect(turn.locator(".apply-run-step")).not_to_contain_text("Nothing was sent")
     # Still the student's turn: Stop is there, the error advice is there, and Stop ends it as always.
     expect(turn.get_by_role("button", name="Stop")).to_be_visible()
     expect(turn.locator(".apply-turn-help")).to_be_visible()
