@@ -10,6 +10,7 @@ a run row. Everything a RunResult carries is value-free: sentences, public page 
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -71,7 +72,9 @@ OP_ERROR = "error"                  # child -> parent: {"op", "error": exception
 OP_HANDOFF_READY = "handoff_ready"     # child -> parent, one-way: {"op", "plan": [value-free entries], "plan_hash",
                                        #   "left": [{"key", "question", "reason"}], "screenshot": {...} | None,
                                        #   "captcha_widget": bool, "page_defaults": [keys],
-                                       #   "handoff_in_s": seconds the agent will really keep the window for the student}
+                                       #   "handoff_in_s": seconds the agent will really keep the window for the student,
+                                       #   "resume_sent_to_lever": bool, optional (Lever only: true once the app's attach sent the file;
+                                       #   left out, nothing is recorded and the run's planned-attach marker stands)}
 OP_SECURITY_CODE = "security_code"     # child -> parent: {"op", "id"}. The parent answers for its own run's claim,
                                        #   never for a token the child names. Sent again only after the last ask's
                                        #   reply arrived (never while one is outstanding).
@@ -112,6 +115,61 @@ LEFT_FIELD = 'The app could not fill "{question}". Fill it in yourself.'
 LEFT_CAPTCHA = "Tick the CAPTCHA box in the window yourself before you press Submit application."
 LEFT_COVER_LETTER_CHANGED = "Your cover letter for this role changed while the app was working, so it was not attached. Attach yours in the window."
 LEFT_UNPLANNED = "The page put something in \"{question}\" that the app didn't. Check it before you press Submit application."
+
+
+# Lever reads a résumé as soon as it is attached (docs/phase5-lever-handoff-spec.md, L1), so the file is with Lever before the student presses
+# Submit: from then on, a run that ends without a submission does not say "Nothing was sent". ``resume_with_ats`` is whether the run's evidence
+# says the file got there, by the app's attach ("resume_sent_to_lever": true) or by the student's own in the window ("student_attached_resume").
+RESUME_RECEIVED = "{ats} received your résumé."
+RESUME_MAYBE = "{ats} may have received your résumé."
+RESUME_EVIDENCE_KEYS = ("resume_sent_to_lever", "student_attached_resume")
+# Written to the run row when it starts, if the app will attach the résumé: a run that dies before its window is ready cannot say whether the file got there.
+RESUME_PLANNED_KEY = "resume_attach_planned"
+_NOT_SENT_CLAUSE = re.compile(r"(?:your application was not sent|nothing was sent|no application was sent)(\.?)", re.IGNORECASE)
+_RESUME_SAID = re.compile(r"(?:received|holds|has|have) (?:your résumé|the file)", re.IGNORECASE)
+
+
+def _student_attached(record: Any) -> bool:
+    """The student's own attach, as the window recorded it: a count above zero or a file's hash. A record set up empty is not a file."""
+    if not isinstance(record, dict):
+        return False
+    count = record.get("count")
+    sha = record.get("sha256")
+    return (isinstance(count, int) and not isinstance(count, bool) and count > 0) or (isinstance(sha, str) and bool(sha))
+
+
+def resume_with_ats(evidence: Any) -> bool:
+    """Whether a run's evidence says the student's résumé reached the ATS before any Submit (Lever: when it was attached)."""
+    return isinstance(evidence, dict) and (evidence.get("resume_sent_to_lever") is True or _student_attached(evidence.get("student_attached_resume")))
+
+
+def resume_may_be_with_ats(evidence: Any) -> bool:
+    """Whether the run was going to have the app attach the résumé and nothing yet says whether the file got there."""
+    return isinstance(evidence, dict) and evidence.get(RESUME_PLANNED_KEY) is True and not resume_with_ats(evidence)
+
+
+def with_resume_note(sentence: str, ats_name: str, *, sure: bool = True) -> str:
+    """A "not sent" sentence of a run that never handed over, said the way it is true once the ATS holds (or may hold) the résumé.
+
+    "Nothing was sent", "No application was sent" and "Your application was not sent" at the start of a sentence become "Your application was
+    not sent. Lever received your résumé."; inside a sentence ("..., so nothing was sent") the clause is rewritten in place, in lower case, and the
+    second sentence follows. A sentence with none of them gets the second sentence added. ``sure=False`` is for a run that only planned the
+    attach: "Lever may have received your résumé." A sentence that already speaks of the file ("Lever may still have the file") is left as it
+    is. Only for a run that never handed over: after a hand-over the sentences say "may have been sent", which this never touches.
+    """
+    if not sentence or _RESUME_SAID.search(sentence):
+        return sentence
+    note = (RESUME_RECEIVED if sure else RESUME_MAYBE).format(ats=ats_name)
+    found = _NOT_SENT_CLAUSE.search(sentence)
+    if found is None:
+        return f"{sentence.rstrip()} {note}"
+    before = sentence[:found.start()]
+    if not before or before.endswith((". ", "! ", "? ")):
+        return f"{before}Your application was not sent. {note}{sentence[found.end():]}"
+    rewritten = f"{before}your application was not sent{found.group(1)}{sentence[found.end():]}".rstrip()
+    if not rewritten.endswith((".", "!", "?")):
+        rewritten += "."
+    return f"{rewritten} {note}"
 
 
 @dataclass(frozen=True)

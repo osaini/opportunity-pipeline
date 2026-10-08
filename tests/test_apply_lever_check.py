@@ -82,6 +82,13 @@ class LeverCheckTests(PolicyCase):
         field = next(item for item in self.lever_check()["fields"] if item["key"] == "resume")
         self.assertEqual(field["source"], "Your confirmed résumé")
 
+    def test_the_answer_says_whether_the_app_may_attach_the_resume_so_the_start_can_say_what_that_does(self):
+        self.assertIs(self.lever_check()["resume_upload"], False)
+        self.switch("apply_lever_resume_upload", "on")
+        self.assertIs(self.lever_check()["resume_upload"], True)
+        self.role()
+        self.assertIs(self.run_check("gh-1", page_client=self.pages)["resume_upload"], False, "a Greenhouse role has no such choice")
+
     def test_with_the_lever_switch_off_the_answer_says_how_to_turn_it_on_and_asks_lever_nothing(self):
         self.switch("apply_agent_lever", "off")
         result = self.lever_check()

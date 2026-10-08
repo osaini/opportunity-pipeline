@@ -726,6 +726,64 @@ class HonestClockTests(WatchCase):
         self.assertEqual(self.watch(), self.zero(), "the other claim's email is too early")
 
 
+class LeverWatchTests(WatchCase):
+    """Lever's confirmation (docs/phase5-lever-handoff-spec.md 6.15): hire.lever.co is a sender of its own, the watch learns it per ATS, and
+    every sentence names Lever. Greenhouse's rules are unchanged: a Greenhouse sender is no evidence for a Lever application, and the other way round."""
+
+    LEVER_SENDER = "hire.lever.co"
+
+    def lever_claim(self, **kwargs):
+        return self.submitted(mode="handoff", ats="lever", board="harbor-demo", **kwargs)
+
+    def expired(self, **kwargs):
+        return self.lever_claim(handed=self.at(hours=-26), until=self.at(hours=-2), **kwargs)
+
+    def test_a_confirmation_from_lever_that_names_the_posting_confirms_a_lever_claim(self):
+        token = self.lever_claim()
+        self.mail(self.application_of(token), matched_by="job_id", domain=self.LEVER_SENDER, received=self.at(minutes=-30))
+        self.assertEqual(self.watch(), self.zero(email_confirmed=1))
+        self.assertEqual(self.claim_row(token)["verification"], "email_confirmed")
+
+    def test_an_unmatched_email_from_lever_that_names_the_company_is_only_possible_for_a_lever_claim(self):
+        token = self.lever_claim()
+        self.mail("", matched_by="", linked=False, received=self.at(minutes=-20), subject="Thanks for applying to Bluefin Robotics",
+                  domain=self.LEVER_SENDER)
+        self.assertEqual(self.watch(), self.zero(possible_email=1))
+        self.assertEqual(self.claim_row(token)["verification"], "awaiting_email", "it never confirms")
+
+    def test_a_greenhouse_sender_is_no_evidence_for_a_lever_claim_and_lever_is_none_for_a_greenhouse_one(self):
+        lever = self.lever_claim()
+        self.mail("", matched_by="", linked=False, received=self.at(minutes=-20), subject="Thanks for applying to Bluefin Robotics", domain="greenhouse-mail.io")
+        self.assertEqual(self.watch(), self.zero(), "a Greenhouse sender names the company, but the application is on Lever")
+        self.assertNotIn("possible_email_at", self.detail(lever))
+        with self.conn:
+            self.conn.execute("DELETE FROM application_submit_claims")
+            self.conn.execute("DELETE FROM application_mail_messages")
+        greenhouse = self.submitted()
+        self.mail("", matched_by="", linked=False, received=self.at(minutes=-20), subject="Thanks for applying to Bluefin Robotics", domain=self.LEVER_SENDER)
+        self.assertEqual(self.watch(), self.zero(), "and the other way round")
+        self.assertNotIn("possible_email_at", self.detail(greenhouse))
+
+    def test_a_released_lever_attempt_is_flipped_by_its_email_with_a_notice_that_says_lever(self):
+        token = self.raw_claim(state="released", mode="handoff", handed_over_at=iso(self.at(minutes=-40)), after_click=1, stage_policy="ask", ats="lever")
+        self.mail(self.application_of(token), received=self.at(minutes=-35), domain=self.LEVER_SENDER)
+        self.assertEqual(self.watch(), self.zero(resolved_by_email=1))
+        self.assertIn("Lever confirmed your application to Bluefin Robotics by email", self.notices())
+        self.assertNotIn("Greenhouse", " ".join(self.notices()))
+
+    def test_an_email_set_aside_unread_from_lever_with_no_match_stalls_the_watch(self):
+        # The reader knew the sender (it parsed; deciding failed). It is an address a confirmation comes from, so it might be the confirmation.
+        token = self.expired()
+        self.mail("", kind="", state="error", subject="", domain=self.LEVER_SENDER, matched_by="none", verified=0, received=self.at(hours=-20), linked=False)
+        self.assertEqual(self.watch(), self.zero(paused=1))
+        self.assertEqual(self.detail(token)["watch_paused"], apply_watch.READER_SET_ASIDE)
+
+    def test_the_card_names_lever_in_its_watching_line(self):
+        token = self.lever_claim()
+        card = apply_watch.card_states(self.conn, USER)[self.application_of(token)]
+        self.assertEqual((card["status"], card["ats"], card["ats_name"]), ("watching", "lever", "Lever"))
+
+
 class FinishInBrowserWatchTests(WatchCase):
     """D12 C on the student's answer: Finish in browser watches only when the watch is available; one-click always does."""
 

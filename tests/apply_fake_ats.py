@@ -695,9 +695,11 @@ class CannedAgent:
         from opportunity_app.apply.agent_types import (
             HANDOFF_NOT_SUBMITTED, HANDOFF_UNRECORDED, LEFT_FIELD, PROGRESS_STEPS, RunResult, progress_text,
         )
+        from opportunity_app.apply.ats import name_of
         from opportunity_app.apply.checks import UNCONFIRMED_NOTE as UNCONFIRMED_TEMPLATE
 
-        UNCONFIRMED_NOTE = UNCONFIRMED_TEMPLATE.format(ats="Greenhouse")
+        ats_name = name_of(self.ats)
+        UNCONFIRMED_NOTE = UNCONFIRMED_TEMPLATE.format(ats=ats_name)
 
         entries = apply_policy.plan_entries(plan)
         left = [
@@ -705,14 +707,20 @@ class CannedAgent:
             for entry in entries if entry["disposition"] == "left_for_you"
         ]
         plan_hash = getattr(plan, "plan_hash", "")
+        # On Lever the app's attach of the résumé sends it to Lever (the plan fills the file only when the student let the app attach it); the real
+        # driver reports it in the ready message and in every result after it, and so does this one.
+        resume_sent = self.ats == "lever" and any(
+            entry["disposition"] == "fill" and (entry.get("source") or {}).get("kind") == "resume" for entry in entries
+        )
         evidence: dict[str, Any] = {
+            "resume_sent_to_lever": resume_sent,
             "page": "application_form_new", "loader": {"submit_path": True, "confirmation_path": True}, "uploads_on_attach": False,
             "captcha_widget": False, "lookups": [], "submit_path_hit": False, "refused_total": 0, "left_for_you": left, "page_defaults": [],
             "handoff_end": "", "browser_closed": True, "parent_gone": False, "submit_post": False, "submit_continued": False,
         }
         stopped = RunResult("needs_you", [HANDOFF_NOT_SUBMITTED], plan=entries, plan_hash=plan_hash, handed_over=False, after_click=False,
                             evidence={**evidence, "handoff_end": "stopped"})
-        self.on_progress("open", progress_text("open", "Greenhouse"))
+        self.on_progress("open", progress_text("open", ats_name))
         if self.handoff.get("outcome") == "no_loader":
             # A property of the board: the form sends applications somewhere the app does not know. Stops before any input, as the real agent does.
             from opportunity_app.apply.agent_types import HANDOFF_NO_LOADER
@@ -734,7 +742,7 @@ class CannedAgent:
             shots.append({"step": "filled", "path": str(path), "sha256": hashlib.sha256(data).hexdigest(), "masked": masked})
         if link is not None:
             message = {"plan": entries, "plan_hash": plan_hash, "left": left, "screenshot": shots[0] if shots else None,
-                       "captcha_widget": False, "page_defaults": []}
+                       "captcha_widget": False, "page_defaults": [], "resume_sent_to_lever": resume_sent}
             if "in_s" in self.handoff:
                 message["handoff_in_s"] = self.handoff["in_s"]   # how long the window really stays the student's (the real agent says it)
             link.ready(message)
@@ -765,9 +773,9 @@ class CannedAgent:
             # The app said no (or we pretend it did): the POST would be aborted, and nothing the agent says may call it sent.
             return RunResult("needs_you", [HANDOFF_UNRECORDED], plan=entries, plan_hash=plan_hash, screenshots=shots, handed_over=False,
                              after_click=False, evidence={**evidence, "handoff_end": "refused"})
-        self.on_progress("submitting", progress_text("submitting", "Greenhouse"))
+        self.on_progress("submitting", progress_text("submitting", ats_name))
         evidence.update(handoff_end="posted", submit_post=True, submit_continued=True, submit_status=200,
-                        confirmation_path="/examplerobotics/jobs/4000000001/confirmation")
+                        confirmation_path=f"/{LEVER_SITE}/{LEVER_JOB_ID}/thanks" if self.ats == "lever" else "/examplerobotics/jobs/4000000001/confirmation")
         if kind == "hang_after_hand_over":
             while not cancelled():   # a process is killed; a thread is told to stop when the run ends
                 time.sleep(0.2)
@@ -779,7 +787,8 @@ class CannedAgent:
                              after_click=True, evidence=evidence)
         if kind == "failed_4xx":
             evidence.update(submit_status=422)
-            return RunResult("failed", ['Greenhouse marked "Why do you want to work here?" as wrong'], plan=entries, plan_hash=plan_hash,
+            refused = "Lever refused the form (HTTP 422): \"Current company\" is marked invalid" if self.ats == "lever" else 'Greenhouse marked "Why do you want to work here?" as wrong'
+            return RunResult("failed", [refused], plan=entries, plan_hash=plan_hash,
                              screenshots=shots, handed_over=True, after_click=True, evidence=evidence)
         code = {"prompted": False, "typed": False, "fallback": False, "posted": False, "rounds": 0, "auto_submit_blocked": False, "reason": ""}
         if kind == "security_code":
