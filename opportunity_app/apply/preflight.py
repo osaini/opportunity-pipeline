@@ -26,7 +26,7 @@ from typing import Any
 from pipeline_core.identity import employer_key
 from pipeline_core.visibility import capture_visible_sql
 
-from . import classify as apply_classify, greenhouse as apply_greenhouse, policy as apply_policy, runs as apply_runs, sensitive as apply_sensitive
+from . import ats as apply_ats, classify as apply_classify, greenhouse as apply_greenhouse, policy as apply_policy, runs as apply_runs, sensitive as apply_sensitive
 from ..student import preparation
 from ..applications.actions import OpportunityNotFoundError
 from .schema_client import SchemaClient, SchemaUnavailable
@@ -255,11 +255,12 @@ def _prepare(
         "checked_at": moment.isoformat(timespec="seconds"), "from_cache": False,
         "posting": {"title": "", "company": "", "url": "", "differs": False, "difference": ""},
     }
-    ident = apply_greenhouse.identify(conn, opportunity_id)
-    if ident is None:
+    found = apply_ats.identify(conn, opportunity_id)
+    if found is None:
         return result, None, None, None
+    ats, ident = found
     token, job = ident
-    result.update(ats=apply_greenhouse.ATS_GREENHOUSE, board_token=token, job_id=job, canonical_url=apply_greenhouse.canonical_url(token, job))
+    result.update(ats=ats.key, board_token=token, job_id=job, canonical_url=ats.canonical_url(token, job))
     application = conn.execute("SELECT stage FROM applications WHERE opportunity_id=? AND user_id=?", (opportunity_id, user_id)).fetchone()
     if application is not None:
         result["application"] = {"exists": True, "stage": str(application["stage"])}
@@ -278,10 +279,10 @@ def _prepare(
         "differs": bool(difference), "difference": difference,
     }
     sources = apply_policy.sources_for(conn, user_id, opportunity_id, company=company, storage_root=resume_root, key=key)
-    schema = apply_policy.parse_schema(listing)
+    schema = ats.parse_schema(listing)
     plan = apply_policy.build_plan(
         schema, None, sources, company, mode,
-        canonical_url=result["canonical_url"], adapter_version=apply_greenhouse.ADAPTER_VERSION,
+        canonical_url=result["canonical_url"], adapter_version=ats.adapter_version,
     )
     return result, plan, sources, schema
 
