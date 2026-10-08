@@ -193,7 +193,7 @@ to `main`, except `portability`:
 | --- | --- | --- |
 | `test` | `compileall`; the unit suite in parallel; `tests.test_scheduled_tasks` and `tests.test_postgres` serially (postgres skips here); `check-js-syntax.mjs`; the extension unit tests; `pip-audit` | every run |
 | `ui` | `tests/ui` in Chromium, the `visual` marker deselected (baselines are per platform), traces kept on failure | every run |
-| `browser-python` | the six Playwright-driven unittest modules of section 3 under `xvfb-run` (the two Lever ones, `tests.test_apply_fake_lever` and `tests.test_apply_lever_browser`, add about 5.5 minutes run serially and headless on a 16-core machine), browser tests required, 40 minute limit | every run |
+| `browser-python` | the eight Playwright-driven unittest modules of section 3 under `xvfb-run` (the first two Lever ones, `tests.test_apply_fake_lever` and `tests.test_apply_lever_browser`, add about 5.5 minutes run serially and headless on a 16-core machine; the two Finish in browser ones, `tests.test_apply_lever_handoff_browser` and `tests.test_apply_lever_handoff_e2e`, were not timed on their own), browser tests required, 40 minute limit | every run |
 | `extension-browser` | `npm ci`, then `npm run test:extension:browser` | every run |
 | `api-fuzz` | `run_api_fuzz.py --max-examples 20` with the two virtualenvs | every run |
 | `postgres` | `tests.test_postgres` against a `postgres:17` service | every run |

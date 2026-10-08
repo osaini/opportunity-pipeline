@@ -1,6 +1,6 @@
 """Finish in browser on Lever, in a real Chromium against FakeLever (skipped without Chromium, required in CI's `browser-python`).
 
-docs/phase5-lever-handoff-spec.md 10.4 items 6, 7, 11, 13, 14 and 15 (item 12 is in test_apply_lever_browser.py, item 16 beside it), and the wiring of the outcome
+docs/phase5-lever-handoff-spec.md 10.4 items 6, 7, 11, 14 and 15 (items 12 and 13 are in test_apply_lever_browser.py, item 16 beside them), and the wiring of the outcome
 table of 6.13 into the agent. The agent is the real one with the real Lever adapter and request policy; pages are served by ``FakeLever`` through the
 agent's ``route_hook``, so ``route_decision`` runs first and only what it lets through reaches the fake. The student is a ``student_hook`` that completes
 what the app left and presses Lever's own Submit in the window, as the person would; the agent itself never presses it (``go`` checks the agent's own record of what it clicked).
@@ -12,13 +12,11 @@ Every company, person and address is fictional.
 
 import dataclasses
 import hashlib
-import re
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -26,14 +24,10 @@ import realdata_guard
 
 realdata_guard.install()
 
-import apply_fake_ats
-import test_apply_lever_browser as lever_browser
-from apply_fake_ats import LEVER_APPLY_URL, LEVER_COMPANY, FakeLever
+from apply_fake_ats import LEVER_APPLY_URL, FakeLever
 from browser_support import requires_chromium
-from helpers_apply import Store, entry
 from test_apply_lever_browser import FORM_VALUES_JS, TIMEOUTS, LeverAgent, lever_sources, planner, resume_payload
 
-from opportunity_app.apply import policy as apply_policy
 from opportunity_app.apply.agent_types import HANDOFF_NOT_SUBMITTED
 from opportunity_app.apply.checks import UNCONFIRMED_NOTE
 from opportunity_app.apply.lever_adapter import LeverAdapter
@@ -391,40 +385,6 @@ class WordsTests(LeverHandoffCase):
         run = self.go(fake, student=Student(("handoff", completes_and_presses)))
         self.assertEqual((run.result.outcome, run.result.after_click), ("needs_you", False))
         self.assertEqual(run.result.reasons, [HANDOFF_NOT_SUBMITTED + WITH_RESUME])
-
-
-# --- Item 13: one tick takes `required` off every box, and the other group stays the student's -------------------------------------------------
-
-STATEMENT = "I certify that the answers I have given are true and complete."
-
-
-class RequiredGroupTests(LeverHandoffCase):
-    GROUP = "cards[c0c0c0c0-0000-5000-8000-0000000000c0][field%d]"
-
-    def test_ticking_one_required_group_leaves_the_other_on_the_list_whatever_the_pages_required_says(self):
-        # The first group becomes a certification the student stored an exact statement for, so the app ticks it. The page's own script then takes
-        # `required` off every box, the second group's included, and the browser would let the form go.
-        def derived(name):
-            text = original(name)
-            if name != "two_required_groups.html":
-                return text
-            text = text.replace("Which tools have you used?", STATEMENT)
-            text = re.sub(r'<li><label><input type="checkbox" name="[^"]*field0\]" value="Ticket queues" required /><span class="application-answer-alternative">Ticket queues</span></label></li>', "", text)
-            text = text.replace("{&quot;text&quot;:&quot;Ticket queues&quot;,&quot;optionId&quot;:&quot;aaaaaaaa-0000-5000-8000-000000000001&quot;},", "")
-            return text.replace("Chat tools", STATEMENT)
-
-        original = apply_fake_ats.lever_fixture_text
-        stored = Store(entry("acknowledgment", STATEMENT, "checked", kind="checkbox", company_key=apply_policy.employer_key(LEVER_COMPANY)))
-        with mock.patch.object(apply_fake_ats, "lever_fixture_text", derived), mock.patch.object(lever_browser, "lever_fixture_text", derived):
-            run = self.go(page="two_required_groups.html", src=lever_sources(allowed={"acknowledgment"}, store=stored))
-        form = run.seen["form"]
-        self.assertEqual(run.agent.keys("tick"), [self.GROUP % 0], "the app ticked the one box it has a stored statement for")
-        self.assertEqual(form[self.GROUP % 0], STATEMENT)
-        self.assertNotIn(self.GROUP % 1, form)
-        left = self.left(run)
-        self.assertIn(self.GROUP % 1, left, "the second group is still the student's")
-        self.assertNotIn(self.GROUP % 0, left)
-        self.assertEqual(run.seen["required_after_tick"], [False, False, False], "the page took `required` off every box once one was ticked")
 
 
 # --- Item 14: keystrokes ------------------------------------------------------------------------------------------------------------------------

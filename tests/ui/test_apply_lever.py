@@ -154,9 +154,8 @@ def test_the_settings_keep_levers_exact_location_apart_and_say_what_the_two_swit
     expect(block.locator('ul[data-ats="greenhouse"]')).not_to_contain_text("Austin")
     expect(block.locator(".apply-lever-settings")).to_contain_text("Apply for me on Lever is on.")
     expect(block.locator(".apply-lever-settings")).to_contain_text(
-        "Let the app attach my résumé on Lever is off. The app cannot attach it on Lever yet, because Finish in browser is not available for Lever: "
-        "you attach it yourself on Lever's application page. Once it can, Lever reads a résumé as soon as it is attached, "
-        "so with this on it is sent to Lever before you press Submit."
+        "Let the app attach my résumé on Lever is off. Lever reads a résumé as soon as it is attached, so it is sent to Lever before you press Submit. "
+        "With this off, you attach it yourself in the window."
     )
     block.get_by_role("button", name="Remove the saved Lever Location option").click()
     expect(block.locator('ul[data-ats="lever"] li')).to_have_count(0)

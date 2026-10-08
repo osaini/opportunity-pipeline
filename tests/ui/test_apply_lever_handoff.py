@@ -97,7 +97,7 @@ def test_with_the_resume_choice_on_the_start_says_the_app_attaches_it_and_it_goe
     wait_for_results(owner_page)
     section = open_lever(owner_page)
     expect(section.locator("[data-apply-resume-start]")).to_have_text(BY_APP)
-    expect(section.locator(".apply-ats-note")).to_contain_text("the app attaches it itself, because you let it in Apply agent settings")
+    expect(section.locator(".apply-ats-note")).to_contain_text("the app attaches it itself, because you let it in Apply for me settings")
 
 
 def test_a_run_with_the_resume_choice_on_shows_the_resume_was_sent_and_a_stop_says_lever_received_it(canned_agent, owner_page, base_url, live_server):

@@ -1161,8 +1161,8 @@ Where the build differs from, or adds to, the text above:
 - **No "the form tried to send somewhere" notice on Lever** for a refused request after the press: the press listener recognises Greenhouse's Submit
   control only, and Lever's visible button is the one the adapter never names outside its denylist. The turn still ends on a refused send to an unknown
   address (`student_submit_elsewhere`); only the mid-turn sentence is missing (listed in `docs/known-defects.md`).
-- **Tests.** 10.2 outcome rows (`test_apply_lever_outcome.py`, wired by `test_apply_lever_handoff_browser.py`); 10.4 items 6, 7, 11, 13, 14 and 15 in
-  `test_apply_lever_handoff_browser.py` (items 12 and 16 were already in `test_apply_lever_browser.py`); the e2e through the real runner and a spawned
+- **Tests.** 10.2 outcome rows (`test_apply_lever_outcome.py`, wired by `test_apply_lever_handoff_browser.py`); 10.4 items 6, 7, 11, 14 and 15 in
+  `test_apply_lever_handoff_browser.py` (items 12, 13 and 16 are in `test_apply_lever_browser.py`; LV4's own item 13 test was dropped when LV3's, on the fixture with the statement box, covered the same rule); the e2e through the real runner and a spawned
   child in `test_apply_lever_handoff_e2e.py`; the runner's side of the student's attach in `test_apply_lever_student_attach.py`; the sandbox's canned
   handoff and the screens in `tests/ui/test_apply_lever_handoff.py`.
 
