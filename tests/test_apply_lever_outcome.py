@@ -157,12 +157,13 @@ class NothingSentRowTests(unittest.TestCase):
 class ChallengeTests(unittest.TestCase):
     def test_a_challenge_before_a_post_is_no_outcome(self):
         outcome = decide_outcome(seen(challenge_frame=True), POLICY)
-        self.assertEqual((outcome.outcome, outcome.after_click, outcome.detail, outcome.settled), ("waiting", 0, {"waiting": "challenge"}, False))
+        self.assertEqual((outcome.outcome, outcome.after_click, outcome.detail, outcome.settled), ("challenge_wait", 0, {"waiting": "challenge"}, False))
         self.assertNotIn("security_code", outcome.detail)
+        self.assertNotEqual(outcome.outcome, "waiting", "the shared loop reads that name as a security-code prompt and would let a second POST be asked for")
 
     def test_a_challenge_before_a_post_stays_no_outcome_with_the_cloudflare_or_captcha_posts_it_makes(self):
         requests = (post(200, host="api.hcaptcha.com", path="/checkcaptcha/x"), post(204, path="/cdn-cgi/challenge-platform/h/b/jsd/oneshot/a"))
-        self.assertEqual(decide_outcome(seen(*requests, challenge_frame=True), POLICY).outcome, "waiting")
+        self.assertEqual(decide_outcome(seen(*requests, challenge_frame=True), POLICY).outcome, "challenge_wait")
 
     def test_when_the_waiting_is_over_a_challenge_never_finished_is_nothing_sent(self):
         outcome = decide_outcome(seen(challenge_frame=True), POLICY, code_wait_over=True)

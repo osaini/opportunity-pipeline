@@ -145,6 +145,7 @@ class RoutePolicy:
     resume_post_path: str = ""                        # the path on the posting's own host where the page reads a file as it is attached; "" for an ATS whose page does not
     submit_content_types: tuple[str, ...] = ()        # the submit POST must carry one of these content types; empty means any
     bind_submit_host: bool = False                    # the submit POST must go to the posting's own host (``RouteState.board_host``); with none bound, nothing is one
+    security_code_posts: bool = True                  # one more POST to the submit path may pass for an emailed code (Greenhouse's); False where the ATS emails none (Lever, Q5)
     outcome_table: Callable[..., Any] | None = None   # this ATS's own rows of the outcome table, which ``decide_outcome`` hands over to; None means the shared one
 
     def is_submit_request(self, host: str, path: str, submit_path: str, board_host: str = "") -> bool:
@@ -276,12 +277,17 @@ class RouteState:
     # The host the posting's own page was loaded from, for an ATS with more than one (``RoutePolicy.bind_submit_host``, ``resume_post_path``).
     board_host: str = ""
     # Lever's file read (``RoutePolicy.resume_post_path``). The app's own fill may send one such request, only when the student allowed
-    # it (``resume_upload_allowed``) and only the planned file (``resume_sha256``, the hex SHA-256 of its bytes); in the student's turn
-    # any file the student chose may go. In both the request's ``accountId`` part must be the page's own (``page_account_id``).
+    # it (``resume_upload_allowed``) and only the planned file (``resume_sha256``, the hex SHA-256 of its bytes, attached under the name
+    # ``resume_file_name``); in the student's turn any file the student chose may go, one read for each choice (``student_files_chosen``,
+    # which the agent raises on a trusted selection in the page's file input, as the press listener reports Submit). In both the request's
+    # ``accountId`` part must be the page's own (``page_account_id``).
     resume_upload_allowed: bool = False
     resume_sha256: str = ""
+    resume_file_name: str = ""
     page_account_id: str = ""
     resume_posts_passed: int = 0
+    student_files_chosen: int = 0
+    student_file_reads_passed: int = 0
 
     @property
     def code_typing(self) -> bool:
@@ -305,6 +311,8 @@ class RouteState:
             self.code_pressed = False    # the press was used by this POST; a later code POST (a second prompt) needs a new one
         elif decision.resume_post:
             self.resume_posts_passed += 1
+            if decision.student_file:
+                self.student_file_reads_passed += 1
         elif decision.submit_post:
             self.submit_posts_passed += 1
 
@@ -322,6 +330,7 @@ class Allow:
     submit_post: bool = False       # this request is the submit POST (count it with RouteState.record)
     code_post: bool = False         # this request is the POST that carries a security code
     resume_post: bool = False       # this request is the page reading an attached file (count it with RouteState.record)
+    student_file: bool = False      # ...and the file is one the student chose, in their turn (it uses up one of ``RouteState.student_files_chosen``)
     digest: str = ""                # the hex SHA-256 of the file in a ``resume_post``, for the record (never the file)
 
 
@@ -566,7 +575,7 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
             return Allow("hand_over", requires_hand_over=True, submit_post=True)
         if not state.submit_posts_passed:
             return Allow("submit", submit_post=True)
-        if state.security_code_prompts > state.code_posts_passed:
+        if policy.security_code_posts and state.security_code_prompts > state.code_posts_passed:
             if state.code_press_required and not state.code_pressed:
                 # The app typed the code. The widget (or anything else on the page) may not send it before the student presses Submit.
                 return abort("code_post_before_press", "A request that would send the security code was refused because you had not pressed Submit")
@@ -676,6 +685,10 @@ def resume_post_decision(phase: str, request: RouteRequest, state: RouteState, p
         return Abort(rule, reason, safe_host(host, state.values), field_key)
 
     filling = phase == PHASE_FILL
+    if not filling and state.student_file_reads_passed >= state.student_files_chosen:
+        # The student's own act is choosing a file. Without one, a page script could post any bytes here as a "file", and this is the one write
+        # to a form host before hand-over that the value guard does not read the body of.
+        return abort("resume_post_unasked", "The page tried to send a file you had not chosen, so the app refused it")
     if filling and not state.resume_upload_allowed:
         return abort("resume_post_off", "The page tried to send a file, and you have not allowed the app to attach one")
     if filling and state.resume_posts_passed:
@@ -703,10 +716,15 @@ def resume_post_decision(phase: str, request: RouteRequest, state: RouteState, p
     if not state.page_account_id or account_id != state.page_account_id:
         return abort("resume_post_account", "A request that sends an account number other than the page's own was refused")
     rest = bytes(body)[:resume.start] + bytes(body)[resume.end:]
-    leaked = leaked_field(RouteRequest(method="POST", url="", body=rest), state.values)
+    # The part's bytes are the file (pinned by digest in the fill), but its type and its file name are text a script chooses. The type is always
+    # read. The name is read in the fill unless it is the one the app attached the file under; in the student's turn it is the student's own file's.
+    kind = next((value for name, value in resume.headers if name == "content-type"), "")
+    if filling and resume.filename != state.resume_file_name:
+        rest += (resume.filename or "").encode("utf-8", errors="replace")
+    leaked = leaked_field(RouteRequest(method="POST", url="", headers={"content-type": kind}, body=rest), state.values)
     if leaked:
         return abort("value_guard", "A request carrying a filled-in answer was refused", leaked)
-    return Allow("resume_upload", resume_post=True, digest=digest)
+    return Allow("resume_upload", resume_post=True, student_file=not filling, digest=digest)
 
 
 # How soon after the student's press a refused request still counts as the form's attempt to send (seconds).
@@ -819,7 +837,7 @@ class Observation:
 
 @dataclass(frozen=True)
 class Outcome:
-    outcome: str                       # submitted, unconfirmed, needs_you, failed, or waiting (the security code)
+    outcome: str                       # submitted, unconfirmed, needs_you, failed, waiting (the security code), or challenge_wait (Lever: a challenge before any POST)
     after_click: int
     note: str = ""
     resolved_by: str = ""
@@ -959,8 +977,8 @@ def lever_outcome(obs: Observation, policy: RoutePolicy, *, code_wait_over: bool
     There is no emailed security code on Lever (Q5), so a 428 is one more refusal and ``security_code_visible`` is not read. The apply POST
     is the one ``policy`` names for the posting's own host (``Observation.board_host``), and the confirmation page counts only on that same
     host (``main_host``). ``code_wait_over`` here means the waiting is over (the shared name is kept so a caller applies one table the same way):
-    until then a visible challenge with no POST sent is the student solving it, which is no outcome, and it answers "waiting" (detail
-    ``{"waiting": "challenge"}``, ``settled`` False). That answer is not a security-code wait; a caller must read the detail.
+    until then a visible challenge with no POST sent is the student solving it, which is no outcome, and it answers "challenge_wait" (detail
+    ``{"waiting": "challenge"}``, ``settled`` False). It is not "waiting": the shared loop reads that as a security-code prompt, and Lever has none.
     """
     name = policy.display_name
     submits = [seen for seen in obs.requests if seen.passed and _is_submit_post(seen, obs, policy)]
@@ -985,7 +1003,7 @@ def lever_outcome(obs: Observation, policy: RoutePolicy, *, code_wait_over: bool
         if submits:
             return Outcome("needs_you", 1, CHALLENGE_NOTE.format(ats=name), evidence=evidence)
         if not code_wait_over:
-            return Outcome("waiting", 0, detail={"waiting": "challenge"}, evidence=evidence, settled=False)
+            return Outcome("challenge_wait", 0, detail={"waiting": "challenge"}, evidence=evidence, settled=False)
 
     # 3. Lever refused the form (a 4xx) and it is still there.
     if last_status is not None and 400 <= last_status < 500 and obs.form_present:
@@ -1088,6 +1106,7 @@ LEVER_ROUTE_POLICY = RoutePolicy(
     resume_post_path=lever.PARSE_RESUME_PATH,
     submit_content_types=("multipart/form-data",),
     bind_submit_host=True,
+    security_code_posts=False,
     outcome_table=lever_outcome,
 )
 

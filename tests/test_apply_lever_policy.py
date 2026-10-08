@@ -30,6 +30,7 @@ ACCOUNT = "0b7c1e24-55d1-4f0a-9a8e-3c6d2f4b7a10"
 VALUES = {"email": "sam.rivera@example.test", "first_name": "Samantha", "city": "Springfield, Example State", "org": "Tidewater Games"}
 RESUME = b"%PDF-1.4\nSamantha Rivera, sam.rivera@example.test, Tidewater Games intern, Springfield, Example State\n%%EOF"
 RESUME_SHA = hashlib.sha256(RESUME).hexdigest()
+RESUME_NAME = "Samantha_Rivera_Resume.pdf"   # the name the app attached the planned file under; it holds a planned value on purpose
 BOUNDARY = "----LeverBoundary7Qx"
 FILL, STUDENT, AFTER = PHASE_FILL, PHASE_STUDENT, PHASE_AFTER_HAND_OVER
 
@@ -48,8 +49,8 @@ def form_headers(boundary=BOUNDARY, **more):
     return {"Content-Type": f"multipart/form-data; boundary={boundary}", **more}
 
 
-def resume_body(data=RESUME, account=ACCOUNT, filename="Samantha_Rivera_Resume.pdf"):
-    return multipart(("resume", filename, "application/pdf", data), ("accountId", None, "", account.encode()))
+def resume_body(data=RESUME, account=ACCOUNT, filename=RESUME_NAME, content_type="application/pdf"):
+    return multipart(("resume", filename, content_type, data), ("accountId", None, "", account.encode()))
 
 
 def request(method, host, path, *, query="", body=None, headers=None, kind="fetch", nav=False, socket=False, public=True):
@@ -74,7 +75,8 @@ def apply_request(*, host=HOST, path=APPLY_PATH, headers=None, body=None):
 
 
 def state(**fields):
-    base = dict(submit_path=APPLY_PATH, board_host=HOST, values=dict(VALUES), page_account_id=ACCOUNT, resume_upload_allowed=True, resume_sha256=RESUME_SHA)
+    base = dict(submit_path=APPLY_PATH, board_host=HOST, values=dict(VALUES), page_account_id=ACCOUNT, resume_upload_allowed=True, resume_sha256=RESUME_SHA,
+                resume_file_name=RESUME_NAME, student_files_chosen=9)
     base.update(fields)
     return RouteState(**base)
 
@@ -274,8 +276,8 @@ class BeforeHandOverCellTests(Cases):
     def test_the_resume_post_is_allowed_once_in_the_fill_when_the_student_allowed_it(self):
         self.assertAllowed(decide(FILL, resume_request()), "resume_upload", resume_post=True)
 
-    def test_the_resume_post_is_allowed_in_the_students_turn_for_any_file_without_the_setting_or_a_count(self):
-        st = state(resume_upload_allowed=False, resume_sha256="", resume_posts_passed=3)
+    def test_the_resume_post_is_allowed_in_the_students_turn_for_any_file_the_student_chose_without_the_setting(self):
+        st = state(resume_upload_allowed=False, resume_sha256="", resume_posts_passed=3, student_files_chosen=1)
         self.assertAllowed(decide(STUDENT, resume_request(body=resume_body(b"%PDF a different file the student chose")), st), "resume_upload", resume_post=True)
 
     def test_every_other_write_is_refused_on_any_host_and_every_other_upload_too(self):
@@ -291,14 +293,14 @@ class BeforeHandOverCellTests(Cases):
                     self.assertAborted(decide(phase, request(method, host, path, body=multipart(("resume", "cv.pdf", "application/pdf", b"%PDF"))
                                                            , headers=form_headers())), "non_get_before_hand_over")
 
-    def test_a_second_resume_post_in_the_fill_is_refused_and_the_students_turn_has_no_such_limit(self):
+    def test_a_second_resume_post_in_the_fill_is_refused_and_the_students_turn_has_its_own_count(self):
         st = state()
         first = decide(FILL, resume_request(), st)
         self.assertAllowed(first)
         st.record(first)
         self.assertEqual(st.resume_posts_passed, 1)
         self.assertAborted(decide(FILL, resume_request(), st), "resume_post_second")
-        self.assertAllowed(decide(STUDENT, resume_request(), st))
+        self.assertAllowed(decide(STUDENT, resume_request(), st))   # the fill's count is not the student's turn's
 
     def test_a_refused_resume_post_is_not_counted(self):
         st = state()
@@ -383,10 +385,24 @@ class AfterHandOverCellTests(Cases):
         st.record(first)
         self.assertAborted(decide(AFTER, apply_request(), st), "second_submit_post")
 
+    def test_a_second_post_is_refused_whatever_the_security_code_count_says_because_lever_emails_no_code(self):
+        # Greenhouse lets one more POST through for an emailed code; the shared "prompt" counter must never open a second application on Lever.
+        self.assertFalse(POLICY.security_code_posts)
+        self.assertTrue(checks.GREENHOUSE_ROUTE_POLICY.security_code_posts)
+        for phase in (AFTER, STUDENT):
+            for prompts in (1, 2):
+                with self.subTest(phase=phase, prompts=prompts):
+                    st = state(submit_posts_passed=1, security_code_prompts=prompts)
+                    self.assertAborted(decide(phase, apply_request(), st), "second_submit_post")
+                    pressed = state(submit_posts_passed=1, security_code_prompts=prompts, code_press_required=True, code_pressed=True)
+                    self.assertAborted(decide(phase, apply_request(), pressed), "second_submit_post")
+
     def test_a_second_press_after_the_first_passed_is_refused_in_the_students_turn_too(self):
         self.assertAborted(decide(STUDENT, apply_request(), state(submit_posts_passed=1)), "second_submit_post")
 
-    def test_a_write_to_a_captcha_endpoint_and_to_cloudflares_challenge_path_is_allowed(self):
+    def test_a_write_to_a_captcha_endpoint_is_allowed_and_so_is_one_to_cloudflares_challenge_path_which_the_table_cell_does_not_list(self):
+        # The cell lists CAPTCHA endpoints only. Cloudflare's path is allowed here as in the other phases (the Hosts paragraph of section 7 names its beacons, and
+        # the value guard still reads the request), which is wider than the cell: "As built in LV3" records it for the owner to decide.
         self.assertAllowed(decide(AFTER, request("POST", "api.hcaptcha.com", "/checkcaptcha/x", body=b"{}")), "captcha")
         self.assertAllowed(decide(AFTER, request("POST", HOST, "/cdn-cgi/challenge-platform/h/b/x", body=b"{}")), "challenge")
 
@@ -536,6 +552,42 @@ class ResumePostConditionTests(Cases):
             with self.subTest(size=len(data)):
                 self.assertAllowed(decide(STUDENT, resume_request(body=resume_body(data))), "resume_upload")
 
+    def test_the_students_turn_needs_a_file_the_student_chose_for_each_read(self):
+        for chosen in (0, -1):
+            with self.subTest(chosen=chosen):
+                st = state(student_files_chosen=chosen)
+                self.assertAborted(decide(STUDENT, resume_request(), st), "resume_post_unasked")
+                self.assertAborted(decide(STUDENT, neutral_request(), st), "resume_post_unasked")
+        # a page script wrapping the form's values as a "file" is the case this stops
+        wrapped = b'{"email":"sam.rivera@example.test","org":"Tidewater Games"}'
+        decision = decide(STUDENT, resume_request(body=resume_body(wrapped, filename="x.json", content_type="application/json")), state(student_files_chosen=0))
+        self.assertAborted(decision, "resume_post_unasked")
+        self.assertEqual(decision.record("POST")["rule"], "resume_post_unasked")
+
+    def test_each_choice_the_student_makes_pays_for_one_read(self):
+        st = state(student_files_chosen=2)
+        for _ in range(2):
+            decision = decide(STUDENT, resume_request(), st)
+            self.assertAllowed(decision, "resume_upload", resume_post=True)
+            st.record(decision)
+        self.assertEqual(st.student_file_reads_passed, 2)
+        self.assertAborted(decide(STUDENT, resume_request(), st), "resume_post_unasked")
+        st.student_files_chosen += 1       # the student attaches another file
+        self.assertAllowed(decide(STUDENT, resume_request(), st), "resume_upload")
+
+    def test_a_refused_read_in_the_students_turn_uses_up_no_choice(self):
+        st = state(student_files_chosen=1)
+        self.assertAborted(decide(STUDENT, resume_request(body=resume_body(account="")), st), "resume_post_account")
+        self.assertEqual(st.student_file_reads_passed, 0)
+        self.assertAllowed(decide(STUDENT, resume_request(), st), "resume_upload")
+
+    def test_the_fill_is_not_paid_for_by_a_choice_and_does_not_spend_one(self):
+        st = state(student_files_chosen=0)
+        decision = decide(FILL, resume_request(), st)
+        self.assertAllowed(decision, "resume_upload")
+        st.record(decision)
+        self.assertEqual((st.resume_posts_passed, st.student_file_reads_passed), (1, 0))
+
     def test_the_account_id_differs_from_the_pages(self):
         for phase in (FILL, STUDENT):
             self.assertAborted(decide(phase, resume_request(body=resume_body(account="11111111-2222-4333-8444-555555555555"))), "resume_post_account")
@@ -553,6 +605,8 @@ class ResumePostConditionTests(Cases):
                     self.assertAborted(decide(phase, resume_request(query=query)), "value_guard")
 
     def test_a_planned_value_in_a_header(self):
+        # The pure decision reads every header it is given, a Cookie included. The route handler is given Playwright's ``request.headers``, which leaves cookies out
+        # (docs/known-defects.md), so the Cookie case here is not a guarantee of the handler.
         for name, value in (("Referer", "https://jobs.lever.co/x?n=Samantha"), ("X-Note", "Samantha"), ("Cookie", "who=sam.rivera@example.test")):
             with self.subTest(header=name):
                 for phase in (FILL, STUDENT):
@@ -564,9 +618,34 @@ class ResumePostConditionTests(Cases):
         body = multipart(("resume", "cv.pdf", "application/pdf", RESUME), ("accountId", None, "", ACCOUNT.encode()), boundary=boundary)
         self.assertAborted(decide(FILL, resume_request(body=body, headers=form_headers(boundary=boundary))), "value_guard")
 
-    def test_the_resume_part_is_exempt_from_the_body_check_its_bytes_and_its_file_name_hold_the_students_name_and_email(self):
+    def test_the_resume_part_is_exempt_from_the_body_check_its_bytes_hold_the_students_name_and_email(self):
         self.assertIn(VALUES["email"].encode(), RESUME)
-        self.assertAllowed(decide(FILL, resume_request(body=resume_body(filename="Samantha Rivera Resume.pdf"))), "resume_upload")
+        self.assertAllowed(decide(FILL, resume_request()), "resume_upload")
+
+    def test_the_fill_reads_the_file_name_and_content_type_of_the_resume_part_for_a_planned_value(self):
+        # Only the bytes are pinned (by digest). The name and the type are free text a script chooses, so a value there is a leak.
+        for name in ("sam.rivera@example.test Samantha Springfield, Example State.pdf", "Tidewater Games.pdf", "resume-for-Samantha.pdf"):
+            with self.subTest(filename=name):
+                self.assertAborted(decide(FILL, resume_request(body=resume_body(filename=name))), "value_guard")
+        for content_type in ("application/x-sam.rivera@example.test", "text/Samantha"):
+            with self.subTest(content_type=content_type):
+                decision = decide(FILL, resume_request(body=resume_body(content_type=content_type)))
+                self.assertAborted(decision, "value_guard")
+                self.assertIn(decision.field_key, VALUES)
+
+    def test_the_fill_lets_the_name_the_app_attached_the_file_under_pass_even_when_it_holds_a_planned_value(self):
+        self.assertIn("Samantha", RESUME_NAME)
+        self.assertAllowed(decide(FILL, resume_request(body=resume_body(filename=RESUME_NAME))), "resume_upload")
+        # ...but only that exact name: with none planned, or any other, the name is read like the rest.
+        self.assertAborted(decide(FILL, resume_request(), state(resume_file_name="")), "value_guard")
+        self.assertAborted(decide(FILL, resume_request(body=resume_body(filename="Samantha_Rivera_Resume (2).pdf"))), "value_guard")
+
+    def test_a_plain_file_name_and_type_pass_in_the_fill(self):
+        self.assertAllowed(decide(FILL, resume_request(body=resume_body(filename="cv.pdf", content_type="application/vnd.example"))), "resume_upload")
+
+    def test_the_students_turn_reads_the_content_type_of_the_resume_part_and_not_the_name_of_the_students_own_file(self):
+        self.assertAborted(decide(STUDENT, resume_request(body=resume_body(content_type="application/x-sam.rivera@example.test"))), "value_guard")
+        self.assertAllowed(decide(STUDENT, resume_request(body=resume_body(filename="Samantha Rivera - Springfield, Example State.pdf"))), "resume_upload")
 
     def test_only_the_resume_part_is_exempt_the_rest_of_the_body_is_checked(self):
         # An account number that is the page's own but is also a planned value: the page's value is not the student's, so this is a planted fixture.
