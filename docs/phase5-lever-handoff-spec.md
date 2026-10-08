@@ -168,6 +168,35 @@ Read on 2026-10-04 from six public boards. Each item is something the design rel
 15. **Lever sends the applicant a confirmation email** from the `hire.lever.co` domain **[1-src]**; the application
     inbox rules already list that domain (`applications/mail_rules.py`).
 
+**Note, 2026-10-08 (read again while building the parser; three boards, `leverdemo`, `rover` and `palantir`, GET requests
+only, nothing typed or submitted).** Sections 3 and 5.4 held. The parser follows them, and these are the places where the
+pages say a little more than section 3 did:
+
+- **A required résumé is shown by the star, not by an attribute.** On `rover` and `palantir` the label reads
+  "Resume/CV ✱", and the hidden file input (`#resume-upload-input`, `tabindex="-1"`) has no `required` attribute on any of
+  the three pages. The page's script does the check. The parser therefore reads a fixed field as required when the control
+  has the attribute **or** its label shows the star. Cards still use the attribute only (5.4 item 5), where the JSON and the
+  attribute agreed on all three pages.
+- **`location` can be required** (`palantir`: the attribute and a star), and `phone` is optional there. `org` was optional
+  on `rover` and `palantir` and required on `leverdemo`.
+- **`comments` and `consent[marketing]` have no `application-label`.** `comments` is a `textarea#additional-information`
+  under a `<label for>` that holds an `<h4>` "Additional information". The marketing consent is a `<label>` that wraps a
+  `<span><div>` with the statement, the hidden `0` and the checkbox. The parser takes the label from the `label[for]` and
+  the wrapping `<label>` in those two cases.
+- **An EEO option's label is not always its value.** The veteran select shows "I identify as one or more of the
+  classifications of protected veteran listed above" for the value "I am a Protected Veteran", and the disability decline
+  has the value "I do not want to answer " (trailing space) under the label "I do not want to answer". The parser lists the
+  label, which is what `select_option(label=...)` takes.
+- **`eeo[disabilitySignature]` and its date are not `required` as loaded.** Only answering the disability question makes
+  them required (3.6), by script.
+- **A dropdown's placeholder differs by card** ("Select ...", "Select...", and a sentence beginning "Click Here (If you
+  encounter an issue...") but always has the value `""`, as 5.4 item 5 assumes. A 33-box required `multiple-select` and a
+  3,301-option dropdown (a 600 KB template) both read with nothing unreadable.
+- **`<title>`** was "{Company} - {Role}" on all three, as before. A posting whose role contains " - " is handled by
+  the no-split check in 5.4 item 8.
+- **`GET {hostedUrl}/thanks`** answered 200 with no application form and no `form#application-form`; a posting that does
+  not exist answered 404 with a short page and no form. Neither parses as a form.
+
 ---
 
 ## 4. Decisions the student must make before build
