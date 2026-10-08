@@ -200,18 +200,37 @@ class RouteState:
     submit_posts_passed: int = 0
     security_code_prompts: int = 0
     code_posts_passed: int = 0
-    # A time.monotonic() instant. The agent sets it to infinity while it types a security code into the page and to now + 2 s
-    # afterwards, so a code widget that sends by itself as the last character arrives cannot send the application (D1 B).
+    # A time.monotonic() instant. The agent sets it to infinity while it types a security code into the page and back to 0 when it is done.
     code_typing_until: float = 0.0
+    # Handoff only. Once the app has typed the emailed code (``require_code_press``), the code POST waits for the student's own press of
+    # Submit: a trusted click on the form's submit control, seen after the typing finished, in a world the page's scripts cannot reach.
+    # However long a widget waits, and however often it retries, a send before that press is refused (D1 B, owner decision 2026-10-08).
+    # The requirement stays for the rest of the run: a code POST that passes uses up the press, so a second prompt needs another.
+    code_press_required: bool = False
+    code_pressed: bool = False
+    # Handoff only: when (time.monotonic()) the student last pressed the form's Submit, as the press listener reports it; 0 for never.
+    last_press_at: float = 0.0
 
     @property
     def code_typing(self) -> bool:
         return time.monotonic() < self.code_typing_until
 
+    def require_code_press(self) -> None:
+        """The app typed the code: the press that counts is the next one, so any earlier one is forgotten."""
+        self.code_press_required = True
+        self.code_pressed = False
+
+    def note_student_press(self) -> None:
+        """A trusted click on the form's submit control was seen. For the code POST it counts only once the app has typed the code and finished."""
+        self.last_press_at = time.monotonic()
+        if self.code_press_required and not self.code_typing:
+            self.code_pressed = True
+
     def record(self, decision: "Allow") -> None:
         """Count a request the handler let through, so the one-submit-POST rule sees it."""
         if decision.code_post:
             self.code_posts_passed += 1
+            self.code_pressed = False    # the press was used by this POST; a later code POST (a second prompt) needs a new one
         elif decision.submit_post:
             self.submit_posts_passed += 1
 
@@ -450,8 +469,8 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
         # Every method: a GET beacon can carry a value as well as a POST, and none of it is the application. Refused and recorded.
         return abort("telemetry", "The page's own usage reporting was refused")
     if is_submit_post and state.code_typing:
-        # The app is typing a security code, or just did: a widget that sends by itself on the last character must not send the
-        # application (D1 B). Never counted, so the student's own press of Submit keeps the prompt's allowance.
+        # The app is typing a security code: a widget that sends by itself on the last character must not send the application (D1 B).
+        # Never counted, so the student's own press of Submit keeps the prompt's allowance.
         return abort("code_post_while_typing", "A submit request made while the app typed the security code was refused")
     if method in SAFE_METHODS:
         return Allow()
@@ -463,6 +482,9 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
         if not state.submit_posts_passed:
             return Allow("submit", submit_post=True)
         if state.security_code_prompts > state.code_posts_passed:
+            if state.code_press_required and not state.code_pressed:
+                # The app typed the code. The widget (or anything else on the page) may not send it before the student presses Submit.
+                return abort("code_post_before_press", "A request that would send the security code was refused because you had not pressed Submit")
             return Allow("security_code", code_post=True)
         return abort("second_submit_post", "A second submit request was refused")
     if _endpoint_matches(state.captcha_endpoints, host, path):
@@ -477,6 +499,30 @@ def _content_type(request: RouteRequest) -> str:
         if str(name).lower() == "content-type":
             return str(value).lower()
     return ""
+
+
+# How soon after the student's press a refused request still counts as the form's attempt to send (seconds).
+SEND_AFTER_PRESS_S = 15.0
+_FORM_BODY_TYPES = ("multipart/form-data", "application/x-www-form-urlencoded", "application/json")
+
+
+def looks_like_a_send(request: RouteRequest, state: RouteState) -> bool:
+    """Handoff, the student's turn: a refused request that is probably the form sending the application to an address the app does not know.
+
+    True for a non-GET with a body of a form's kind (multipart, URL-encoded or JSON) to a host that is neither one of the form's own hosts
+    (``student_submit_elsewhere`` says those), Greenhouse's usage reporting nor a CAPTCHA endpoint, made within ``SEND_AFTER_PRESS_S`` of the
+    student's press of Submit. The request is refused either way; this only decides whether the student is told. Nothing it reads is kept.
+    """
+    if request.method.upper() in SAFE_METHODS or not state.last_press_at:
+        return False
+    if time.monotonic() - state.last_press_at > SEND_AFTER_PRESS_S:
+        return False
+    host, path = _host(request.url), urlsplit(request.url).path
+    if host in FORM_POST_HOSTS or host in TELEMETRY_HOSTS or _endpoint_matches(state.captcha_endpoints, host, path):
+        return False
+    if not request.body or not _content_type(request).startswith(_FORM_BODY_TYPES):
+        return False
+    return True
 
 
 def is_upload(request: RouteRequest) -> bool:
@@ -709,6 +755,28 @@ def _key_of(item: Any) -> str:
     return _canonical_key(_get(item, "name") or _get(item, "id") or "")
 
 
+def _lone_choice_agrees(item: Any, scan: Any) -> bool:
+    """Whether a radio or checkbox with no question of its own says something the listing says.
+
+    Its words are the scan's ``label`` (the wrapping label's text, then the control's name and id, which are taken off again). They must be
+    contained in the listing's label, an option's label or its description: the same rule a statement box is held to before it is ticked
+    (a statement may add the heading and description around the option's own words, never replace them). A statement the listing does not
+    carry (``label_from_page``) has nothing to be compared with.
+    """
+    if _get(item, "label_from_page"):
+        return True
+    words = str(_get(scan, "label") or "")
+    for own in (_get(scan, "name"), _get(scan, "id")):
+        if own:
+            words = re.sub(re.escape(str(own)), " ", words, flags=re.IGNORECASE)
+    words = question_key(words)
+    if not words:
+        return False
+    description = re.sub(r"<[^>]*>", " ", str(_get(item, "description") or ""))
+    listed = question_key(" ".join((str(_get(item, "label") or ""), *(str(option) for option in _get(item, "options") or ()), description)))
+    return f" {words} " in f" {listed} "
+
+
 def join(schema_fields: Iterable[Any], scan_fields: Iterable[Any], fill_keys: Iterable[Any] | None = None) -> list[Problem]:
     """Every way the page and Greenhouse's own listing disagree.
 
@@ -763,7 +831,16 @@ def join(schema_fields: Iterable[Any], scan_fields: Iterable[Any], fill_keys: It
             continue
         scan = scans[next(iter(controls.values()))]
         heard = _get(scan, "question")
-        if heard is not None and question_key(heard) != question_key(label):
+        # A radio or checkbox with no fieldset legend (a consent box wrapped in its own label) reports no question at all. Its own words are
+        # then the only wording there is, so those are compared with the listing's (never skipped: Finish in browser ticks a statement box
+        # from the listing's words alone).
+        unheard_choice = _get(scan, "type") in CHOICE_TYPES and not str(heard or "").strip()
+        if unheard_choice:
+            mismatch = not _lone_choice_agrees(item, scan)
+            heard = str(_get(scan, "label") or "")
+        else:
+            mismatch = heard is not None and question_key(heard) != question_key(label)
+        if mismatch:
             problems.append(Problem(
                 "wording_mismatch", name, f"The form's wording differs from Greenhouse's listing ({heard})", str(heard), required,
             ))
@@ -791,6 +868,36 @@ def join(schema_fields: Iterable[Any], scan_fields: Iterable[Any], fill_keys: It
 # ---------------------------------------------------------------------------------------------
 # REQUIRED_CHECK_SCRIPT: the independent re-scan of the filled form (spec 6.10)
 # ---------------------------------------------------------------------------------------------
+
+# Whether the form is one page of several. It fails closed: any visible button, link or role=button on the page whose words (text, value,
+# aria-label or title) include next, continue, proceed, "go to step" or "step 2", and any step counter ("Step 1 of 3",
+# "Page 1/3", "2 of 4"), makes it so. The wording of a real multi-page form is not known, so the words are matched, not the whole text.
+# It returns fixed words only, never anything the page said. The app reads one page, so a form that shows either is not a form it read
+# whole (the rehearsal says so and does not call itself clean).
+MORE_PAGES_SCRIPT = r"""() => {
+  const form = document.querySelector("form#application-form") || document.querySelector("#application_form");
+  if (!form) return [];
+  const scope = form.parentElement || form;
+  const squash = (text) => String(text || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const shown = (el) => {
+    const style = getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden") return false;
+    const box = el.getBoundingClientRect();
+    return box.width >= 2 && box.height >= 2;
+  };
+  const found = [];
+  const goes_on = /\b(next|continue|proceed)\b|\bgo to step\b|\bstep \d+\b/;
+  for (const el of document.querySelectorAll("button, a, [role=button], input[type=button], input[type=submit], input[type=image]")) {
+    const words = squash([el.innerText, el.value, el.getAttribute("aria-label"), el.getAttribute("title")].join(" "));
+    if (goes_on.test(words) && shown(el)) { found.push("next"); break; }
+  }
+  // A counter written with a word ("Step 1 of 3", "Page 1/3") counts anywhere on the page; a bare "2 of 4" only beside the form.
+  const named = /\b(?:step|page)\s*(\d+)\s*(?:of|\/)\s*(\d+)\b/.exec(squash(document.body.innerText));
+  const bare = /\b(\d+)\s+of\s+(\d+)\b/.exec(squash(scope.innerText));
+  const total = (said) => (said ? Number(said[2]) : 0);
+  if (total(named) > 1 || (total(bare) > 1 && Number(bare[1]) <= total(bare)) || document.querySelector("[aria-current=step]")) found.push("steps");
+  return found;
+}"""
 
 # Read-only JavaScript, run with frame.evaluate. It deliberately shares no code
 # or selectors with apps/extension/apply-engine.js, so a bug in that scanner

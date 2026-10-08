@@ -313,6 +313,49 @@
     return form;
   }
 
+  // A required cover letter with none approved (D11): the app drafts nothing itself. Draft one, or Open the draft when the latest
+  // version is still a draft, goes to the Prepare page where cover letters are made and approved; Try again asks the app again
+  // once the letter is approved. The page opens behind the role, so leave the role first.
+  function applyLetterAction(problem, action, onSaved) {
+    const draft = action.state === "draft" && action.document_id;
+    const wrap = element("div", "apply-letter-action");
+    const open = element("button", "secondary-button", draft ? "Open the draft" : "Draft one");
+    open.type = "button";
+    open.addEventListener("click", () => {
+      closeDetail();
+      els.prepareNav.click();
+      if (draft) {
+        whenPresent(() => document.querySelector(`[data-document-id="${CSS.escape(action.document_id)}"]`), (card) => {
+          card.scrollIntoView({ block: "center" });
+          const approve = [...card.querySelectorAll("button")].find((button) => /^Approve/.test(button.textContent) && !button.disabled);
+          (approve || card.querySelector("textarea")).focus({ preventScroll: true });
+        });
+        return;
+      }
+      // The Prepare page's own form makes the draft: pick this role and cover letter in it, and leave the press to the student.
+      whenPresent(() => document.querySelector('.preparation-create-form select[aria-label="Document type"]'), (kind) => {
+        const form = kind.closest("form");
+        const generate = form.querySelector("button[type=submit]");
+        const role = form.querySelector('select[aria-label="Application opportunity"]');
+        if (role && problem.opportunityId) {
+          // The form lists applications; a saved role that is not one yet is added to it, so the draft is made for this role.
+          if (![...role.options].some((option) => option.value === problem.opportunityId)) {
+            role.appendChild(optionElement(problem.opportunityId, problem.opportunityLabel || "This role"));
+          }
+          role.value = problem.opportunityId;
+        }
+        kind.value = "cover_letter";
+        form.scrollIntoView({ block: "center" });
+        generate.focus({ preventScroll: true });
+      });
+    });
+    const again = element("button", "secondary-button", "Try again");
+    again.type = "button";
+    again.addEventListener("click", () => onSaved(null, ""));
+    wrap.append(open, again, element("p", "profile-help", "Approve the letter on the Prepare page, then press Try again. The app attaches only a letter you approved."));
+    return wrap;
+  }
+
   function applyProblemAction(problem, company, onSaved) {
     const action = problem.action || {};
     if (action.type === "answer") return applyAnswerForm(problem, company, onSaved);
@@ -351,6 +394,7 @@
       });
       return open;
     }
+    if (action.type === "cover_letter") return applyLetterAction(problem, action, onSaved);
     if (action.type === "resume") {
       const open = element("button", "secondary-button", action.chooser ? "Choose a résumé for this role" : "Go to the résumé section");
       open.type = "button";
@@ -456,7 +500,7 @@
   const runIsOver = (view) => view.status === "finished" || Boolean(view.stalled);
 
   // The run phases in which a Finish in browser run is the student's (or past their Submit), not the app's filling.
-  const TURN_PHASES = ["your_turn", "submitting", "security_code", "code_typed", "code_yours", "challenge"];
+  const TURN_PHASES = ["your_turn", "form_elsewhere", "submitting", "security_code", "code_typed", "code_yours", "challenge"];
 
   // The result panels whose Answer column is on screen. Signing out takes the column away: it holds the student's answers.
   const valuePanels = new Set();
@@ -774,7 +818,8 @@
     guarded(stop, "Stop", "Stopping…", onStop);
     function update(fresh) {
       setText(step, fresh.summary);
-      const turn = fresh.phase === "your_turn";
+      // "form_elsewhere" is the same turn: the form tried to send somewhere the app stopped, and the student goes on or stops.
+      const turn = fresh.phase === "your_turn" || fresh.phase === "form_elsewhere";
       const closes = turn && fresh.handoff_until ? clockTime(fresh.handoff_until) : "";
       setText(until, closes ? `The window closes at ${closes} if you haven't pressed Submit application.` : "");
       const left = turn && fresh.handoff_until ? new Date(fresh.handoff_until).getTime() - Date.now() : 0;
@@ -967,10 +1012,6 @@
     const cell = element("td", "apply-plan-answer");
     if (!(field.disposition === "fill" || (!handoff && field.disposition === "deferred"))) return cell;
     const entry = values[field.key];
-    if (!handoff && field.source_kind === "cover_letter") {
-      cell.textContent = "Not attached yet: attach it in the window";
-      return cell;
-    }
     if (isStatement(field)) {
       // In a rehearsal this column is today's value: a statement nothing stored answers now (deleted, reworded, or its links no
       // longer match) is not drawn as ticked, because Finish in browser would leave it for the student.
@@ -988,11 +1029,24 @@
     if (!entry) return cell;
     if (handoff) {
       cell.textContent = entry.shown ? entry.text : (view.handed_over ? NOT_STORED : CHANGED_SINCE_FILL);
+      appendLetterText(cell, entry);
       return cell;
     }
     if (entry.text) cell.append(entry.text);
     if (entry.changed) cell.appendChild(element("span", "apply-plan-changed", "changed since the rehearsal"));
+    appendLetterText(cell, entry);
     return cell;
+  }
+
+  // The cover letter's own words under its file name: what the student approved is what the employer gets. Scrollable, so it is a
+  // labelled region the keyboard can reach.
+  function appendLetterText(cell, entry) {
+    if (!entry.body) return;
+    const text = element("div", "apply-letter-text", entry.body);
+    text.tabIndex = 0;
+    text.setAttribute("role", "region");
+    text.setAttribute("aria-label", "Text of the cover letter");
+    cell.appendChild(text);
   }
 
   // Fields the app left blank (with why) and optional ones the page filled in itself, each in a collapsed group.
@@ -1026,7 +1080,7 @@
 
   // What a finished (or stalled) rehearsal or Finish in browser run found: in words, from the run's row. The table says what was
   // done with each question and where the answer came from; the Answer column, when it arrives, is a separate read (setValues).
-  function applyResultPanel(view, { startAgain, finish, notNow, onMarked, settle, stale }) {
+  function applyResultPanel(view, { startAgain, finish, notNow, onMarked, settle, stale, postingUrl }) {
     const handoff = view.kind === "handoff";
     const node = element("div", "apply-result");
     const title = element("h4", "apply-result-title", view.summary);
@@ -1099,8 +1153,11 @@
     if (handoff) {
       // Nothing more to start for an application that went, or may have; one that was stopped or never sent can be tried again.
       // The claim says it when there is one: a stopped claim (including one the student released with "It didn't go through") can be tried again.
+      // A run that stopped on a property of the board (no submit address the app knows, a board that uploads on attach, a hidden field)
+      // would stop the same way again, so the posting is offered instead (the server says so in finish_again).
       const sent = view.claim ? view.claim.status !== "stopped" : ["submitted", "unconfirmed"].includes(view.outcome);
-      if (!sent) next.appendChild(finish());
+      if (!sent && view.finish_again !== false) next.appendChild(finish());
+      else if (!sent && postingUrl) next.appendChild(externalLink(postingUrl, "Open the posting ↗", { className: "secondary-button" }));
     } else {
       next.append(finish(), notNow(), startAgain());
     }
@@ -1427,6 +1484,7 @@
           onMarked: (fresh) => show(fresh, false),
           settle: (path, body) => settleClaim(view, path, body),
           stale,
+          postingUrl: item.url,
         });
         rehearse.appendChild(result.node);
         if (focus) result.focus();
@@ -1534,7 +1592,7 @@
           row.appendChild(element("p", "profile-help", problem.message));
           // A kind of question the student could let the app answer says where, so it is not mistaken for a never.
           if (problem.action?.allowable) row.appendChild(element("p", "profile-help", "You can let the app answer this kind of question, once you add the answer yourself, in Apply for me settings under Automation."));
-          const control = applyProblemAction({ ...problem, opportunityId: item.id, postingConfirmed: () => postingConfirmed, lookups }, result.company, (fresh, message) => {
+          const control = applyProblemAction({ ...problem, opportunityId: item.id, opportunityLabel: [result.company, result.title].filter(Boolean).join(" — "), postingConfirmed: () => postingConfirmed, lookups }, result.company, (fresh, message) => {
             if (fresh) paint(fresh, message);
             else load(message);
           });

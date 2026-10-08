@@ -24,6 +24,7 @@
 
   function preparationDocumentCard(documentRecord) {
     const card = element("article", "preparation-item");
+    card.dataset.documentId = documentRecord.id;
     const heading = element("div", "preparation-heading");
     const identity = element("div");
     identity.appendChild(element("strong", "", `${documentRecord.document_type.replaceAll("_", " ")} v${documentRecord.version}`));

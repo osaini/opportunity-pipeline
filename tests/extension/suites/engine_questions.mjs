@@ -12,7 +12,7 @@ tests.engine_loads_without_chrome_and_exposes_the_agent_surface = () => {
   const ext = loadContentScript(pageOf({ tag: "input", type: "text", id: "first_name", label: "First Name" }), { contentScript: false });
   const engine = ext.engine;
   assert.equal(engine.version, "1");
-  assert.deepEqual(Object.keys(engine).sort(), ["attachDocumentFromBytes", "contextDependent", "fill", "needsLabelKey", "netTopics", "neverStorable", "possiblySensitive", "questionKey", "questionText", "scan", "version"]);
+  assert.deepEqual(Object.keys(engine).sort(), ["attachDocumentFromBytes", "contextDependent", "fill", "needsLabelKey", "netTopics", "neverStorable", "possiblySensitive", "questionKey", "questionText", "scan", "sectionNeverText", "version"]);
   assert.ok(Object.isFrozen(engine));
   assert.equal(engine.scan({ name: "Test Student" }, []).fields[0].proposed_value, "Test");
   // A second injection of the same source keeps the first engine.

@@ -26,7 +26,7 @@ from typing import Any
 from pipeline_core.identity import employer_key
 from pipeline_core.visibility import capture_visible_sql
 
-from . import classify as apply_classify, greenhouse as apply_greenhouse, policy as apply_policy, runs as apply_runs, sensitive as apply_sensitive
+from . import ats as apply_ats, classify as apply_classify, greenhouse as apply_greenhouse, policy as apply_policy, runs as apply_runs, sensitive as apply_sensitive
 from ..student import preparation
 from ..applications.actions import OpportunityNotFoundError
 from .schema_client import SchemaClient, SchemaUnavailable
@@ -123,7 +123,7 @@ def _asks(conn: sqlite3.Connection, user_id: str, opportunity_id: str, ident: tu
         acknowledged.append(block.code)
 
 
-def _action(entry: apply_policy.PlanField, facts: dict[str, Any]) -> dict[str, Any]:
+def _action(entry: apply_policy.PlanField, facts: dict[str, Any], letter: dict[str, Any] | None = None) -> dict[str, Any]:
     kind = entry.problem_kind
     if kind in ("missing_answer", "answer_mismatch"):
         # Apply for me saves an answer for this company only: there is no "use for any company" (spec 7.1 "As built").
@@ -137,7 +137,9 @@ def _action(entry: apply_policy.PlanField, facts: dict[str, Any]) -> dict[str, A
     if kind.startswith("resume"):
         return {"type": "resume", "chooser": kind == "resume_unsure"}
     if kind.startswith("cover_letter"):
-        return {"type": "cover_letter"}
+        # No letter yet: Draft one. The latest version is a draft: Open the draft (D11). Both open the Prepare page for this role.
+        draft = kind == "cover_letter_draft"
+        return {"type": "cover_letter", "state": "draft" if draft else "missing", "document_id": str((letter or {}).get("document_id") or "") if draft else ""}
     if kind == "label_needed":
         suggestion = facts.get(entry.label_field) if entry.label_field in ("school", "degree") else ""
         return {"type": "ats_label", "field": entry.label_field, "suggestion": suggestion if isinstance(suggestion, str) else ""}
@@ -205,12 +207,12 @@ def _sensitive_form(entry: apply_policy.PlanField, kind: str) -> dict[str, Any] 
     }
 
 
-def _problem_view(entry: apply_policy.PlanField, facts: dict[str, Any]) -> dict[str, Any]:
+def _problem_view(entry: apply_policy.PlanField, facts: dict[str, Any], letter: dict[str, Any] | None = None) -> dict[str, Any]:
     return {"key": entry.key, "question": entry.question, "required": bool(entry.required), "kind": entry.problem_kind,
-            "message": entry.problem, "action": _action(entry, facts)}
+            "message": entry.problem, "action": _action(entry, facts, letter)}
 
 
-def _view(plan: apply_policy.Plan, facts: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, int], list[dict[str, Any]]]:
+def _view(plan: apply_policy.Plan, facts: dict[str, Any], letter: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], dict[str, int], list[dict[str, Any]]]:
     problems: list[dict[str, Any]] = []
     named = False
     for entry in plan.fields:
@@ -224,7 +226,7 @@ def _view(plan: apply_policy.Plan, facts: dict[str, Any]) -> tuple[list[dict[str
             problems.append({"key": "name_parts", "question": "First and last name for applications", "required": True, "kind": "name",
                              "message": entry.problem, "action": {"type": "profile", "field": "name_parts"}})
             continue
-        problems.append(_problem_view(entry, facts))
+        problems.append(_problem_view(entry, facts, letter))
     fields = [
         {"key": entry.key, "question": entry.question, "required": bool(entry.required), "disposition": entry.disposition,
          "source": entry.source.label or entry.source.kind if entry.source.kind != "none" else "", "note": entry.note,
@@ -255,11 +257,12 @@ def _prepare(
         "checked_at": moment.isoformat(timespec="seconds"), "from_cache": False,
         "posting": {"title": "", "company": "", "url": "", "differs": False, "difference": ""},
     }
-    ident = apply_greenhouse.identify(conn, opportunity_id)
-    if ident is None:
+    found = apply_ats.identify(conn, opportunity_id)
+    if found is None:
         return result, None, None, None
+    ats, ident = found
     token, job = ident
-    result.update(ats=apply_greenhouse.ATS_GREENHOUSE, board_token=token, job_id=job, canonical_url=apply_greenhouse.canonical_url(token, job))
+    result.update(ats=ats.key, board_token=token, job_id=job, canonical_url=ats.canonical_url(token, job))
     application = conn.execute("SELECT stage FROM applications WHERE opportunity_id=? AND user_id=?", (opportunity_id, user_id)).fetchone()
     if application is not None:
         result["application"] = {"exists": True, "stage": str(application["stage"])}
@@ -278,10 +281,10 @@ def _prepare(
         "differs": bool(difference), "difference": difference,
     }
     sources = apply_policy.sources_for(conn, user_id, opportunity_id, company=company, storage_root=resume_root, key=key)
-    schema = apply_policy.parse_schema(listing)
+    schema = ats.parse_schema(listing)
     plan = apply_policy.build_plan(
         schema, None, sources, company, mode,
-        canonical_url=result["canonical_url"], adapter_version=apply_greenhouse.ADAPTER_VERSION,
+        canonical_url=result["canonical_url"], adapter_version=ats.adapter_version,
     )
     return result, plan, sources, schema
 
@@ -347,7 +350,7 @@ def check(
         if result["ats"]:
             result["eligibility"] = _eligibility(conn, user_id, result, moment)
         return result
-    problems, counts, fields = _view(plan, sources.facts)
+    problems, counts, fields = _view(plan, sources.facts, sources.cover_letter)
     required = [item for item in problems if item["required"]]
     # A question with no control in the app (a sensitive one) is the student's to answer on the form: it is counted apart,
     # so "need an answer first" only counts what the student can do something about here.
