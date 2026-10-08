@@ -121,7 +121,9 @@ jobs:
     # fake (tests.test_apply_agent_browser), and Finish in browser end to end through the
     # real runner, a spawned child and the real driver (tests.test_apply_handoff_e2e: the
     # POST passes only after a committed hand-over, a timeout closes the browser before the
-    # claim is settled, the security code crosses the pipe once). The `test` job has no Playwright, so these
+    # claim is settled, the security code crosses the pipe once), and Lever's form: FakeLever proved to be a fair stand-in for a Lever
+    # board (tests.test_apply_fake_lever) and the Lever driver run against it, résumé flow, location, guard, hCaptcha and all
+    # (tests.test_apply_lever_browser). The `test` job has no Playwright, so these
     # skip there, and the `ui` job runs only tests/ui: before this job the contact-form
     # browser tests never ran in CI. PIPELINE_REQUIRE_BROWSER_TESTS=1 turns a missing or
     # broken Chromium into an error that shows the launch exception (tests/browser_support.py),
@@ -148,7 +150,7 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('requirements-ui.txt') }}
       - run: python -m playwright install --with-deps chromium
-      - run: xvfb-run -a python -m unittest tests.test_outreach_forms tests.test_apply_fixtures tests.test_apply_agent_browser tests.test_apply_handoff_e2e -v
+      - run: xvfb-run -a python -m unittest tests.test_outreach_forms tests.test_apply_fixtures tests.test_apply_agent_browser tests.test_apply_handoff_e2e tests.test_apply_fake_lever tests.test_apply_lever_browser -v
         env:
           PIPELINE_REQUIRE_BROWSER_TESTS: "1"
           PIPELINE_HEADED_TESTS: "1"
