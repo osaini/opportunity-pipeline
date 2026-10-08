@@ -146,6 +146,8 @@ _DECLINE_LABELS = frozenset(
         "do not wish to say", "don t wish to say", "prefer not to answer", "prefer not to say", "prefer not to disclose",
         "prefer not to identify", "prefer not to self identify", "choose not to answer", "choose not to disclose",
         "choose not to self identify",
+        # Lever's veteran question words its decline this way (docs/phase5-lever-handoff-spec.md 6.6). The whole label, as the rest.
+        "decline to self identify for protected veteran status",
     )
 )
 
