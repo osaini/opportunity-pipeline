@@ -248,6 +248,8 @@ _DETERMINER_BEFORE_RE = re.compile(r"\b(?:this|the|our|an?)[^\S\n]+$", re.IGNORE
 # "no prior experience is required for an unpaid internship like this one".
 _THIS_ROLE_BEFORE_RE = re.compile(
     r"\b(?:this|the|our)[^\S\n]+$"
+    # "this is an unpaid internship", "it is an unpaid internship", "the program is an unpaid summer internship".
+    r"|\bis[^\S\n]+an?[^\S\n]+$|\b(?:this|it)[^\S\n]+is[^\S\n]+$"
     r"|\b(?:gain|gains|gaining|build|builds|building|get|gets|getting|earn|earns|earning)[^\S\n]+"
     r"(?:[\w'-]+[^\S\n]+){0,2}?experience[^\S\n]+(?:through|in|with)[^\S\n]+(?:(?:an?|this|our|the)[^\S\n]+)?$"
     r"|\b(?:required|needed|necessary)[^\S\n]+(?:for|in)[^\S\n]+(?:an?|this|our|the)[^\S\n]+$",
@@ -260,7 +262,9 @@ _PAST_EXPERIENCE_BEFORE_RE = re.compile(
     r"(?:paid[^\S\n]+or[^\S\n]+)?$",
     re.IGNORECASE,
 )
-_PAST_WORDS_RE = re.compile(r"\b(?:prior|previous|past)\b", re.IGNORECASE)
+# "Prior unpaid internship work", "any previous unpaid research position": the word must be within three words of the
+# phrase; "No prior experience needed - this is an unpaid internship" speaks of this role.
+_PAST_WORDS_BEFORE_RE = re.compile(r"\b(?:prior|previous|past)[^\S\n]+(?:[\w'-]+[^\S\n]+){0,2}$", re.IGNORECASE)
 _INCLUDING_RE = re.compile(r"\bincluding\b", re.IGNORECASE)
 _PREFERENCE_LIST_RE = re.compile(
     r"\b(?:preferred|required|a[^\S\n]+plus|counts?[^\S\n]+toward|qualifies|qualify|welcome)\b", re.IGNORECASE
@@ -304,7 +308,7 @@ _PAY_SENTENCE_BREAK_RE = re.compile(r"[;!?\n]|\.(?=\s)")
 
 def _asks_about_the_past(text: str, match: re.Match[str], clause: str, before: str) -> bool:
     """Whether an "unpaid <role>" phrase is about roles the candidate held before, not this one."""
-    if _PAST_EXPERIENCE_BEFORE_RE.search(before) or _PAST_WORDS_RE.search(clause):
+    if _PAST_EXPERIENCE_BEFORE_RE.search(before) or _PAST_WORDS_BEFORE_RE.search(before):
         return True
     if _INCLUDING_RE.search(clause):
         found = _CLAUSE_START_RE.search(text, match.end())

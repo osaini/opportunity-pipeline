@@ -378,5 +378,30 @@ class FourthReviewTests(unittest.TestCase):
                 self.assertEqual(_pay_reasons(text, paid_only=True), [])
 
 
+class FifthReviewTests(unittest.TestCase):
+    """Found in the fifth review: "prior" anywhere in the clause skipped a later unpaid role; each failed before the fix."""
+
+    UNPAID = "-35 unpaid, and you asked for paid roles only"
+
+    def test_a_past_word_far_from_the_unpaid_phrase_does_not_skip_it(self):
+        for text in (
+            "No prior experience needed - this is an unpaid internship for students.",
+            "No previous experience required, as this is an unpaid internship.",
+            "No prior experience needed, it is an unpaid internship.",
+            "Past interns say the program is an unpaid summer internship worth taking.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(_pay_reasons(text, paid_only=True), [self.UNPAID])
+
+    def test_a_past_word_right_before_the_unpaid_phrase_still_skips_it(self):
+        for text in (
+            "Prior unpaid internship work is welcome.",
+            "Any previous unpaid research position counts.",
+            "Your past unpaid internship counts toward the requirement.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(_pay_reasons(text, paid_only=True), [])
+
+
 if __name__ == "__main__":
     unittest.main()
