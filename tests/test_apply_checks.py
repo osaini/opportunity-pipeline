@@ -799,8 +799,12 @@ class TelemetryAndCodeGuardTests(unittest.TestCase):
         allowed = route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run)
         self.assertEqual(allowed, Allow("security_code", code_post=True))
         run.record(allowed)
-        self.assertEqual((run.code_press_required, run.code_pressed), (False, False), "the press was used by the POST it let through")
+        self.assertEqual((run.code_press_required, run.code_pressed), (True, False), "the press was used up; the rule stays on")
         self.assertEqual(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run).rule, "second_submit_post")
+        run.note_security_code_prompt()                       # the code is asked for again: the retry has no new press, so it is refused
+        self.assertEqual(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run).rule, "code_post_before_press")
+        run.note_student_press()
+        self.assertEqual(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run), Allow("security_code", code_post=True))
 
     def test_a_press_is_forgotten_when_the_app_starts_typing_again_and_does_not_count_before_the_app_typed(self):
         run = state()
