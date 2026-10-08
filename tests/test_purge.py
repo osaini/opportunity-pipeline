@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from opportunity_app.opportunities.purge import purge_expired_opportunities
 from opportunity_app.core.database import connect_product
-from helpers_platform import build_and_migrate
+from helpers_platform import as_of_today, build_and_migrate
 
 
 class PurgeExpiredOpportunitiesTests(unittest.TestCase):
@@ -21,7 +21,8 @@ class PurgeExpiredOpportunitiesTests(unittest.TestCase):
         self._tmp = TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         _, self.platform_path = build_and_migrate(Path(self._tmp.name))
-        # job-a (shortlisted, "Apply by September 1, 2026") and job-b (applied)
+        # job-a (shortlisted, "Apply by September 1, 2026" as of helpers_platform.FIXTURE_AS_OF, so every date here goes through
+        # as_of_today) and job-b (applied)
         # come from the fixture. Add a retired row and a duplicate of it.
         with closing(connect_product(self.platform_path)) as conn, conn:
             for opportunity_id, active, duplicate_of in (
@@ -47,13 +48,13 @@ class PurgeExpiredOpportunitiesTests(unittest.TestCase):
 
     def test_dry_run_deletes_nothing(self):
         with closing(connect_product(self.platform_path)) as conn:
-            result = purge_expired_opportunities(conn, today="2026-09-14", dry_run=True)
+            result = purge_expired_opportunities(conn, today=as_of_today("2026-09-14"), dry_run=True)
         self.assertEqual(result["deleted"], 0)
         self.assertEqual(self.ids(), {"job-a", "job-b", "job-retired", "job-dup"})
 
     def test_deletes_retired_and_past_deadline_but_keeps_applications(self):
         with closing(connect_product(self.platform_path)) as conn:
-            result = purge_expired_opportunities(conn, today="2026-09-14")
+            result = purge_expired_opportunities(conn, today=as_of_today("2026-09-14"))
             dependents = conn.execute(
                 "SELECT COUNT(*) FROM opportunity_sources WHERE opportunity_id IN ('job-a', 'job-retired')"
             ).fetchone()[0]
@@ -70,7 +71,7 @@ class PurgeExpiredOpportunitiesTests(unittest.TestCase):
 
     def test_purge_backs_up_first_and_the_backup_keeps_deleted_rows(self):
         with closing(connect_product(self.platform_path)) as conn:
-            result = purge_expired_opportunities(conn, today="2026-09-14")
+            result = purge_expired_opportunities(conn, today=as_of_today("2026-09-14"))
 
         backup = Path(result["backup"])
         self.assertEqual(backup.parent, Path(self.platform_path).resolve().parent / "backups")
@@ -81,10 +82,10 @@ class PurgeExpiredOpportunitiesTests(unittest.TestCase):
     def test_dry_run_and_nothing_to_delete_write_no_backup(self):
         backups = Path(self.platform_path).resolve().parent / "backups"
         with closing(connect_product(self.platform_path)) as conn:
-            self.assertIsNone(purge_expired_opportunities(conn, today="2026-09-14", dry_run=True)["backup"])
+            self.assertIsNone(purge_expired_opportunities(conn, today=as_of_today("2026-09-14"), dry_run=True)["backup"])
             self.assertFalse(backups.exists(), "a dry run must not write a backup")
-            purge_expired_opportunities(conn, today="2026-09-14")
-            second = purge_expired_opportunities(conn, today="2026-09-14")
+            purge_expired_opportunities(conn, today=as_of_today("2026-09-14"))
+            second = purge_expired_opportunities(conn, today=as_of_today("2026-09-14"))
         self.assertEqual(second["deleted"], 0)
         self.assertIsNone(second["backup"])
         self.assertEqual(len(list(backups.glob("platform-*.db"))), 1)
@@ -93,12 +94,12 @@ class PurgeExpiredOpportunitiesTests(unittest.TestCase):
         with closing(connect_product(self.platform_path)) as conn:
             with mock.patch("opportunity_app.opportunities.purge.backup_sqlite", side_effect=OSError("disk full")):
                 with self.assertRaises(OSError):
-                    purge_expired_opportunities(conn, today="2026-09-14")
+                    purge_expired_opportunities(conn, today=as_of_today("2026-09-14"))
         self.assertEqual(self.ids(), {"job-a", "job-b", "job-retired", "job-dup"})
 
     def test_deadline_day_itself_is_not_expired(self):
         with closing(connect_product(self.platform_path)) as conn:
-            result = purge_expired_opportunities(conn, today="2026-09-01")
+            result = purge_expired_opportunities(conn, today=as_of_today("2026-09-01"))
         self.assertEqual(result["past_deadline"], 0)
         self.assertIn("job-a", self.ids())
 

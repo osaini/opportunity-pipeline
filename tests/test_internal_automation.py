@@ -831,7 +831,8 @@ class ArchiveTests(Case):
 
     def test_the_daily_run_time_is_kept_per_student(self):
         self.on("archive_silent_applications")
-        internal_automation.archive_silent_applications(self.conn, USER)
+        # Nothing is silent yet (the fixture's application is younger than the archive's 60 days), so this run only stamps the day.
+        self.assertEqual(internal_automation.archive_silent_applications(self.conn, USER), [])
         stored = self.conn.execute(
             "SELECT value FROM user_settings WHERE user_id=? AND key=?", (USER, internal_automation.ARCHIVE_LAST_RUN_KEY),
         ).fetchone()

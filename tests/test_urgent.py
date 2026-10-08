@@ -50,8 +50,9 @@ class UrgentFixture(unittest.TestCase):
             "INSERT INTO users(id, email, display_name, role, created_at, updated_at) VALUES(?, ?, ?, 'student', ?, ?)",
             (OTHER, "b@example.com", "Student B", STAMP, STAMP),
         )
-        # The shared fixture saves job-a (listed deadline Sept 1) and applies to
-        # job-b (follow-up Aug 16); every test here seeds its own dated records.
+        # The shared fixture saves job-a (with a listed deadline) and applies to
+        # job-b (with a follow-up), dated relative to today (helpers_platform.FIXTURE_AS_OF);
+        # every test here seeds its own dated records against its fixed NOW instead.
         for statement in (
             "DELETE FROM reminders",
             "DELETE FROM application_events",
@@ -672,6 +673,9 @@ class DeadlineApiTests(unittest.TestCase):
 
         with closing(connect_product(self.platform_path)) as conn:
             conn.execute("UPDATE opportunities SET deadline_at='2026-09-20T00:00:00+00:00' WHERE id='job-b'")
+            # The fixture's own listed deadline for job-a moves with today (helpers_platform.FIXTURE_AS_OF); against this test's
+            # fixed today it is pinned to its original date, past, so only the deadline the student entered is reported for it.
+            conn.execute("UPDATE opportunities SET deadline_at='2026-09-01T00:00:00+00:00' WHERE id='job-a'")
             conn.commit()
         self.assertEqual(self.put("job-a", "2026-09-18").status_code, 200)
         with mock.patch.object(student_agent, "_today_local", return_value="2026-09-17"):
