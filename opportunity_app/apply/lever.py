@@ -70,6 +70,23 @@ def canonical_url(site: str, job_id: str, host: str = DEFAULT_HOST) -> str:
     return f"https://{host}/{site}/{job_id}/apply"
 
 
+# --- The paths a posting's page asks for (spec 7) -----------------------------------------------
+
+# Both on the posting's own host. The page's lookup of a place name, and the page's reading of an attached résumé.
+SEARCH_LOCATIONS_PATH = "/searchLocations"
+PARSE_RESUME_PATH = "/parseResume"
+
+
+def apply_path(site: str, job_id: str) -> str:
+    """The path the application form posts to: the form has no ``action``, so it posts to its own page (spec 3.2, 6.12)."""
+    return f"/{site}/{job_id}/apply"
+
+
+def thanks_path(site: str, job_id: str) -> str:
+    """The path of the posting's confirmation page (spec 3.12, 6.13). A plain GET of it also answers 200, so reaching it proves nothing alone."""
+    return f"/{site}/{job_id}/thanks"
+
+
 def from_url(url: str) -> LeverRef | None:
     try:
         parts = urlsplit(str(url or "").strip())

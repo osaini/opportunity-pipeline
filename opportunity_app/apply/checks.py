@@ -29,10 +29,11 @@ apply_runs keep their own types.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterable, Mapping, NamedTuple, Sequence
 from urllib.parse import parse_qs, quote, quote_plus, unquote, unquote_plus, urlsplit
 from .greenhouse import BOARD_HOSTS, DISPLAY_NAME, GREENHOUSE_DOMAIN, SUBMIT_HOST
@@ -75,6 +76,17 @@ class Endpoint(NamedTuple):
     host: str
     path_prefix: str
     kind: str = ""
+
+
+class DomainSet(frozenset):
+    """A set of domain names that also holds every subdomain of each: ``"a.b.test" in DomainSet({"b.test"})``.
+
+    For a page's usage reporting, which an ATS names by domain (``googletagmanager.com``) and a script may reach under any subdomain.
+    It is a ``frozenset`` of the names written down, so everything that iterates or compares one sees exactly those; only ``in`` widens.
+    """
+
+    def __contains__(self, host: object) -> bool:
+        return isinstance(host, str) and any(host == known or host.endswith("." + known) for known in self)
 
 
 # The typeahead lookups a form calls (location, school, degree, discipline), each tied to the field it serves. Confirmed on
@@ -128,10 +140,29 @@ class RoutePolicy:
     storage_upload_suffixes: tuple[str, ...]          # a non-GET to a host ending with one is a file going to storage (``S3_UPLOAD_ENABLED``)
     resolvable_hosts: tuple[str, ...]                 # every name its form needs the browser to look up (fnmatch patterns); the union is the resolver rule
     confirmation_reached: Callable[["Observation"], bool]   # the main frame is on its own confirmation path
+    # What only some ATSs have. Greenhouse leaves them at their defaults, and the rules then do what they always did.
+    challenge_path_prefixes: tuple[str, ...] = ()     # non-GET paths on a navigation host that belong to the page's bot check (Cloudflare's): allowed, and never "elsewhere"
+    resume_post_path: str = ""                        # the path on the posting's own host where the page reads a file as it is attached; "" for an ATS whose page does not
+    submit_content_types: tuple[str, ...] = ()        # the submit POST must carry one of these content types; empty means any
+    bind_submit_host: bool = False                    # the submit POST must go to the posting's own host (``RouteState.board_host``); with none bound, nothing is one
+    outcome_table: Callable[..., Any] | None = None   # this ATS's own rows of the outcome table, which ``decide_outcome`` hands over to; None means the shared one
 
-    def is_submit_request(self, host: str, path: str, submit_path: str) -> bool:
-        """Whether a request to this host and path is the one the loader's submit path names (the method is the caller's to check)."""
-        return host in self.submit_hosts and bool(submit_path) and path == submit_path
+    def is_submit_request(self, host: str, path: str, submit_path: str, board_host: str = "") -> bool:
+        """Whether a request to this host and path is the one the loader's submit path names (the method is the caller's to check).
+
+        With ``bind_submit_host`` the host must also be the posting's own (``board_host``): the same path on the other host is not it.
+        """
+        if host not in self.submit_hosts or not submit_path or path != submit_path:
+            return False
+        return not self.bind_submit_host or (bool(board_host) and host == board_host)
+
+    def accepts_submit_body(self, content_type: str) -> bool:
+        """Whether a request of this (lower-case) content type may be the submit POST: ``submit_content_types``, or any when it has none."""
+        return not self.submit_content_types or content_type.startswith(self.submit_content_types)
+
+    def is_challenge_request(self, host: str, path: str) -> bool:
+        """Whether a request is to the page's own bot check, on a host of its form (``challenge_path_prefixes``)."""
+        return bool(self.challenge_path_prefixes) and host in self.navigation_hosts and path.startswith(self.challenge_path_prefixes)
 
 MODES = ("lookup", "rehearse", "submit", "handoff")
 PHASE_BEFORE_INPUT = "before_input"      # lookup, rehearse: the agent has not typed anything yet
@@ -242,6 +273,15 @@ class RouteState:
     code_pressed: bool = False
     # Handoff only: when (time.monotonic()) the student last pressed the form's Submit, as the press listener reports it; 0 for never.
     last_press_at: float = 0.0
+    # The host the posting's own page was loaded from, for an ATS with more than one (``RoutePolicy.bind_submit_host``, ``resume_post_path``).
+    board_host: str = ""
+    # Lever's file read (``RoutePolicy.resume_post_path``). The app's own fill may send one such request, only when the student allowed
+    # it (``resume_upload_allowed``) and only the planned file (``resume_sha256``, the hex SHA-256 of its bytes); in the student's turn
+    # any file the student chose may go. In both the request's ``accountId`` part must be the page's own (``page_account_id``).
+    resume_upload_allowed: bool = False
+    resume_sha256: str = ""
+    page_account_id: str = ""
+    resume_posts_passed: int = 0
 
     @property
     def code_typing(self) -> bool:
@@ -263,6 +303,8 @@ class RouteState:
         if decision.code_post:
             self.code_posts_passed += 1
             self.code_pressed = False    # the press was used by this POST; a later code POST (a second prompt) needs a new one
+        elif decision.resume_post:
+            self.resume_posts_passed += 1
         elif decision.submit_post:
             self.submit_posts_passed += 1
 
@@ -279,6 +321,8 @@ class Allow:
     requires_hand_over: bool = False
     submit_post: bool = False       # this request is the submit POST (count it with RouteState.record)
     code_post: bool = False         # this request is the POST that carries a security code
+    resume_post: bool = False       # this request is the page reading an attached file (count it with RouteState.record)
+    digest: str = ""                # the hex SHA-256 of the file in a ``resume_post``, for the record (never the file)
 
 
 @dataclass(frozen=True)
@@ -460,7 +504,11 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
     if request.public is not True:
         return abort("non_public_address", "The address is not a public one")
 
-    is_submit_post = method == "POST" and policy.is_submit_request(host, path, state.submit_path)
+    is_submit_post = (
+        method == "POST" and policy.is_submit_request(host, path, state.submit_path, state.board_host)
+        and policy.accepts_submit_body(_content_type(request))
+    )
+    is_resume_post = _is_resume_post(mode, phase, method, host, path, state, policy)
     lookup_endpoints = policy.lookup_endpoints if state.lookup_endpoints is None else state.lookup_endpoints
     captcha_endpoints = policy.captcha_endpoints if state.captcha_endpoints is None else state.captcha_endpoints
     after_hand_over = phase == PHASE_AFTER_HAND_OVER
@@ -479,7 +527,8 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
         after_hand_over and method == "GET" and bool(state.submit_posts_passed) and (mode != "handoff" or host in policy.navigation_hosts)
     )
     if not is_submit_post and not read_after_press:
-        leaked = leaked_field(request, state.values, exclude=state.typing_key if is_lookup else "")
+        # The file read's body is judged part by part in ``resume_post_decision``; its address and headers are checked here like any request's.
+        leaked = leaked_field(replace(request, body=None) if is_resume_post else request, state.values, exclude=state.typing_key if is_lookup else "")
         if leaked:
             return abort("value_guard", "A request carrying a filled-in answer was refused", leaked)
 
@@ -508,6 +557,8 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
         return abort("code_post_while_typing", "A submit request made while the app typed the security code was refused")
     if method in SAFE_METHODS:
         return Allow()
+    if is_resume_post:
+        return resume_post_decision(phase, request, state, policy)
     if is_submit_post:
         if phase == PHASE_FILL:
             return abort("before_hand_over", "A request that could submit the form was refused before hand-over")
@@ -523,6 +574,8 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
         return abort("second_submit_post", "A second submit request was refused")
     if _endpoint_matches(captcha_endpoints, host, path):
         return Allow("captcha")
+    if policy.is_challenge_request(host, path):
+        return Allow("challenge")
     if phase == PHASE_AFTER_HAND_OVER:
         return abort("other_non_get", "A request to an address the app does not recognise was refused")
     return abort("non_get_before_hand_over", "Nothing that could carry the application may leave before hand-over")
@@ -533,6 +586,127 @@ def _content_type(request: RouteRequest) -> str:
         if str(name).lower() == "content-type":
             return str(value).lower()
     return ""
+
+
+# ---------------------------------------------------------------------------------------------
+# The file read: a page that reads an attached file at once (Lever's /parseResume, spec 3.8 and 7)
+# ---------------------------------------------------------------------------------------------
+
+class MultipartPart(NamedTuple):
+    """One part of a multipart body: its form name, its file name (None when the part has none), its header lines, its bytes and where it sits in the body."""
+
+    name: str
+    filename: str | None
+    headers: tuple[tuple[str, str], ...]     # (lower-case name, value), in order
+    data: bytes
+    start: int                               # the part's headers and bytes are body[start:end]
+    end: int
+
+
+_MULTIPART_BOUNDARY = re.compile(r'multipart/form-data\s*;\s*boundary=(?:"([^"\r\n]{1,70})"|([^\s;"]{1,70}))\s*', re.IGNORECASE)
+_DISPOSITION = re.compile(r'form-data; name="([^"]*)"(?:; filename="([^"]*)")?')
+
+
+def read_multipart(content_type: str, body: bytes) -> tuple[MultipartPart, ...] | None:
+    """The parts of a multipart/form-data body, or None when it is not one this reader is sure of. Strict on purpose, because it backs a refusal.
+
+    The body must begin with the first boundary (no preamble), every part must have a header block and a ``Content-Disposition`` of the exact
+    shape a browser writes (``form-data; name="..."`` and an optional ``; filename="..."``), and nothing but one line break may follow the
+    closing boundary. ``content_type`` is the header as sent (any case); the boundary keeps its case.
+    """
+    found = _MULTIPART_BOUNDARY.fullmatch(content_type.strip()) if content_type.lower().lstrip().startswith("multipart/form-data") else None
+    if found is None or not isinstance(body, (bytes, bytearray)):
+        return None
+    body = bytes(body)
+    delimiter = b"--" + (found.group(1) or found.group(2)).encode("latin-1", errors="replace")
+    if not body.startswith(delimiter + b"\r\n"):
+        return None
+    parts: list[MultipartPart] = []
+    cursor = len(delimiter) + 2
+    while True:
+        end = body.find(b"\r\n" + delimiter, cursor)
+        if end < 0:
+            return None
+        head, divider, data = body[cursor:end].partition(b"\r\n\r\n")
+        if not divider:
+            return None
+        headers: list[tuple[str, str]] = []
+        for line in head.decode("utf-8", errors="replace").split("\r\n"):
+            name, colon, value = line.partition(":")
+            if not colon or not name or name != name.strip():
+                return None
+            headers.append((name.lower(), value.strip()))
+        dispositions = [value for name, value in headers if name == "content-disposition"]
+        matched = _DISPOSITION.fullmatch(dispositions[0]) if len(dispositions) == 1 else None
+        if matched is None:
+            return None
+        parts.append(MultipartPart(matched.group(1), matched.group(2), tuple(headers), data, cursor, end))
+        after = end + 2 + len(delimiter)
+        if body[after:after + 2] == b"--":
+            return tuple(parts) if body[after + 2:] in (b"", b"\r\n") else None
+        if body[after:after + 2] != b"\r\n":
+            return None
+        cursor = after + 2
+
+
+def _is_resume_post(mode: str, phase: str, method: str, host: str, path: str, state: RouteState, policy: RoutePolicy) -> bool:
+    """Whether this is a POST to the file-read path of the posting's own host, in a handoff's fill or the student's turn.
+
+    Only the address is read here: whether the request may pass is ``resume_post_decision``, and anything that is not this (another host,
+    another path, another mode or phase) is judged by the general rules and refused as every other write is.
+    """
+    return (
+        bool(policy.resume_post_path) and mode == "handoff" and phase in (PHASE_FILL, PHASE_STUDENT) and method == "POST"
+        and bool(state.board_host) and host == state.board_host and path == policy.resume_post_path
+    )
+
+
+def resume_post_decision(phase: str, request: RouteRequest, state: RouteState, policy: RoutePolicy) -> Allow | Abort:
+    """The file read of a page (spec 7, "The resume POST"): it passes only if every condition holds, and each one that does not has its own rule.
+
+    The caller has checked the address (``_is_resume_post``) and the value guard on the URL and the headers. Here: during the app's fill the
+    student must have allowed it (``resume_upload_allowed``) and no earlier one may have passed (``resume_posts_passed``); the content type is
+    multipart/form-data; the body has exactly two parts, ``resume`` (a file; during the fill, the planned file's bytes by SHA-256) and
+    ``accountId`` equal to the page's own value (``page_account_id``); and nothing outside the ``resume`` part, which holds the student's
+    own name and email by design, carries a planned value. Every failure is a refusal; nothing here ever allows by default.
+    """
+    host = _host(request.url)
+
+    def abort(rule: str, reason: str, field_key: str = "") -> Abort:
+        return Abort(rule, reason, safe_host(host, state.values), field_key)
+
+    filling = phase == PHASE_FILL
+    if filling and not state.resume_upload_allowed:
+        return abort("resume_post_off", "The page tried to send a file, and you have not allowed the app to attach one")
+    if filling and state.resume_posts_passed:
+        return abort("resume_post_second", "A second request that sends a file was refused")
+    content_type = str(next((value for name, value in request.headers.items() if str(name).lower() == "content-type"), ""))
+    if not content_type.lower().startswith("multipart/form-data"):
+        return abort("resume_post_content_type", "A request that sends a file in a form the app does not recognise was refused")
+    body = request.body
+    parts = read_multipart(content_type, body) if isinstance(body, (bytes, bytearray)) else None
+    if parts is None or sorted(part.name for part in parts) != ["accountId", "resume"]:
+        return abort("resume_post_parts", "A request that sends more or less than the file and the page's account number was refused")
+    resume = next(part for part in parts if part.name == "resume")
+    account = next(part for part in parts if part.name == "accountId")
+    if resume.filename is None or {name for name, _ in resume.headers} - {"content-disposition", "content-type"}:
+        return abort("resume_post_parts", "A request that sends more or less than the file and the page's account number was refused")
+    if account.filename is not None or len(account.headers) != 1:
+        return abort("resume_post_parts", "A request that sends more or less than the file and the page's account number was refused")
+    digest = hashlib.sha256(resume.data).hexdigest()
+    if filling and (not state.resume_sha256 or digest != state.resume_sha256.lower()):
+        return abort("resume_post_file", "A request that sends a file other than the one the app planned was refused")
+    try:
+        account_id = account.data.decode("utf-8")
+    except UnicodeDecodeError:
+        account_id = ""
+    if not state.page_account_id or account_id != state.page_account_id:
+        return abort("resume_post_account", "A request that sends an account number other than the page's own was refused")
+    rest = bytes(body)[:resume.start] + bytes(body)[resume.end:]
+    leaked = leaked_field(RouteRequest(method="POST", url="", body=rest), state.values)
+    if leaked:
+        return abort("value_guard", "A request carrying a filled-in answer was refused", leaked)
+    return Allow("resume_upload", resume_post=True, digest=digest)
 
 
 # How soon after the student's press a refused request still counts as the form's attempt to send (seconds).
@@ -587,14 +761,15 @@ def is_upload(request: RouteRequest) -> bool:
 def student_submit_elsewhere(request: RouteRequest, state: RouteState, policy: RoutePolicy) -> bool:
     """Handoff, the student's turn: an aborted non-GET that could be the form's own submission to another address (6.13 step 3).
 
-    Telemetry (TELEMETRY_HOSTS, and any other host) is not: it is refused and recorded, silently. True for a non-GET that is not a
-    CAPTCHA-endpoint request and either goes to FORM_POST_HOSTS or is a form navigation (resource type "document").
+    Telemetry (TELEMETRY_HOSTS, and any other host) is not: it is refused and recorded, silently. Nor is a request to the page's own bot
+    check (``RoutePolicy.challenge_path_prefixes``). True for a non-GET that is not a CAPTCHA-endpoint request and either goes to
+    FORM_POST_HOSTS or is a form navigation (resource type "document").
     """
     if request.method.upper() in SAFE_METHODS:
         return False
     host, path = _host(request.url), urlsplit(request.url).path
     captcha_endpoints = policy.captcha_endpoints if state.captcha_endpoints is None else state.captcha_endpoints
-    if host in policy.telemetry_hosts or _endpoint_matches(captcha_endpoints, host, path):
+    if host in policy.telemetry_hosts or _endpoint_matches(captcha_endpoints, host, path) or policy.is_challenge_request(host, path):
         return False
     return host in policy.form_post_hosts or request.resource_type == "document"
 
@@ -638,6 +813,8 @@ class Observation:
     job_id: str = ""
     navigated: bool = False            # any main-frame navigation after hand-over
     first_field_error: str = ""        # the QUESTION of the first field the form marks as wrong; never text from the page's error
+    board_host: str = ""               # the host the posting's own page was loaded from, for an ATS with more than one (``RoutePolicy.bind_submit_host``)
+    main_host: str = ""                # the host the main frame is on now
 
 
 @dataclass(frozen=True)
@@ -685,7 +862,7 @@ CHALLENGE_NOTE = "{ats} showed a check that wasn't finished. Look for {ats}'s em
 REFUSED_NOTE = "{ats} refused the form (HTTP {status})"
 MARKED_WRONG_NOTE = '. {ats} marked "{question}" as wrong'
 def _is_submit_post(seen: SeenRequest, obs: Observation, policy: RoutePolicy) -> bool:
-    return seen.method.upper() == "POST" and policy.is_submit_request(seen.host.lower(), seen.path, obs.submit_path)
+    return seen.method.upper() == "POST" and policy.is_submit_request(seen.host.lower(), seen.path, obs.submit_path, obs.board_host.lower())
 
 
 def _greenhouse_confirmation_reached(obs: Observation) -> bool:
@@ -711,6 +888,8 @@ def decide_outcome(obs: Observation, policy: RoutePolicy, *, code_wait_over: boo
     the student's ``security_code_s`` wait: a prompt still open then is
     needs_you instead of waiting again.
     """
+    if policy.outcome_table is not None:
+        return policy.outcome_table(obs, policy, code_wait_over=code_wait_over)
     name = policy.display_name
     submits = [seen for seen in obs.requests if seen.passed and _is_submit_post(seen, obs, policy)]
     last_status = submits[-1].status if submits else None
@@ -771,6 +950,61 @@ def decide_outcome(obs: Observation, policy: RoutePolicy, *, code_wait_over: boo
     return Outcome("unconfirmed", 1, UNCONFIRMED_NOTE.format(ats=name), evidence=evidence, settled=False)
 
 
+LEVER_NOTHING_LEFT_NOTE = "Nothing that could carry the application left the window"
+
+
+def lever_outcome(obs: Observation, policy: RoutePolicy, *, code_wait_over: bool = False) -> Outcome:
+    """The Lever rows of the outcome table (docs/phase5-lever-handoff-spec.md 6.13). First matching row wins. Page wording is never used.
+
+    There is no emailed security code on Lever (Q5), so a 428 is one more refusal and ``security_code_visible`` is not read. The apply POST
+    is the one ``policy`` names for the posting's own host (``Observation.board_host``), and the confirmation page counts only on that same
+    host (``main_host``). ``code_wait_over`` here means the waiting is over (the shared name is kept so a caller applies one table the same way):
+    until then a visible challenge with no POST sent is the student solving it, which is no outcome, and it answers "waiting" (detail
+    ``{"waiting": "challenge"}``, ``settled`` False). That answer is not a security-code wait; a caller must read the detail.
+    """
+    name = policy.display_name
+    submits = [seen for seen in obs.requests if seen.passed and _is_submit_post(seen, obs, policy)]
+    last_status = submits[-1].status if submits else None
+    evidence = {
+        "submit_post": bool(submits),
+        "submit_status": last_status,
+        "confirmation_path": obs.main_path if policy.confirmation_reached(obs) else "",
+        "form_absent": not obs.form_present,
+    }
+
+    # 1. The apply POST was answered 2xx or 3xx, the main frame is on this posting's confirmation path on the host that POST went to, and the form is gone.
+    posted_to = submits[-1].host.lower() if submits else ""
+    if (
+        last_status is not None and 200 <= last_status < 400 and not obs.form_present and policy.confirmation_reached(obs)
+        and bool(obs.main_host) and obs.main_host.lower() == posted_to
+    ):
+        return Outcome("submitted", 1, resolved_by="page", evidence=evidence)
+
+    # 2. A challenge frame. After a POST it is the student's to finish; before one nothing has been sent and it is no outcome (6.13), until the waiting is over.
+    if obs.challenge_frame:
+        if submits:
+            return Outcome("needs_you", 1, CHALLENGE_NOTE.format(ats=name), evidence=evidence)
+        if not code_wait_over:
+            return Outcome("waiting", 0, detail={"waiting": "challenge"}, evidence=evidence, settled=False)
+
+    # 3. Lever refused the form (a 4xx) and it is still there.
+    if last_status is not None and 400 <= last_status < 500 and obs.form_present:
+        note = REFUSED_NOTE.format(ats=name, status=last_status)
+        if obs.first_field_error:
+            note += MARKED_WRONG_NOTE.format(ats=name, question=obs.first_field_error)
+        return Outcome("failed", 1, note, evidence=evidence)
+
+    # 4. No apply POST passed the route and nothing navigated: nothing that could carry the application left.
+    if not submits and not obs.navigated:
+        note = LEVER_NOTHING_LEFT_NOTE
+        if obs.first_field_error:
+            note += MARKED_WRONG_NOTE.format(ats=name, question=obs.first_field_error)
+        return Outcome("failed", 0, note, evidence=evidence, settled=False)
+
+    # 5. Anything else: the POST answered 5xx or never answered, a navigation without a POST, a 2xx that left the form on the page, "thank you" wording with the form there.
+    return Outcome("unconfirmed", 1, UNCONFIRMED_NOTE.format(ats=name), evidence=evidence, settled=False)
+
+
 # Greenhouse's request policy: the constants above, the way ``route_decision`` and ``decide_outcome`` read them. The names a browser may look up
 # are the board's, the lookups', the static files' (three shard patterns for the numbered shards) and the two CAPTCHA hosts a form was seen to load.
 GREENHOUSE_ROUTE_POLICY = RoutePolicy(
@@ -792,11 +1026,44 @@ GREENHOUSE_ROUTE_POLICY = RoutePolicy(
 )
 
 
-# Lever's request policy, as far as the read-only milestone needs it (docs/phase5-lever-handoff-spec.md section 7, LV2): the hosts a posting
-# lives on, so the browser's resolver and the navigation rule know them, and the one lookup its form makes. The rest of section 7 (the
-# résumé POST, the telemetry and Cloudflare paths, the hCaptcha hosts the page loads) is pinned from a live recording with the adapter
-# that needs it (LV3). Nothing opens a browser on Lever before then, so the lists below are only the part that is certain.
-LEVER_LOOKUP_ENDPOINTS: tuple[Endpoint, ...] = tuple(Endpoint(host, "/searchLocations", "location") for host in lever.LEVER_HOSTS)
+# Lever's request policy (docs/phase5-lever-handoff-spec.md section 7). The hosts a posting lives on; the one lookup its form makes; the
+# hCaptcha hosts section 7 names; the paths of Cloudflare's bot check; the usage reporting the page works without; the file read at
+# /parseResume (``resume_post_decision``); the apply POST (multipart, to the page's own address on the posting's own host); and the
+# Lever rows of the outcome table (``lever_outcome``).
+LEVER_LOOKUP_ENDPOINTS: tuple[Endpoint, ...] = tuple(Endpoint(host, lever.SEARCH_LOCATIONS_PATH, "location") for host in lever.LEVER_HOSTS)
+
+# The hCaptcha hosts section 7 states, each an exact host (any path). The load-time hosts of the challenge (its asset and image hosts) and the
+# hosts it posts to when it runs are pinned from a live recording (Q3, section 11), and until then a request to a host not listed here is
+# refused, which the student is told ("the form tried to send to an address the app doesn't recognize") and nothing has left. THIS TUPLE IS WHAT
+# THE RECORDING EXTENDS, and nothing else.
+LEVER_CAPTCHA_ENDPOINTS: tuple[Endpoint, ...] = (Endpoint("js.hcaptcha.com", "/"), Endpoint("hcaptcha.com", "/"), Endpoint("api.hcaptcha.com", "/"))
+# The names the browser must be able to look up for those endpoints to be reachable at all (``js.hcaptcha.com`` by GET: without it Submit does nothing,
+# spec 3.10). NOT in ``LEVER_ROUTE_POLICY.resolvable_hosts`` yet: the resolver rule is one list for every ATS, so adding them lets a Greenhouse run's
+# browser look up hCaptcha too, which the pinned list (tests/test_apply_agent_static.py ``LEFT_OUT``) rules out today. Joining them is the decision
+# that goes with the Lever driver, and ``tests/test_apply_lever_policy.py`` pins that they are the only gap.
+LEVER_CAPTCHA_RESOLVABLE_HOSTS: tuple[str, ...] = tuple(sorted({endpoint.host for endpoint in LEVER_CAPTCHA_ENDPOINTS}))
+# Cloudflare's bot check runs on every Lever page (spec 3.14): its script is under this path and its beacons post there. Narrower than the
+# spec's "under /cdn-cgi/", until the recording (Q3) shows another path in use.
+LEVER_CLOUDFLARE_PATH_PREFIXES: tuple[str, ...] = ("/cdn-cgi/challenge-platform/",)
+# Refused for every method, silently, on any subdomain: the page works without them (spec 7).
+LEVER_TELEMETRY_DOMAINS: tuple[str, ...] = ("googletagmanager.com", "google-analytics.com", "bugsnag.com")
+
+
+def is_lever_static_asset_host(host: str) -> bool:
+    """Lever's documents and static files come from its own two hosts."""
+    return host in lever.LEVER_HOSTS
+
+
+def lever_loader_paths(page_url: str) -> tuple[str, str, str]:
+    """(the posting's host, the apply POST's path, the confirmation page's path) of a Lever posting's address, or three empty strings for any other.
+
+    The form has no ``action``, so it posts to its own page: the path is the canonical ``/{site}/{job_id}/apply`` whatever query the address
+    has, on the host the page was loaded from. The Lever adapter answers ``loader_paths`` with this, and binds the host to ``RouteState.board_host``.
+    """
+    ref = lever.from_url(page_url)
+    if ref is None:
+        return "", "", ""
+    return ref.host, lever.apply_path(ref.site, ref.job_id), lever.thanks_path(ref.site, ref.job_id)
 
 
 def _lever_confirmation_reached(obs: Observation) -> bool:
@@ -810,13 +1077,18 @@ LEVER_ROUTE_POLICY = RoutePolicy(
     navigation_hosts=frozenset(lever.LEVER_HOSTS),
     submit_hosts=frozenset(lever.LEVER_HOSTS),
     form_post_hosts=frozenset(lever.LEVER_HOSTS),
-    telemetry_hosts=frozenset(),
-    static_asset_host=lambda host: host in lever.LEVER_HOSTS,
+    telemetry_hosts=DomainSet(LEVER_TELEMETRY_DOMAINS),
+    static_asset_host=is_lever_static_asset_host,
     lookup_endpoints=LEVER_LOOKUP_ENDPOINTS,
-    captcha_endpoints=(Endpoint("hcaptcha.com", "/"), Endpoint("api.hcaptcha.com", "/")),
+    captcha_endpoints=LEVER_CAPTCHA_ENDPOINTS,
     storage_upload_suffixes=(),
     resolvable_hosts=tuple(sorted(lever.LEVER_HOSTS)),
     confirmation_reached=_lever_confirmation_reached,
+    challenge_path_prefixes=LEVER_CLOUDFLARE_PATH_PREFIXES,
+    resume_post_path=lever.PARSE_RESUME_PATH,
+    submit_content_types=("multipart/form-data",),
+    bind_submit_host=True,
+    outcome_table=lever_outcome,
 )
 
 
