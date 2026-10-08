@@ -1359,7 +1359,7 @@ class CheckWritesNothingTests(PolicyCase):
     def test_a_role_that_is_not_greenhouse_is_unavailable_and_a_role_that_is_not_the_students_is_not_found(self):
         self.opportunity("plain-1")
         self.assertEqual(self.run_check("plain-1")["status"], "unavailable")
-        self.assertEqual(self.run_check("plain-1")["message"], "Apply for me works with Greenhouse postings only, for now")
+        self.assertEqual(self.run_check("plain-1")["message"], "Apply for me works with Greenhouse and Lever postings only, for now")
         with self.assertRaises(actions.OpportunityNotFoundError):
             self.run_check("no-such-role")
 
@@ -1499,7 +1499,7 @@ class AnswerMissingTests(PolicyCase):
         with self.assertRaisesRegex(apply_preflight.AnswerRefused, "no longer asks"):
             self.answer("question_404", "x")
         self.opportunity("plain-1")
-        with self.assertRaisesRegex(apply_preflight.AnswerRefused, "Greenhouse postings only"):
+        with self.assertRaisesRegex(apply_preflight.AnswerRefused, "Greenhouse and Lever postings only"):
             self.answer("question_1", "x", opportunity_id="plain-1")
 
 

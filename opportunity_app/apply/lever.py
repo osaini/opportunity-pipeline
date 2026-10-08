@@ -22,6 +22,17 @@ DISPLAY_NAME = "Lever"
 # The adapter's version (spec 11, R1). Any change to its selectors or rules means a new value.
 ADAPTER_VERSION = "lever-1"
 
+# What the plan calls a field the Lever page has and the app cannot read, or a control the parser has no family for (``ats.lever_parse_schema``
+# makes them; ``policy`` leaves them to the student, with the reason in ``description``).
+UNREADABLE_TYPE = "lever_unreadable"
+UNKNOWN_TYPE = "lever_unknown"
+# Typed on the page by the student, a name and a date, and required once the disability question is answered at all (spec 3.6). Never filled.
+EEO_SIGNATURE_FIELDS = ("eeo[disabilitySignature]", "eeo[disabilitySignatureDate]")
+# The schema names ``lever_form`` gives the four EEO questions. Disability is never answered, whatever is stored (spec 6.6).
+EEO_DISABILITY = "disability_status"
+# Fixed fields the plan never fills and never lets a stored answer fill: an identity disclosure, and a marketing consent no exact statement covers.
+NEVER_PLANNED = ("pronouns", "consent[marketing]")
+
 # --- Hosts --------------------------------------------------------------------------------------
 
 # The two hosts a posting's page lives on. The EU host keeps EU postings: a posting never moves to the other one.

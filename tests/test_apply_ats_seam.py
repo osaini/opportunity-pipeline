@@ -55,9 +55,9 @@ GREENHOUSE = apply_ats.GREENHOUSE
 # --- The registry's values are exactly Greenhouse's -------------------------------------------------------------
 
 class RegistryValuesTests(unittest.TestCase):
-    def test_greenhouse_is_the_only_ats_and_has_todays_values(self):
-        self.assertEqual(apply_ats.REGISTRY, (GREENHOUSE,))
-        self.assertEqual(apply_ats.keys(), ("greenhouse",))
+    def test_greenhouse_and_lever_are_registered_and_greenhouse_has_todays_values(self):
+        self.assertEqual(apply_ats.REGISTRY, (GREENHOUSE, apply_ats.LEVER))
+        self.assertEqual(apply_ats.keys(), ("greenhouse", "lever"))
         self.assertIs(apply_ats.spec_for("greenhouse"), GREENHOUSE)
         self.assertEqual(GREENHOUSE.key, old.ATS_GREENHOUSE)
         self.assertEqual(GREENHOUSE.display_name, "Greenhouse")
@@ -68,7 +68,7 @@ class RegistryValuesTests(unittest.TestCase):
         self.assertIs(GREENHOUSE.canonical_url, apply_greenhouse.canonical_url)
 
     def test_an_unknown_ats_is_refused_by_name(self):
-        for key in ("lever", "", "Greenhouse", "greenhouse "):
+        for key in ("ashby", "", "Greenhouse", "greenhouse ", "Lever"):
             with self.subTest(key=key), self.assertRaises(apply_ats.UnknownAts):
                 apply_ats.spec_for(key)
 
@@ -311,8 +311,9 @@ def build(factory, **more):
 
 
 class FactoryTests(unittest.TestCase):
-    def test_every_registered_ats_has_an_adapter_and_the_reverse(self):
-        self.assertEqual(set(apply_agent.ADAPTERS), set(apply_ats.keys()))
+    def test_every_registered_ats_whose_driver_is_built_has_an_adapter_and_the_reverse(self):
+        self.assertEqual(set(apply_agent.ADAPTERS), {spec.key for spec in apply_ats.REGISTRY if spec.adapter_built})
+        self.assertFalse(apply_ats.LEVER.adapter_built, "Lever is read-only until its driver lands (LV3)")
 
     def test_greenhouse_gets_the_greenhouse_adapter_with_or_without_the_argument(self):
         factory = apply_agent.DefaultApplyAgentFactory()
@@ -321,6 +322,10 @@ class FactoryTests(unittest.TestCase):
 
     def test_an_ats_that_is_not_registered_builds_no_agent(self):
         with self.assertRaises(apply_ats.UnknownAts):
+            build(apply_agent.DefaultApplyAgentFactory(), ats="ashby")
+
+    def test_an_ats_that_is_registered_but_has_no_driver_builds_no_agent_and_says_so(self):
+        with self.assertRaisesRegex(RuntimeError, "no driver for Lever"):
             build(apply_agent.DefaultApplyAgentFactory(), ats="lever")
 
     def test_the_adapter_is_chosen_through_the_registry(self):
@@ -572,9 +577,12 @@ class ResolvableHostsTests(unittest.TestCase):
     })
 
     def test_with_greenhouse_alone_the_list_is_the_old_one(self):
-        self.assertEqual(apply_ats.REGISTRY, (GREENHOUSE,))
-        self.assertEqual(list(apply_agent.RESOLVABLE_HOSTS), self.OLD)
+        self.assertEqual(list(apply_agent.resolvable_hosts((GREENHOUSE,))), self.OLD)
         self.assertEqual(sorted(POLICY.resolvable_hosts), [host for host in self.OLD if not host.startswith("fonts.")])
+
+    def test_with_lever_registered_the_list_is_the_old_one_and_the_two_lever_hosts(self):
+        self.assertEqual(set(apply_agent.RESOLVABLE_HOSTS) - set(self.OLD), {"jobs.lever.co", "jobs.eu.lever.co"})
+        self.assertEqual(set(self.OLD) - set(apply_agent.RESOLVABLE_HOSTS), set())
 
     def test_the_list_is_the_union_of_every_registered_policy_and_the_fonts(self):
         union = {host for spec in apply_ats.REGISTRY for host in spec.route_policy.resolvable_hosts}
@@ -956,7 +964,8 @@ class SentenceParityTests(unittest.TestCase):
         self.assertEqual(apply_policy.posting_difference("Orbit Systems", "Sales Lead", listing, ats_name="Second"), "Second's form is for Controls Intern, not Sales Lead")
 
     def test_the_checks_sentences(self):
-        self.assertEqual(apply_preflight.not_supported(), old_words.NOT_GREENHOUSE)
+        # The one sentence that names every registered ATS: with Lever registered it says so, and is otherwise the old words.
+        self.assertEqual(apply_preflight.not_supported(), old_words.NOT_GREENHOUSE.replace("Greenhouse postings", "Greenhouse and Lever postings"))
         self.assertEqual(apply_preflight.NOT_FOUND.format(ats="Greenhouse"), old_words.NOT_FOUND)
         self.assertEqual(apply_preflight.NO_ANSWER.format(ats="Greenhouse"), old_words.NO_ANSWER)
         self.assertEqual(apply_preflight.DUPLICATE_TICK.format(company="Acme Robotics", ats="Greenhouse", date="April 3"), old_words.duplicate_tick("Acme Robotics", "April 3"))
@@ -967,7 +976,7 @@ class SentenceParityTests(unittest.TestCase):
                 apply_preflight.YOURS_TO_ANSWER.format(count=count, s_are="s are" if count != 1 else " is", ats="Greenhouse"), old_words.yours_to_answer(count))
         with mock.patch.object(apply_ats, "REGISTRY", (GREENHOUSE, SECOND)):
             self.assertEqual(apply_preflight.not_supported(), "Apply for me works with Greenhouse and Second postings only, for now")
-        self.assertEqual(apply_ats.supported_names(), "Greenhouse")
+        self.assertEqual(apply_ats.supported_names(), "Greenhouse and Lever")
 
     def test_the_names_of_the_registered_ats_as_words(self):
         third = dataclasses.replace(GREENHOUSE, key="third", display_name="Third")

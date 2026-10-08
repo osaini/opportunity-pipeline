@@ -941,7 +941,7 @@ class RunTests(RunnerCase):
     def test_the_slot_is_free_after_a_refusal(self):
         for client, opportunity, expect in (
             (FakeSchemaClient(closed=True), ACME, "The app couldn't find this posting on Greenhouse. It may be closed"),
-            (self.schema, "job-b", "Apply for me works with Greenhouse postings only, for now"),
+            (self.schema, "job-b", "Apply for me works with Greenhouse and Lever postings only, for now"),
         ):
             with self.subTest(opportunity=opportunity):
                 with self.assertRaises(RunRefused) as caught:

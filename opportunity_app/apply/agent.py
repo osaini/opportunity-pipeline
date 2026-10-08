@@ -2792,7 +2792,7 @@ class ApplyAgent:
         )
 
 
-# One adapter class for each ATS in ats.REGISTRY (tests/test_apply_ats_seam.py keeps the two lists the same).
+# One adapter class for each ATS in ats.REGISTRY whose driver is built (``AtsSpec.adapter_built``; tests/test_apply_ats_seam.py keeps the two lists the same).
 ADAPTERS: dict[str, Callable[[], AtsAdapter]] = {ATS_GREENHOUSE: GreenhouseAdapter}
 
 
@@ -2808,7 +2808,10 @@ class DefaultApplyAgentFactory:
         self, *, mode: str, run_id: str, screenshot_dir: Path | None, timeouts: ApplyTimeouts,
         on_progress: Callable[[str, str], None], heartbeat: Callable[[], None], ats: str = ATS_GREENHOUSE,
     ) -> ApplyAgent:
+        spec = spec_for(ats)
+        if spec.key not in ADAPTERS:
+            raise RuntimeError(f"The agent has no driver for {spec.display_name} yet")
         return ApplyAgent(
-            mode=mode, adapter=ADAPTERS[spec_for(ats).key](), run_id=run_id, screenshot_dir=screenshot_dir, timeouts=timeouts,
+            mode=mode, adapter=ADAPTERS[spec.key](), run_id=run_id, screenshot_dir=screenshot_dir, timeouts=timeouts,
             on_progress=on_progress, heartbeat=heartbeat,
         )

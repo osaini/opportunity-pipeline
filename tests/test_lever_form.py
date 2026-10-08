@@ -16,8 +16,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from opportunity_app.apply import classify as apply_classify, lever_form, policy as apply_policy
 from opportunity_app.apply.lever_form import (
-    EEO_FIELDS, EEO_SIGNATURE_FIELDS, MAX_FIELD_OPTIONS, MAX_TEMPLATE_BYTES, MAX_TEMPLATE_FIELDS, PAGE_MANAGED_FIELDS, parse_lever_form,
+    EEO_FIELDS, MAX_FIELD_OPTIONS, MAX_TEMPLATE_BYTES, MAX_TEMPLATE_FIELDS, PAGE_MANAGED_FIELDS, parse_lever_form,
 )
+from opportunity_app.apply.lever import EEO_SIGNATURE_FIELDS
 from opportunity_app.apply.policy import SchemaField, control_of
 
 from helpers_source import apply_modules
@@ -604,6 +605,42 @@ class LimitTests(unittest.TestCase):
             with self.subTest(tag=tag):
                 form = parse_lever_form(page(f'<{tag}>var a = "<input name=hack required><label>', f'</{tag}>', '<input name="real">'))
                 self.assertEqual([item.name for item in form.unknown], ["real"])
+
+
+class LabelMemoParityTests(unittest.TestCase):
+    """Reading a label's words once changed how long the parser takes, not what it reads: the frozen parser from before it (tests/frozen_pre_label_memo.py)
+    and the real one give the same form for every fixture and for pages where many controls share one label."""
+
+    @staticmethod
+    def same(text):
+        import dataclasses
+
+        import frozen_pre_label_memo as old
+
+        before, after = old.parse_lever_form(text), parse_lever_form(text)
+        if before is None or after is None:
+            return before, after
+        return dataclasses.asdict(before), dataclasses.asdict(after)
+
+    def test_every_fixture_page_reads_the_same(self):
+        for name in sorted(path.name for path in FIXTURES.glob("*.html")):
+            with self.subTest(page=name):
+                before, after = self.same(fixture(name))
+                self.assertEqual(before, after)
+
+    def test_pages_where_controls_share_a_label_read_the_same(self):
+        words = "a long sentence of words " * 40
+        pages = (
+            page(f'<label for="shared">{words}</label>', *(f'<input id="shared" name="extra{i}">' for i in range(30))),
+            page(f"<label>{words}" + "".join(f'<input type="checkbox" name="{name_of(0)}" value="v{i}">' for i in range(30)) + "</label>"),
+            page("<label>unclosed " + "".join(f'<input type="radio" name="{name_of(1)}" value="v{i}"> option {i} ' for i in range(10))),
+            page('<label for="a">  spaced 	 out   words </label><input id="a" name="x"><label><b>nested</b> <i>marks</i><input name="y"></label>'),
+        )
+        for index, text in enumerate(pages):
+            with self.subTest(page=index):
+                before, after = self.same(text)
+                self.assertEqual(before, after)
+                self.assertIsNotNone(after)
 
 
 class MalformedMarkupTests(unittest.TestCase):

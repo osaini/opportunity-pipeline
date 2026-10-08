@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Mapping, NamedTuple, Sequence
 from urllib.parse import parse_qs, quote, quote_plus, unquote, unquote_plus, urlsplit
 from .greenhouse import BOARD_HOSTS, DISPLAY_NAME, GREENHOUSE_DOMAIN, SUBMIT_HOST
+from . import lever
 
 # ---------------------------------------------------------------------------------------------
 # Hosts and endpoints
@@ -788,6 +789,34 @@ GREENHOUSE_ROUTE_POLICY = RoutePolicy(
         *CONFIRMED_CAPTCHA_HOSTS,
     })),
     confirmation_reached=_greenhouse_confirmation_reached,
+)
+
+
+# Lever's request policy, as far as the read-only milestone needs it (docs/phase5-lever-handoff-spec.md section 7, LV2): the hosts a posting
+# lives on, so the browser's resolver and the navigation rule know them, and the one lookup its form makes. The rest of section 7 (the
+# résumé POST, the telemetry and Cloudflare paths, the hCaptcha hosts the page loads) is pinned from a live recording with the adapter
+# that needs it (LV3). Nothing opens a browser on Lever before then, so the lists below are only the part that is certain.
+LEVER_LOOKUP_ENDPOINTS: tuple[Endpoint, ...] = tuple(Endpoint(host, "/searchLocations", "location") for host in lever.LEVER_HOSTS)
+
+
+def _lever_confirmation_reached(obs: Observation) -> bool:
+    """The main frame is on this posting's own confirmation path, ``/{site}/{job_id}/thanks`` (spec 6.13). Reaching it proves nothing alone (3.12)."""
+    token, job_id = obs.board_token, obs.job_id
+    return bool(obs.main_path and token and job_id and re.fullmatch(rf"/{re.escape(token)}/{re.escape(job_id)}/thanks/?", obs.main_path))
+
+
+LEVER_ROUTE_POLICY = RoutePolicy(
+    display_name=lever.DISPLAY_NAME,
+    navigation_hosts=frozenset(lever.LEVER_HOSTS),
+    submit_hosts=frozenset(lever.LEVER_HOSTS),
+    form_post_hosts=frozenset(lever.LEVER_HOSTS),
+    telemetry_hosts=frozenset(),
+    static_asset_host=lambda host: host in lever.LEVER_HOSTS,
+    lookup_endpoints=LEVER_LOOKUP_ENDPOINTS,
+    captcha_endpoints=(Endpoint("hcaptcha.com", "/"), Endpoint("api.hcaptcha.com", "/")),
+    storage_upload_suffixes=(),
+    resolvable_hosts=tuple(sorted(lever.LEVER_HOSTS)),
+    confirmation_reached=_lever_confirmation_reached,
 )
 
 

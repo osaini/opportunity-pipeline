@@ -6,7 +6,8 @@ version, the modes it supports, how a saved role is recognised as one of its pos
 lives (``canonical_url``), the client that reads its listing, how that listing becomes the form's fields
 (``parse_schema``), whether a mail sender is its own (``is_confirmation_sender``), and its request policy
 (``route_policy``: which hosts a page may reach, what counts as the submit POST and as the confirmation page; the rules in
-``checks`` read it as an argument). Greenhouse is the only one registered (docs/phase5-lever-handoff-spec.md, 5.2).
+``checks`` read it as an argument). Greenhouse and Lever are registered (docs/phase5-lever-handoff-spec.md, 5.2). Lever is read-only
+so far: its form can be read and planned, and its Finish in browser driver does not exist yet (``adapter_built``).
 
 ``AtsAdapter`` is the set of methods ``ApplyAgent`` calls on a site's form, so the agent is typed to a shape and not to
 Greenhouse. The adapters themselves live beside the agent (``agent.py``), which is a higher layer than this file.
@@ -18,11 +19,27 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Protocol
 
-from . import greenhouse
+from . import greenhouse, lever
 from .agent_types import BUILT_MODES
-from .checks import GREENHOUSE_ROUTE_POLICY, RoutePolicy
-from .policy import SchemaField, parse_schema as greenhouse_parse_schema
-from .schema_client import SchemaClient, default_schema_client_factory
+from .checks import GREENHOUSE_ROUTE_POLICY, LEVER_ROUTE_POLICY, RoutePolicy
+from .policy import SchemaField, parse_schema as greenhouse_parse_schema, posting_difference as greenhouse_posting_difference
+from .schema_client import (
+    LeverListings, PageClient, SchemaClient, default_page_client_factory, default_schema_client_factory,
+)
+
+
+class Ident(tuple):
+    """(board token, job id), and the host the posting lives on when the ATS has more than one ("" for Greenhouse).
+
+    A tuple of exactly two, so everything that unpacks or compares an ATS's identity as (token, job id) keeps working.
+    """
+
+    host: str
+
+    def __new__(cls, token: str, job_id: str, host: str = "") -> "Ident":
+        found = super().__new__(cls, (token, job_id))
+        found.host = host
+        return found
 
 
 @dataclass(frozen=True)
@@ -33,12 +50,23 @@ class AtsSpec:
     display_name: str                                                     # how a sentence names it
     adapter_version: str                                                  # a rehearsal counts toward the gate only for the version in force
     supported_modes: tuple[str, ...]                                      # the agent modes built for it
-    identify: Callable[[sqlite3.Connection, str], tuple[str, str] | None]  # a saved role -> (board token, job id), or None
-    canonical_url: Callable[[str, str], str]                              # (board token, job id) -> the posting's address
-    schema_client: Callable[[], SchemaClient]                             # a new client that reads the posting's listing
+    identify: Callable[[sqlite3.Connection, str], tuple[str, str] | None]  # a saved role -> (board token, job id) (an ``Ident`` when the ATS has hosts), or None
+    canonical_url: Callable[..., str]                                     # (board token, job id[, host]) -> the posting's address
+    schema_client: Callable[[], Any]                                      # a new client that reads the posting (Greenhouse's job board client, Lever's page client)
     parse_schema: Callable[[Mapping[str, Any]], list[SchemaField]]        # the listing -> the fields the form has
     is_confirmation_sender: Callable[[str], bool]                         # a sender domain is the ATS's own
     route_policy: RoutePolicy                                             # the hosts, endpoints and submit and confirmation rules of its form
+    # The reading of a posting: from the clients the app was given (Greenhouse's job board client, Lever's page client) and the
+    # posting's identity, the object that fetches its listing, or None when the app was given none for this ATS.
+    listings: Callable[[SchemaClient | None, PageClient | None, tuple[str, str]], Any] = lambda schema, page, ident: schema
+    # (company, title, listing, display name) -> why the listing does not look like the saved role, or "".
+    posting_difference: Callable[..., str] = greenhouse_posting_difference
+    # The modes a claim of this ATS may take (a claim's mode is one_click, handoff or unattended), apart from what is built.
+    claim_modes: tuple[str, ...] = ("one_click", "handoff", "unattended")
+    # The setting (an automation feature) that must be on before Apply for me reads this ATS's roles, besides apply_agent. "" for none.
+    switch: str = ""
+    # Whether the agent has a driver for this ATS's form. False means the form can be read and planned and nothing can be filled.
+    adapter_built: bool = True
 
 
 GREENHOUSE = AtsSpec(
@@ -54,8 +82,62 @@ GREENHOUSE = AtsSpec(
     route_policy=GREENHOUSE_ROUTE_POLICY,
 )
 
+def lever_identify(conn: sqlite3.Connection, opportunity_id: str) -> Ident | None:
+    found = lever.identify(conn, opportunity_id)
+    return None if found is None else Ident(found.site, found.job_id, found.host)
+
+
+def lever_canonical_url(site: str, job_id: str, host: str = lever.DEFAULT_HOST) -> str:
+    return lever.canonical_url(site, job_id, host or lever.DEFAULT_HOST)
+
+
+def lever_parse_schema(listing: Mapping[str, Any]) -> list[SchemaField]:
+    """The fields of a Lever form (the page's own, then what it lists but the app cannot read), in the order ``parse_lever_form`` gives them.
+
+    A question the page and its description disagree about, and a control the parser has no family for, become fields of a type the plan
+    treats as the student's to answer in the window, with the reason in words. They are required when the page says so.
+    """
+    form = listing["lever_form"]
+    fields = list(form.fields)
+    for item in form.unreadable:
+        fields.append(SchemaField(name=item.name, label=item.label, required=item.required, type=lever.UNREADABLE_TYPE, section="standard", description=item.reason))
+    for item in form.unknown:
+        reason = "the page has a control for it that the app does not know" + (" and has turned it off" if item.disabled else "")
+        fields.append(SchemaField(name=item.name, label=item.label or item.name, required=item.required and not item.disabled, type=lever.UNKNOWN_TYPE, section="standard", description=reason))
+    return fields
+
+
+def lever_posting_difference(company: str, title: str, listing: Mapping[str, Any], *, ats_name: str) -> str:
+    """Why the page does not look like the saved role, or "" when its title carries the saved company and the saved title (spec 5.4 item 8)."""
+    form = listing["lever_form"]
+    if form.posting.matches(company, title):
+        return ""
+    page = form.posting.company_title
+    if not page:
+        return f"{ats_name}'s page has no title the app can compare with {title} at {company}"
+    return f"{ats_name}'s page is titled \"{page}\", not {title} at {company}"
+
+
+LEVER = AtsSpec(
+    key=lever.ATS_LEVER,
+    display_name=lever.DISPLAY_NAME,
+    adapter_version=lever.ADAPTER_VERSION,
+    supported_modes=("handoff",),
+    identify=lever_identify,
+    canonical_url=lever_canonical_url,
+    schema_client=default_page_client_factory,
+    parse_schema=lever_parse_schema,
+    is_confirmation_sender=lever.is_lever_sender,
+    route_policy=LEVER_ROUTE_POLICY,
+    listings=lambda schema, page, ident: LeverListings(page, getattr(ident, "host", "")) if page is not None else None,
+    posting_difference=lever_posting_difference,
+    claim_modes=("handoff",),
+    switch="apply_agent_lever",
+    adapter_built=False,
+)
+
 # In the order identify tries them. The first to recognise a role is the role's ATS.
-REGISTRY: tuple[AtsSpec, ...] = (GREENHOUSE,)
+REGISTRY: tuple[AtsSpec, ...] = (GREENHOUSE, LEVER)
 
 
 class UnknownAts(KeyError):
@@ -85,6 +167,45 @@ def supported_names() -> str:
     """The display names of the registered ATSs as words: "Greenhouse", "Greenhouse and Lever", "A, B and C"."""
     names = [spec.display_name for spec in REGISTRY]
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1] if names else ""
+
+
+# How a mode is named to the student.
+MODE_NAMES = {"lookup": "Look up options", "rehearse": "Rehearse in a window", "submit": "One-click submit", "handoff": "Finish in browser"}
+CLAIM_MODE_NAMES = {"handoff": "Finish in browser", "one_click": "One-click submit", "unattended": "Unattended applying"}
+CODE_MODE = "ats_mode"
+CODE_NOT_BUILT = "ats_not_built"
+
+
+def _words(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1] if names else "nothing"
+
+
+def mode_refusal(spec: AtsSpec, mode: str) -> tuple[str, str] | None:
+    """(code, sentence) when the agent cannot be asked for ``mode`` (lookup, rehearse, submit or handoff) on this ATS, else None.
+
+    Lever supports Finish in browser only (docs/phase5-lever-handoff-spec.md 6.1), and until its driver exists (``adapter_built``) it supports
+    nothing that opens a window: the form is read and planned, and the student is told so.
+    """
+    if mode not in spec.supported_modes:
+        return CODE_MODE, f"{spec.display_name} supports {_words([MODE_NAMES[m] for m in spec.supported_modes])} only, for now"
+    if not spec.adapter_built:
+        return CODE_NOT_BUILT, f"{MODE_NAMES[mode]} for {spec.display_name} postings is not available yet"
+    return None
+
+
+def claim_refusal(ats: str, mode: str) -> str:
+    """The sentence when a claim of ``mode`` (one_click, handoff or unattended) is not one this ATS takes, else "". An ATS not registered is not judged."""
+    spec = next((item for item in REGISTRY if item.key == ats), None)
+    if spec is None or mode in spec.claim_modes:
+        return ""
+    return f"{spec.display_name} supports {_words([CLAIM_MODE_NAMES[m] for m in spec.claim_modes])} only, for now"
+
+
+def canonical_url_of(spec: AtsSpec, ident: tuple[str, str]) -> str:
+    """The address of the posting an ``identify`` found: the host it lives on goes with it when it has one."""
+    host = getattr(ident, "host", "")
+    token, job_id = ident
+    return spec.canonical_url(token, job_id, host) if host else spec.canonical_url(token, job_id)
 
 
 def identify(conn: sqlite3.Connection, opportunity_id: str) -> tuple[AtsSpec, tuple[str, str]] | None:

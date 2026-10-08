@@ -195,7 +195,7 @@ class CheckRouteTests(ApplyApiCase):
     def test_a_role_that_is_not_greenhouse_says_so_and_a_role_that_does_not_exist_is_404(self):
         self.turn_on()
         payload = self.check("job-b").json()
-        self.assertEqual((payload["status"], payload["message"]), ("unavailable", "Apply for me works with Greenhouse postings only, for now"))
+        self.assertEqual((payload["status"], payload["message"]), ("unavailable", "Apply for me works with Greenhouse and Lever postings only, for now"))
         self.assertEqual(self.check("no-such-role").status_code, 404)
 
     def test_a_closed_posting_and_greenhouse_being_down_are_told_apart(self):
@@ -910,7 +910,7 @@ class StartRouteTests(RunApiCase):
 
     def test_a_role_that_is_not_greenhouse_is_a_409_with_the_checks_sentence(self):
         for response in (self.rehearse("job-b"), self.lookup(opportunity_id="job-b")):
-            self.assertEqual((response.status_code, response.json()["detail"]), (409, "Apply for me works with Greenhouse postings only, for now"))
+            self.assertEqual((response.status_code, response.json()["detail"]), (409, "Apply for me works with Greenhouse and Lever postings only, for now"))
         self.assertEqual(self.counts("apply_runs")["apply_runs"], 0)
 
     def test_a_closed_posting_is_a_409_and_greenhouse_being_down_is_told_apart(self):
