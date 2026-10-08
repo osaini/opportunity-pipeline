@@ -37,7 +37,7 @@ from opportunity_app.apply.schema_client import GreenhouseSchemaClient
 from opportunity_app.core.timestamps import utc_now
 
 from apply_fake_ats import FakeApplyAgentFactory, fixture_json, fixture_text
-from helpers_apply import ApplyCase, setUpModule, tearDownModule  # noqa: F401
+from helpers_apply import ApplyCase, FakePlan, setUpModule, tearDownModule  # noqa: F401
 
 GREENHOUSE = apply_ats.GREENHOUSE
 
@@ -266,7 +266,8 @@ def protocol_methods():
 class AdapterProtocolTests(unittest.TestCase):
     def test_the_protocol_lists_the_methods_the_agent_calls_and_no_submit(self):
         self.assertEqual(protocol_methods(), {
-            "form_frame", "detect_page", "loader_paths", "uploads_on_attach", "security_code_prompt", "security_code_inputs", "captcha_widget",
+            "form_frame", "detect_page", "loader_paths", "uploads_on_attach", "reads_on_attach", "posting_ids", "lookup_token", "confirmation_ids",
+            "security_code_prompt", "security_code_inputs", "captcha_widget",
             "control", "control_kind", "is_react_select", "field_container", "choices", "fill_location", "read_options",
         })
 
@@ -704,6 +705,141 @@ class ConfirmationParityTests(unittest.TestCase):
 
     def test_nothing_is_left_of_the_module_level_function(self):
         self.assertFalse(hasattr(apply_checks, "confirmation_reached"), "the decision moved onto the policy; no second copy stays behind")
+
+
+# --- The per-ATS branches of ApplyAgent._run ---------------------------------------------------------------------
+
+class SecondAdapter(apply_agent.GreenhouseAdapter):
+    """A stand-in adapter for a second ATS: only what ``_run`` asks before the fill, answering as the test sets it."""
+
+    ats = "second"
+    form_page_kind = "second_form"
+
+    def __init__(self, **answers):
+        self.answers = {"kind": "second_form", "loader": ("apply.example-robotics.test", "/go", "/thanks"), "uploads": False, "reads": False, **answers}
+        self.frame = mock.Mock()
+
+    def form_frame(self, page):
+        return self.frame
+
+    def detect_page(self, page):
+        return self.answers["kind"]
+
+    def loader_paths(self, html):
+        return self.answers["loader"]
+
+    def uploads_on_attach(self, frame):
+        return self.answers["uploads"]
+
+    def reads_on_attach(self, frame):
+        return self.answers["reads"]
+
+    @staticmethod
+    def posting_ids(url):
+        return ("second", url.rstrip("/").rsplit("/", 1)[-1]) if "jobs.example-robotics.test" in url else ("", "")
+
+    @staticmethod
+    def lookup_token(url):
+        return "tok"
+
+    @staticmethod
+    def confirmation_ids(url):
+        return ("second", url.rstrip("/").rsplit("/", 1)[-1])
+
+
+SECOND_LOOKUP = apply_checks.Endpoint("lookup.example-robotics.test", "/v1/{token}/places", "location")
+SECOND_POLICY = dataclasses.replace(
+    POLICY, display_name="Second", navigation_hosts=frozenset({"jobs.example-robotics.test"}), submit_hosts=frozenset({"apply.example-robotics.test"}),
+    lookup_endpoints=(SECOND_LOOKUP,), form_post_hosts=frozenset({"apply.example-robotics.test"}),
+)
+SECOND = dataclasses.replace(GREENHOUSE, key="second", display_name="Second", route_policy=SECOND_POLICY)
+SECOND_URL = "https://jobs.example-robotics.test/acme/9"
+
+
+class AgentBranchesFollowTheAtsTests(unittest.TestCase):
+    """What ``_run`` asked of Greenhouse alone (its hosts, its token, its page kind, its submit host) it now asks of the adapter and the policy."""
+
+    def run_agent(self, adapter=None, *, mode="handoff", url=SECOND_URL, landed=SECOND_URL, filled=None):
+        adapter = adapter or SecondAdapter()
+        with mock.patch.object(apply_ats, "REGISTRY", (GREENHOUSE, SECOND)):
+            agent = apply_agent.ApplyAgent(mode=mode, adapter=adapter)
+        page = mock.Mock(url=landed)
+        agent._start = lambda: setattr(agent, "_page", page)
+        agent._open = lambda page_url: "<html></html>"
+        agent._fill_form = lambda frame, replan, uploads: filled if filled is not None else "filled"
+        return agent, agent.run(FakePlan([]), page_url=url, schema=[], files={})
+
+    def test_the_agent_reads_its_policy_from_the_adapters_spec(self):
+        with mock.patch.object(apply_ats, "REGISTRY", (GREENHOUSE, SECOND)):
+            self.assertIs(apply_agent.ApplyAgent(mode="rehearse", adapter=SecondAdapter())._policy, SECOND_POLICY)
+        self.assertIs(apply_agent.ApplyAgent(mode="rehearse", adapter=apply_agent.GreenhouseAdapter())._policy, POLICY)
+
+    def test_an_adapter_of_an_ats_no_spec_names_builds_no_agent(self):
+        with self.assertRaises(apply_ats.UnknownAts):
+            apply_agent.ApplyAgent(mode="rehearse", adapter=SecondAdapter())
+
+    def test_the_navigation_check_uses_the_policys_hosts(self):
+        agent, result = self.run_agent()
+        self.assertEqual(result, "filled")
+        for url in ("https://job-boards.greenhouse.io/acme/jobs/1", "https://careers.example-robotics.test/x"):
+            _agent, refused = self.run_agent(url=url)
+            self.assertEqual((refused.outcome, refused.reasons), ("failed", [apply_agent.NOT_BOARD]))
+        greenhouse = apply_agent.ApplyAgent(mode="rehearse", adapter=apply_agent.GreenhouseAdapter())
+        self.assertEqual(greenhouse.run(FakePlan([]), page_url=SECOND_URL, schema=[], files={}).reasons, [apply_agent.NOT_BOARD])
+
+    def test_the_lookup_endpoints_are_the_policys_with_the_adapters_token(self):
+        agent, _result = self.run_agent()
+        self.assertEqual(agent._endpoints, (apply_checks.Endpoint("lookup.example-robotics.test", "/v1/tok/places", "location"),))
+        self.assertEqual(agent._state.lookup_endpoints, agent._endpoints)
+
+    def test_the_different_posting_check_uses_the_adapters_ids(self):
+        _agent, result = self.run_agent(landed="https://jobs.example-robotics.test/acme/10")
+        self.assertEqual((result.outcome, result.reasons), ("needs_you", [apply_agent.DIFFERENT_POSTING]))
+        _agent, result = self.run_agent(landed="https://jobs.example-robotics.test/acme/9/")
+        self.assertEqual(result, "filled")
+        _agent, result = self.run_agent(landed="https://elsewhere.example-robotics.test/acme/10")
+        self.assertEqual(result, "filled", "a page the adapter cannot read the ids of is not judged, as before")
+
+    def test_the_page_kind_is_the_adapters(self):
+        _agent, result = self.run_agent(SecondAdapter(kind="application_form_new"))
+        self.assertEqual((result.outcome, result.reasons), ("needs_you", [apply_agent.UNKNOWN_PAGE]), "Greenhouse's name for the form is not this ATS's")
+        _agent, result = self.run_agent(SecondAdapter(kind="second_form"))
+        self.assertEqual(result, "filled")
+
+    def test_a_handoff_needs_a_submit_host_the_policy_names(self):
+        _agent, result = self.run_agent(SecondAdapter(loader=("boards.greenhouse.io", "/go", "/thanks")))
+        self.assertEqual((result.outcome, result.reasons), ("needs_you", [agent_types.HANDOFF_NO_LOADER]))
+        _agent, result = self.run_agent(SecondAdapter(loader=("", "/go", "/thanks")))
+        self.assertEqual(result.reasons, [agent_types.HANDOFF_NO_LOADER])
+        _agent, result = self.run_agent(SecondAdapter())
+        self.assertEqual(result, "filled")
+        _agent, result = self.run_agent(SecondAdapter(loader=("boards.greenhouse.io", "/go", "/thanks")), mode="rehearse")
+        self.assertEqual(result, "filled", "a rehearsal never refused for the host")
+
+    def test_a_board_that_uploads_to_storage_is_refused_and_one_that_only_reads_is_not(self):
+        _agent, result = self.run_agent(SecondAdapter(uploads=True))
+        self.assertEqual((result.outcome, result.reasons), ("needs_you", [agent_types.HANDOFF_S3]))
+        agent, result = self.run_agent(SecondAdapter(reads=True))
+        self.assertEqual(result, "filled")
+        self.assertIs(agent._evidence_bits["reads_on_attach"], True)
+        self.assertIs(agent._evidence_bits["uploads_on_attach"], False)
+        agent, _result = self.run_agent(SecondAdapter())
+        self.assertNotIn("reads_on_attach", agent._evidence_bits, "a page that does not read as it is attached adds nothing to the evidence")
+
+    def test_the_greenhouse_adapters_answers_are_the_old_functions(self):
+        adapter = apply_agent.GreenhouseAdapter()
+        urls = ("https://job-boards.greenhouse.io/Examplerobotics/jobs/4000000001", "https://boards.greenhouse.io/embed/job_app?for=Examplerobotics&token=4000000001",
+                "https://boards.greenhouse.io/embed/job_app?for=examplerobotics&token=x", "https://jobs.lever.co/acme/1", "", "not a url", "https://[bad")
+        for url in urls:
+            with self.subTest(url=url):
+                self.assertEqual(adapter.posting_ids(url), apply_agent.posting_ids(url))
+                self.assertEqual(adapter.lookup_token(url), apply_agent.board_token(url))
+                self.assertEqual(adapter.confirmation_ids(url), (apply_agent.board_token(url), apply_agent._job_id(url)))
+        self.assertEqual(adapter.form_page_kind, "application_form_new")
+        self.assertEqual(adapter.ats, "greenhouse")
+        frame = mock.Mock()
+        self.assertIs(adapter.reads_on_attach(frame), False)
+        self.assertEqual(frame.mock_calls, [], "it asks the page nothing")
 
 
 if __name__ == "__main__":

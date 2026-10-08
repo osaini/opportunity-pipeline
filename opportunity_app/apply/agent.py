@@ -68,7 +68,6 @@ from .agent_types import (
     problem_dict,
 )
 from .checks import (
-    GREENHOUSE_LOOKUP_ENDPOINTS,
     MORE_PAGES_SCRIPT,
     PHASE_AFTER_HAND_OVER,
     TYPED_LOOKUP_KINDS,
@@ -598,6 +597,24 @@ class GreenhouseAdapter:
     """
 
     ats = ATS_GREENHOUSE
+    form_page_kind = "application_form_new"   # what ``detect_page`` answers for a form the app fills
+
+    # --- the posting's address ----------------------------------------------------------------------------------
+
+    @staticmethod
+    def posting_ids(url: str) -> tuple[str, str]:
+        """(board token, job id) of a posting address, for the check that the page opened is the posting asked for; ("", "") for any other."""
+        return posting_ids(url)   # the module's function of that name, not this method
+
+    @staticmethod
+    def lookup_token(url: str) -> str:
+        """The token that fills ``{token}`` in the policy's lookup endpoints."""
+        return board_token(url)
+
+    @staticmethod
+    def confirmation_ids(url: str) -> tuple[str, str]:
+        """What the policy's confirmation rule reads of the posting's address (``Observation.board_token`` and ``job_id``)."""
+        return board_token(url), _job_id(url)
 
     # --- the page ---------------------------------------------------------------------------------------------
 
@@ -665,9 +682,13 @@ class GreenhouseAdapter:
         return host, found[0], found[1]
 
     def uploads_on_attach(self, frame: Any) -> bool:
-        """The form (or an upload group in it) says a file is uploaded the moment it is attached."""
+        """The form (or an upload group in it) says a file is uploaded to a storage address the moment it is attached."""
         return bool(frame.locator(
             'form#application-form[data-allow-s3="true"], form#application-form [data-allow-s3="true"]').count())
+
+    def reads_on_attach(self, frame: Any) -> bool:
+        """The page reads a file as it is attached, sending it to the ATS before Submit. Greenhouse's boards the app supports do not."""
+        return False
 
     def security_code_prompt(self, frame: Any) -> bool:
         """The emailed security code's first box is on the form and visible (the form asks for the code)."""
@@ -1633,13 +1654,13 @@ class ApplyAgent:
     def _run(self, page_url: str, replan: Callable[[list[dict[str, Any]], bool], Any] | None) -> RunResult:
         if self.mode not in BUILT_MODES:
             return self._finish("failed", [NOT_BUILT])
-        if (urlsplit(page_url).hostname or "").lower().rstrip(".") not in BOARD_HOSTS:
+        if (urlsplit(page_url).hostname or "").lower().rstrip(".") not in self._policy.navigation_hosts:
             return self._finish("failed", [NOT_BOARD])
         if self.mode == "lookup" and self._lookup is None:
             return self._finish("failed", [PLAN_FAILED])
         self._endpoints = (
             self._lookup_endpoints_override if self._lookup_endpoints_override is not None
-            else bind_endpoints(GREENHOUSE_LOOKUP_ENDPOINTS, board_token(page_url))
+            else bind_endpoints(self._policy.lookup_endpoints, self.adapter.lookup_token(page_url))
         )
         self._state.lookup_endpoints = self._endpoints
         self._refresh_values()
@@ -1667,11 +1688,11 @@ class ApplyAgent:
             raise _Stop("needs_you", OFFSITE.format(host=self._offsite_host() or (urlsplit(self._page.url).hostname or "another site")))
         if self._popup_refused():
             raise _Stop("needs_you", POPUP)
-        asked, landed = posting_ids(page_url), posting_ids(self._page.url)
+        asked, landed = self.adapter.posting_ids(page_url), self.adapter.posting_ids(self._page.url)
         if asked != ("", "") and landed != ("", "") and landed != asked:
             # A board that redirects a posting to another one: what is filled and checked here would be that other posting.
             raise _Stop("needs_you", DIFFERENT_POSTING)
-        if kind != "application_form_new":
+        if kind != self.adapter.form_page_kind:
             raise _Stop("needs_you", UNKNOWN_PAGE)
         submit_host, submit_path, confirmation_path = self.adapter.loader_paths(html)
         self._state.submit_path = submit_path
@@ -1679,10 +1700,14 @@ class ApplyAgent:
         self._evidence_bits["loader"] = {"submit_path": bool(submit_path), "confirmation_path": bool(confirmation_path)}
         uploads = self.adapter.uploads_on_attach(frame)
         self._evidence_bits["uploads_on_attach"] = uploads
+        if self.adapter.reads_on_attach(frame):
+            # The page reads a file as it is attached (the file leaves at once, to the ATS's own parser). Noted, never a reason to refuse the board:
+            # whether the app may attach a file to such a page is the student's setting, decided where the file is planned.
+            self._evidence_bits["reads_on_attach"] = True
         if self.mode == "handoff":
             # Before any input. On a board whose submit address is not the one the request rules know, every Submit would be
             # stopped: safe, and useless.
-            if not (submit_path and confirmation_path and submit_host == SUBMIT_HOST):
+            if not (submit_path and confirmation_path and submit_host in self._policy.submit_hosts):
                 raise _Stop("needs_you", HANDOFF_NO_LOADER, "board")
             if uploads:
                 raise _Stop("needs_you", HANDOFF_S3, "board")
@@ -2433,13 +2458,14 @@ class ApplyAgent:
         except Exception:  # noqa: BLE001 - a page in the middle of navigating or closing: the last thing seen stands
             frame = None
         seen = self._observer.seen() if self._observer is not None else ()
+        token, job_id = self.adapter.confirmation_ids(self._page_url)
         error = ""
         if frame is not None and form_present and any(item.status is not None and 400 <= item.status < 500 and item.status != 428 for item in seen):
             error = self._first_error_question(frame)
         return Observation(
             main_path=path, main_query=query, form_present=form_present, requests=seen, security_code_visible=code_visible,
             challenge_frame=challenge, submit_path=self._state.submit_path, confirmation_path=self._confirmation_path,
-            board_token=board_token(self._page_url), job_id=_job_id(self._page_url),
+            board_token=token, job_id=job_id,
             navigated=bool(self._observer is not None and self._observer.navigated), first_field_error=error,
         )
 
@@ -2576,9 +2602,9 @@ class ApplyAgent:
         """The main frame is on Greenhouse's confirmation page (the code, if it was needed, has been accepted)."""
         try:
             parts = urlsplit(self._page.url)
+            token, job_id = self.adapter.confirmation_ids(self._page_url)
             return self._policy.confirmation_reached(Observation(
-                main_path=parts.path, main_query=parts.query, confirmation_path=self._confirmation_path,
-                board_token=board_token(self._page_url), job_id=_job_id(self._page_url),
+                main_path=parts.path, main_query=parts.query, confirmation_path=self._confirmation_path, board_token=token, job_id=job_id,
             ))
         except Exception:  # noqa: BLE001 - a page that cannot answer is not on the confirmation page
             return False
@@ -2593,7 +2619,7 @@ class ApplyAgent:
             return False, "press_unseen"                 # the student's press could not be told from the widget's send: they type it
         try:
             parts = urlsplit(self._page.url)
-            if (parts.hostname or "").lower() not in BOARD_HOSTS or not parts.path.rstrip("/").startswith(self._job_path):
+            if (parts.hostname or "").lower() not in self._policy.navigation_hosts or not parts.path.rstrip("/").startswith(self._job_path):
                 return False, "page_closed"
             boxes = self.adapter.security_code_inputs(self.adapter.form_frame(self._page))   # now, in the current frame
         except Exception:  # noqa: BLE001 - a page that cannot answer
