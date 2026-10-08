@@ -63,7 +63,7 @@ from . import (
     runs as apply_runs, security_code as apply_security_code, watch as apply_watch,
 )
 from .agent_types import (
-    HANDOFF_NOT_SUBMITTED, ISOLATIONS, MODE_FOR_KIND, OP_CANCEL, OP_ERROR, OP_FRONT, OP_HAND_OVER, OP_HAND_OVER_REPLY, OP_HANDOFF_READY,
+    HANDOFF_NOT_SUBMITTED, ISOLATIONS, MODE_FOR_KIND, OP_CANCEL, OP_ERROR, OP_FILE_CHECK, OP_FILE_CHECK_REPLY, OP_FRONT, OP_HAND_OVER, OP_HAND_OVER_REPLY, OP_HANDOFF_READY,
     OP_HEARTBEAT, OP_PROGRESS, OP_REPLAN, OP_REPLAN_REPLY, OP_RESULT, OP_SECURITY_CODE, OP_SECURITY_CODE_REPLY, OP_SECURITY_CODE_RESULT,
     OUTCOMES, PROGRESS_STEPS, STOPPED, WINDOW_CLOSED, WINDOW_UNCONFIRMED, YOUR_TURN, YOUR_TURN_NONE_LEFT, AgentJob, ApplyTimeouts,
     FilePayload, LookupRequest, RunResult,
@@ -77,6 +77,7 @@ from ..automation import ledger as automation
 from ..core.database import connect_product, rollback_quietly
 from ..core.json_values import json_as
 from ..core.timestamps import parse_app_instant, utc_now
+from ..student import artifacts as document_artifacts
 
 LOGGER = logging.getLogger(__name__)
 
@@ -483,6 +484,9 @@ class SupervisorHandlers:
     hand_over: Callable[..., bool] = lambda: False
     # Called every HEARTBEAT_EVERY_S while the child lives, so a quiet agent does not look dead.
     tick: Callable[[], None] = lambda: None
+    # (key, source ref, SHA-256 of the text) of a cover letter the agent is about to attach: True only when it is still the latest
+    # version, still approved and unchanged (D11). Reads the database; no network.
+    check_file: Callable[[str, str, str], bool] | None = None
     # Finish in browser. None of these may block on a network call: they run on the one thread that pumps the pipe.
     handoff_ready: Callable[[dict[str, Any]], None] = lambda message: None
     security_code: Callable[[int], None] = lambda ident: None          # starts the off-thread answer to ask ``ident``
@@ -595,6 +599,13 @@ def _dispatch(message: Any, handlers: SupervisorHandlers, inbox: Any, pump: _Pum
         except Exception as exc:  # noqa: BLE001 - the child is told the type name only
             reply = {"op": OP_REPLAN_REPLY, "id": ident, "plan": None, "error": type(exc).__name__}
         _answer(inbox, reply)
+    elif op == OP_FILE_CHECK:
+        try:
+            current = handlers.check_file is not None and handlers.check_file(
+                str(message.get("key") or ""), str(message.get("ref") or ""), str(message.get("sha256") or "")) is True
+        except Exception:  # noqa: BLE001 - when unsure, the document is not attached
+            current = False
+        _answer(inbox, {"op": OP_FILE_CHECK_REPLY, "id": message.get("id"), "ok": current})
     elif op == OP_HAND_OVER and pump is not None and pump.abort is not None and pump.abort.is_set():
         # The run is about to be killed (the supervise loop only looks at ``abort`` at the top of an iteration): the student's Submit is
         # not committed, so the child aborts the POST instead of continuing one the next iteration would cut off.
@@ -1223,15 +1234,25 @@ class ApplyRunner:
 
     @staticmethod
     def _files(conn: sqlite3.Connection, user_id: str, plan: Any, resume_root: Path) -> dict[str, FilePayload]:
-        """The résumé to attach, read now and verified against the hash stored at upload. None when it cannot be read: the agent says so."""
+        """The files to attach, read now and verified: the résumé against the hash stored at upload, the cover letter against the text
+        the plan was made from. A file that cannot be read has no payload: the agent says so."""
+        files: dict[str, FilePayload] = {}
         for entry in plan.fields:
-            if entry.source.kind == "resume" and entry.disposition in ("fill", "deferred"):
-                try:
+            if entry.disposition not in ("fill", "deferred") or entry.key in files:
+                continue
+            try:
+                if entry.source.kind == "resume":
                     path, name, media_type, sha = confirmed_resume_file(conn, entry.source.ref, resume_root, user_id=user_id, verify=True)
-                    return {entry.key: FilePayload(name=name, mime_type=media_type, buffer=path.read_bytes(), sha256=sha)}
-                except Exception:  # noqa: BLE001 - a missing or changed file leaves no payload; the rehearsal then reports NO_FILE
-                    return {}
-        return {}
+                    files[entry.key] = FilePayload(name=name, mime_type=media_type, buffer=path.read_bytes(), sha256=sha)
+                elif entry.source.kind == "cover_letter":
+                    document_id = entry.source.ref.partition("@")[0]
+                    letter = document_artifacts.attachable_file(conn, document_id, resume_root, user_id=user_id)
+                    files[entry.key] = FilePayload(
+                        name=letter.name, mime_type=letter.media_type, buffer=letter.data, sha256=letter.sha256, content_sha256=letter.content_sha256,
+                    )
+            except Exception:  # noqa: BLE001 - a missing or changed file leaves no payload; the rehearsal then reports NO_FILE
+                continue
+        return files
 
     # --- the supervisor thread
 
@@ -1283,8 +1304,14 @@ class ApplyRunner:
                     canonical_url=work.page_url, adapter_version=apply_greenhouse.ADAPTER_VERSION, uploads_on_attach=uploads_on_attach,
                 )
 
+            def check_file(_key: str, ref: str, sha256: str) -> bool:
+                document_id, _, version = ref.partition("@")
+                return bool(version.isdigit() and apply_policy.letter_is_current(
+                    conn, user_id, work.opportunity_id, document_id=document_id, version=int(version), content_sha256=sha256))
+
             handlers = SupervisorHandlers(
                 progress=lambda step, text: note(step, text), heartbeat=beat, replan=planner, hand_over=lambda: False, tick=beat,
+                check_file=check_file,
             )
             if handoff:
                 codes = _CodeAnswers(self._reader, work.database_target, user_id, work.token)
@@ -1313,11 +1340,11 @@ class ApplyRunner:
                     until = datetime.now(timezone.utc) + timedelta(seconds=seconds)
                     stored = apply_runs.record_handoff_ready(
                         conn, user_id=user_id, run_id=run_id, token=work.token, plan=[item for item in message.get("plan") or [] if isinstance(item, dict)],
-                        plan_hash=str(message.get("plan_hash") or ""), screenshots=shots, handoff_until=apply_watch.iso_utc(until),
+                        plan_hash=str(message.get("plan_hash") or ""), screenshots=shots, handoff_until=apply_runs.iso_utc(until),
                         evidence={
                             "left_for_you": _left_items(message.get("left")), "captcha_widget": bool(message.get("captcha_widget")),
                             "page_defaults": [str(key) for key in message.get("page_defaults") or []],
-                            "handoff_until": apply_watch.iso_utc(until),
+                            "handoff_until": apply_runs.iso_utc(until),
                         },
                     )
                     if not stored:
@@ -1703,6 +1730,15 @@ _SOURCE_TEXT = {
 }
 # The phases of a Finish in browser run that is still running (the last progress step names it), else "filling".
 _HANDOFF_PHASES = ("your_turn", "submitting", "security_code", "code_typed", "code_yours", "challenge")
+# How a Finish in browser run ended (``evidence.handoff_end``) when trying again meets the same thing: "board" is a stop on a property of the
+# board itself (no submit address the app knows, a board that uploads on attach, a hidden field the app would have filled). Every other stop,
+# whatever its end (the student, the clock, a page that would not open, a Greenhouse error, a changed résumé file, none at all), is offered
+# Finish in browser again, since the result panel has no other way to start it and a second try can differ.
+_NOT_AGAIN_ENDS = frozenset({"board"})
+# Said beside a Finish in browser run's ending when the agent saw the form try to send somewhere it does not recognize (the host is a name, never a value).
+# It is about that one request, never about the application: the form's own submission may have gone on, so it is said only where nothing did.
+ELSEWHERE_SEEN = ("While the window was open the form tried to send a request to {host}, which the app doesn't recognize. "
+                  "The app stopped that request; nothing went to that address.")
 _SAYS_NOT_SENT = re.compile(r"not sent|nothing was sent|no application was sent", re.IGNORECASE)
 
 
@@ -1742,11 +1778,8 @@ def _disposition_text(
     disposition = str(entry.get("disposition") or "")
     key = str(entry.get("key") or "")
     source = entry.get("source") if isinstance(entry.get("source"), dict) else {}
-    cover = source.get("kind") == "cover_letter"
     if kind == "handoff":
         if disposition == "fill":
-            if cover:
-                return "Left for you"   # never attached in this version (the agent moves it before it shows the plan)
             if source.get("kind") == "sensitive":
                 if _is_statement(entry):
                     return "Ticked from your stored statement" if entry.get("control") == "checkbox" else "Answered from your stored statement"
@@ -1764,8 +1797,6 @@ def _disposition_text(
             return "Not filled: the form has no field for this"
         return "Not confirmed: the rehearsal stopped before this was filled and read back"
     if disposition == "deferred":
-        if cover:
-            return "Not attached yet: attach it in the window"
         if _is_file(entry):
             return "Not attached: this board uploads files as soon as they are attached"
         if key not in checked:
@@ -1789,6 +1820,9 @@ def _source_text(entry: Mapping[str, Any], company: str = "") -> str:
     if _is_statement(entry) and entry.get("sensitive") in STATEMENT_CATEGORIES:
         noun = "acknowledgment" if entry.get("sensitive") == "acknowledgment" else "consent"
         return f"Your {noun} for {company}" if company else f"Your {noun}"
+    if kind == "cover_letter":
+        version = str(source.get("ref") or "").rpartition("@")[2]
+        return f"Approved cover letter, version {version}" if version.isdigit() else _SOURCE_TEXT["cover_letter"]
     return _SOURCE_TEXT.get(kind, "")
 
 
@@ -1811,6 +1845,8 @@ def _summary(
             return "The app stopped during this run"
         if row["kind"] == "handoff" and phase == "your_turn":
             return YOUR_TURN_NONE_LEFT if nothing_left else YOUR_TURN
+        if row["kind"] == "handoff" and phase == "form_elsewhere":
+            return str(progress[-1].get("text") or "") if progress else PROGRESS_STEPS["your_turn"]   # it names the host the agent saw
         if row["kind"] == "handoff" and phase in _HANDOFF_PHASES:
             return PROGRESS_STEPS[phase]
         return str(progress[-1].get("text") or "") if progress else PROGRESS_STEPS["start"]
@@ -1897,6 +1933,11 @@ def _claim_facts(conn: sqlite3.Connection, row: Mapping[str, Any]) -> tuple[dict
     return card, str(fact["state"]), bool(fact["after_click"]), bool(fact["cancel_requested"])
 
 
+def _finish_again(handoff: bool, evidence: Mapping[str, Any]) -> bool:
+    """Whether the page should offer Finish in browser again after this run, if its application is not one that went or may have (see ``_NOT_AGAIN_ENDS``)."""
+    return handoff and evidence.get("handoff_end") not in _NOT_AGAIN_ENDS
+
+
 def _handoff_phase(progress: list[dict[str, Any]], card: Mapping[str, Any] | None, claim_state: str) -> str:
     """Where a running Finish in browser run is: filling, the student's turn, submitting, or one of the code steps.
 
@@ -1907,6 +1948,8 @@ def _handoff_phase(progress: list[dict[str, Any]], card: Mapping[str, Any] | Non
     step = progress[-1]["step"] if progress else ""
     if claim_state == "clicking" and step not in _HANDOFF_PHASES[1:]:
         return "submitting"
+    if step == "form_elsewhere":
+        return step      # still the student's turn: the notice says the form tried to send somewhere the app stopped
     if step in _HANDOFF_PHASES:
         return step if not (step == "your_turn" and claim_state == "clicking") else "submitting"
     return "your_turn" if card is not None and card.get("status") == "your_turn" else "filling"
@@ -1937,6 +1980,10 @@ def run_view(
     handoff = row["kind"] == "handoff"
     card, claim_state, after_click, _asked = _claim_facts(conn, row) if handoff else (None, "", False, False)
     phase = _handoff_phase(progress, card, claim_state) if handoff and running else ""
+    host = (evidence.get("elsewhere_seen") or {}).get("host") if isinstance(evidence.get("elsewhere_seen"), dict) else None
+    # The turn went on after the refusal, so what was seen is said beside the ending (never as the summary, which is the run's own).
+    went_on = after_click or evidence.get("handoff_end") == "posted" or row["outcome"] in ("submitted", "unconfirmed")
+    said = [*reasons, ELSEWHERE_SEEN.format(host=host)] if handoff and isinstance(host, str) and host and not went_on else reasons
     problems = [
         {"key": str(entry.get("key") or ""), "question": str(entry.get("question") or ""), "message": str(entry["problem"]),
          "required": bool(entry.get("required")), "kind": "plan"}
@@ -1991,13 +2038,16 @@ def run_view(
             phase=phase, nothing_left=not left, claim=card, after_click=after_click,
         ),
         "measured": _measured(row, evidence, refused if isinstance(refused, list) else []),
-        "progress": progress, "reasons": reasons, "problems": problems, "fields": fields,
+        "progress": progress, "reasons": said, "problems": problems, "fields": fields,
         "options": options if isinstance(options, dict) else {}, "lookup": lookup if isinstance(lookup, dict) else None,
         "screenshots": shots, "refused_count": len(refused) if isinstance(refused, list) else 0,
         "review": row["review"] or "", "review_note": row["review_note"] or "", "reviewed_at": row["reviewed_at"],
         "can_review": reviewable(row),
         "can_cancel": bool(can_cancel),
-        "phase": phase, "handed_over": bool(handoff and (after_click or evidence.get("handoff_end") == "posted")), "left_for_you": left, "handoff_until": str(until) if isinstance(until, str) and until and running else None,
+        "phase": phase, "handed_over": bool(handoff and (after_click or evidence.get("handoff_end") == "posted")),
+        "handoff_end": str(evidence.get("handoff_end") or "") if handoff else "",
+        "finish_again": _finish_again(handoff, evidence),
+        "left_for_you": left, "handoff_until": str(until) if isinstance(until, str) and until and running else None,
         "page_defaults": defaults, "claim": card, "can_front": can_front,
     }
 

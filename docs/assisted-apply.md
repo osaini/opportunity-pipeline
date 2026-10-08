@@ -179,8 +179,13 @@ in browser** is the part of it that fills a real form. The student presses Submi
    from confirmed facts, the answers saved for that company, the confirmed résumé, and the stored sensitive answers the
    student switched on. A consent or acknowledgment box is ticked only on an exact stored statement with the same
    documents, and the **Your turn** panel lists every box the app ticked, with the addresses the statement links to, before
-   the student presses Submit. Everything else is left for the student: cover letters (the app attaches none yet), any
-   CAPTCHA box, and any field it could not fill or read back. The panel lists those under **Left for you**.
+   the student presses Submit. When the form requires a cover letter, the app attaches the latest version the student
+   approved for that role, as a PDF named for the company, the role and the version; just before it goes in the app checks
+   once more that this is still the latest approved version with the same words, and leaves the field for the student if
+   not. It attaches no letter the student did not approve, and none to an optional field or to any other upload. Everything
+   else is left for the student: any CAPTCHA box, a cover letter with none approved, and any field it could not fill or
+   read back. The panel lists those under **Left for you**. A required letter with none approved shows **Draft one** (or
+   **Open the draft**) in the role's Apply for me section, which goes to the Prepare page; after approving, press **Try again**.
 2. The student completes the form in the window and presses **Submit application** there. Before that press nothing that could
    carry the application leaves the window: every request that is not a plain read is refused, except the CAPTCHA
    service's own requests, which may carry no answer, and Greenhouse's telemetry is refused outright. The press goes
@@ -189,14 +194,18 @@ in browser** is the part of it that fills a real form. The student presses Submi
    a value it filled to any other address, before and after the press (spec 11). It checks only what the app itself put in
    the form: an answer you type in the window is not known to the app, so it is not watched for. After the press the
    confirmation page's own requests to Greenhouse's board addresses are not checked, and every other address still is.
-3. A second press, a file upload, or a send to an address the app does not recognize is stopped. **Stop**, closing the window,
+3. A second press, a file upload, or a send to an address the app does not recognize is stopped. When a form sends its fields
+   to an address the app does not recognize just after your press, the app refuses it as always, leaves the window open for
+   you, and the panel says "The form tried to send a request to {address}, which the app doesn't recognize, so the app stopped that
+   request", so you are not left looking at the page's own error. **Stop**, closing the window,
    or 20 minutes with no press close the window and send nothing. After the press Stop is gone: the app can no longer
    say that nothing was sent, and it tells the student what it saw.
 4. If Greenhouse asks for its emailed security code, the app reads the code from Gmail (read-only, a verified Greenhouse
    sender, after the press, for the same company, once) and types it into the same window. It does not press Submit
-   again: the student does, and the app tells the student to press only after two seconds in which it refuses any send, so a
-   page that sends the code by itself as it is typed sends nothing (a page that waits longer than that is not stopped).
-   If the app cannot read it, the student types it. The code is never stored or logged, and the picture taken at the end
+   again: the student does. The app refuses to let the code leave the window until it has seen the student's own click on
+   the form's Submit button (or Enter in the form) after the typing finished, so a page that sends the code by itself, as it is
+   typed or seconds later, or again and again, sends nothing, and a second prompt needs a new click of its own; a click a page script makes does not count. If the app cannot read
+   the code, or cannot watch for the student's click, the student types it. The code is never stored or logged, and the picture taken at the end
    covers the code boxes.
 5. Pausing automation does not stop a window the student opened (their own Submit is the confirm), and the pause reply
    says so.

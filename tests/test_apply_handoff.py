@@ -282,7 +282,7 @@ class RefusalTests(HandoffCase):
         with self.conn:
             self.conn.execute("UPDATE application_submit_claims SET state='unconfirmed', resolved_by='' WHERE token=?", (token,))
         apply_watch.resolve_by_student(self.conn, token, user_id=USER, went_through=False)
-        old = (utc_now() and (apply_runs._at(None) - timedelta(days=3)).isoformat(timespec="microseconds"))
+        old = (utc_now() and (apply_runs.at_utc(None) - timedelta(days=3)).isoformat(timespec="microseconds"))
         with self.conn:
             self.conn.execute("UPDATE application_submit_claims SET handed_over_at=? WHERE token=?", (old, token))
         self.assertEqual(self.claim_of(run_id)["state"], "released")
@@ -316,7 +316,7 @@ class RefusalTests(HandoffCase):
     def test_the_company_limit_is_a_tick_after_the_spacing_has_passed(self):
         first = self.handoff()
         self.finished(first)
-        old = (apply_runs._at(None) - timedelta(days=5)).isoformat(timespec="microseconds")
+        old = (apply_runs.at_utc(None) - timedelta(days=5)).isoformat(timespec="microseconds")
         with self.conn:
             self.conn.execute("UPDATE application_submit_claims SET handed_over_at=? WHERE run_id=?", (old, first))
         self.second_role()
@@ -706,6 +706,19 @@ class PhaseTests(HandoffCase):
         self.assertEqual(apply_runner._summary(row, [], {}, "", "", [], False, phase="your_turn", nothing_left=False), YOUR_TURN)
         self.assertEqual(apply_runner._summary(row, [], {}, "", "", [], False, phase="your_turn", nothing_left=True), YOUR_TURN_NONE_LEFT)
         self.assertEqual(apply_runner._summary(row, [], {}, "", "", [{"step": "fill", "text": "Filling 3 fields"}], False, phase="filling"), "Filling 3 fields")
+
+    def test_a_form_that_tried_to_send_elsewhere_is_still_the_students_turn_and_says_so_in_its_own_words(self):
+        phase = apply_runner._handoff_phase
+        card = {"status": "your_turn"}
+        told = [{"step": "your_turn", "text": "x"}, {"step": "form_elsewhere", "text": "The form tried to send to apply.example.test, which the app doesn't recognize"}]
+        self.assertEqual(phase(told, card, "claimed"), "form_elsewhere")
+        # The student's next press commits the hand-over: the phase is submitting at once, not the stale notice.
+        self.assertEqual(phase(told, None, "clicking"), "submitting")
+        row = {"status": "running", "kind": "handoff", "outcome": ""}
+        text = apply_runner._summary(row, [], {}, "Acme", "Intern", told, False, phase="form_elsewhere")
+        self.assertEqual(text, told[-1]["text"], "the sentence names the host the agent saw, so it is the step's own text")
+        self.assertIn("doesn't recognize", PROGRESS_STEPS["form_elsewhere"])
+        self.assertNotIn("Nothing was sent", PROGRESS_STEPS["form_elsewhere"], "the step is about the stopped request, not about the application")
 
     def test_a_turn_with_nothing_left_for_the_student_says_so(self):
         run_id = self.handoff(handoff_factory(wait=30))
@@ -1261,6 +1274,19 @@ class HandOverDeadlineTests(ApplyCase):
         row = self.claim_row(self.token)
         self.assertEqual((row["state"], row["after_click"]), ("clicking", 1))
         self.assertEqual(json.loads(row["detail_json"])["waiting"], "", "a clicking claim never says the student is still working")
+
+    def test_a_deadline_that_passes_while_the_profile_is_read_refuses_and_leaves_the_claim_claimed(self):
+        # The deadline comparison is the last step before the UPDATE: nothing slow may sit between them.
+        real = apply_runs.application_address
+
+        def slow(*args, **kwargs):
+            time.sleep(0.2)
+            return real(*args, **kwargs)
+
+        with mock.patch.object(apply_runs, "application_address", side_effect=slow):
+            self.assertFalse(apply_runs.hand_over(self.conn, self.token, user_id=USER, deadline=time.monotonic() + 0.1))
+        row = self.claim_row(self.token)
+        self.assertEqual((row["state"], row["handed_over_at"], row["after_click"]), ("claimed", None, 0))
 
     def test_a_request_that_waited_in_the_queue_past_its_expiry_is_refused(self):
         case = self
@@ -2191,7 +2217,7 @@ class PreviewTests(HandoffCase):
     def test_a_newer_resume_version_is_a_change(self):
         row = self.rehearse()
         data = b"%PDF-1.4 another fictional resume"
-        stamp = (apply_runs._at(None) + timedelta(minutes=5)).isoformat(timespec="microseconds")
+        stamp = (apply_runs.at_utc(None) + timedelta(minutes=5)).isoformat(timespec="microseconds")
         (self.root / "resumes" / "resume-file-2.pdf").write_bytes(data)
         with self.conn:
             self.conn.execute(
@@ -2235,14 +2261,22 @@ class PreviewTests(HandoffCase):
         self.assertEqual(changed, {"text": "", "changed": True, "available": True, "shown": False}, "what was sent is not stored, so it is not claimed")
         self.assertEqual(self.values(row)["last_name"]["text"], "Rivera")
 
-    def test_a_cover_letter_entry_of_a_handoff_is_left_for_the_student_and_never_filled(self):
+    def test_a_cover_letter_entry_is_worded_like_any_other_file(self):
         entry = {"key": "cover_letter", "question": "Cover Letter", "control": "file", "required": True, "options": [], "sensitive": None,
                  "disposition": "left_for_you", "source": {"kind": "none", "ref": "", "company": "", "reusable": False, "links": []},
                  "value_mac": "", "file_sha256": "", "problem": "", "note": ""}
         self.assertEqual(apply_runner._disposition_text(entry, kind="handoff"), "Left for you")
         filled = {**entry, "disposition": "fill", "source": {"kind": "cover_letter", "ref": "d@1", "links": []}, "file_sha256": "x"}
-        self.assertEqual(apply_runner._disposition_text(filled, kind="handoff"), "Left for you", "an approved letter is never said to be filled")
+        self.assertEqual(apply_runner._disposition_text(filled, kind="handoff"), "Filled in the window", "the agent moves a letter it did not attach to left_for_you before it shows the plan")
         self.assertEqual(apply_runner._disposition_text(filled, kind="rehearsal"), "Not attached in this rehearsal")
+        self.assertEqual(apply_runner._disposition_text(filled, frozenset({"cover_letter"}), kind="rehearsal"), "Filled in the rehearsal")
+        deferred = {**filled, "disposition": "deferred"}
+        self.assertEqual(apply_runner._disposition_text(deferred, kind="rehearsal"), "Not attached: this board uploads files as soon as they are attached")
+
+    def test_the_source_of_a_cover_letter_names_its_version(self):
+        filled = {"key": "cover_letter", "source": {"kind": "cover_letter", "ref": "document-abc@3", "links": []}}
+        self.assertEqual(apply_runner._source_text(filled), "Approved cover letter, version 3")
+        self.assertEqual(apply_runner._source_text({"source": {"kind": "cover_letter", "ref": "", "links": []}}), "Your approved cover letter")
 
     def test_the_view_says_filled_in_the_window_where_the_old_wording_was_wrong_under_the_students_pressing_submit(self):
         row = self.rehearse()
@@ -2306,7 +2340,7 @@ class PreviewTests(HandoffCase):
         with self.conn:
             self.conn.execute("UPDATE application_submit_claims SET state='unconfirmed', resolved_by='' WHERE token=?", (token,))
         apply_watch.resolve_by_student(self.conn, token, user_id=USER, went_through=False)
-        old = (apply_runs._at(None) - timedelta(days=3)).isoformat(timespec="microseconds")
+        old = (apply_runs.at_utc(None) - timedelta(days=3)).isoformat(timespec="microseconds")
         with self.conn:
             self.conn.execute("UPDATE application_submit_claims SET handed_over_at=? WHERE token=?", (old, token))
         result = apply_preflight.check(self.conn, USER, ACME, client=self.schema, resume_root=self.root / "resumes")

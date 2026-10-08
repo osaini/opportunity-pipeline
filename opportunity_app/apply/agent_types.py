@@ -35,6 +35,8 @@ PROGRESS_STEPS = {
     "submitting": "Submitting to Greenhouse…",
     "security_code": ("Greenhouse emailed you a security code. The app is looking for it in your Gmail; "
                       "you can also type it into the window yourself"),
+    "form_elsewhere": ("The form tried to send a request to {host}, which the app doesn't recognize, so the app stopped that request. "
+                       "If the form shows an error, fix it and press Submit application again, or press Stop and apply from the posting instead"),
     "code_typed": "The app typed the security code from your email. Press Submit application in the window",
     "code_yours": "Type the security code Greenhouse emailed you into the window, then press Submit application",
     "challenge": "Greenhouse showed a check in the window. Finish it there",
@@ -51,6 +53,10 @@ OP_REPLAN = "replan"                # child -> parent: {"op", "id", "scan", "upl
 OP_REPLAN_REPLY = "replan_reply"    # parent -> child: {"op", "id", "plan", "error"}
 OP_HAND_OVER = "hand_over"          # child -> parent: {"op", "id"}; parent commits, then replies OP_HAND_OVER_REPLY
 OP_HAND_OVER_REPLY = "hand_over_reply"  # parent -> child: {"op", "id", "ok"}; anything but ok=True is False
+OP_FILE_CHECK = "file_check"        # child -> parent: {"op", "id", "key", "ref", "sha256"}; asks whether the document the plan names for field
+                                    #   "key" (its source ref, and the SHA-256 of its text) is still the one to attach (M7: the cover letter);
+                                    #   the parent replies OP_FILE_CHECK_REPLY
+OP_FILE_CHECK_REPLY = "file_check_reply"  # parent -> child: {"op", "id", "ok"}; anything but ok=True is False
 OP_CANCEL = "cancel"                # parent -> child: {"op"}
 OP_RESULT = "result"                # child -> parent: {"op", "result": RunResult}
 OP_ERROR = "error"                  # child -> parent: {"op", "error": exception type name only, never its message}
@@ -95,7 +101,7 @@ YOUR_TURN = "The form is filled in the Chromium window. Complete the fields belo
 YOUR_TURN_NONE_LEFT = "The form is filled in the Chromium window. Check the form, then press Submit application there."
 LEFT_FIELD = 'The app could not fill "{question}". Fill it in yourself.'
 LEFT_CAPTCHA = "Tick the CAPTCHA box in the window yourself before you press Submit application."
-LEFT_COVER_LETTER = "The app doesn't attach cover letters yet. Attach yours in the window."
+LEFT_COVER_LETTER_CHANGED = "Your cover letter for this role changed while the app was working, so it was not attached. Attach yours in the window."
 LEFT_UNPLANNED = "The page put something in \"{question}\" that the app didn't. Check it before you press Submit application."
 
 
@@ -132,6 +138,8 @@ class FilePayload:
     mime_type: str
     buffer: bytes = field(repr=False)
     sha256: str = ""
+    # A generated document (the cover letter): the SHA-256 of the approved text this file was rendered from, which the plan names too.
+    content_sha256: str = ""
 
     def as_playwright(self) -> dict[str, Any]:
         return {"name": self.name, "mimeType": self.mime_type, "buffer": self.buffer}
@@ -156,7 +164,7 @@ class AgentJob:
     page_url: str                     # greenhouse.canonical_url(token, job_id)
     plan: Any                         # apply.policy.Plan: the draft plan from the schema alone (values in memory)
     schema: list[Any]                 # apply.policy.SchemaField list from Greenhouse's listing
-    files: dict[str, FilePayload]     # by plan field key ("resume"); empty for a lookup
+    files: dict[str, FilePayload]     # by plan field key ("resume", "cover_letter"); empty for a lookup
     lookup: LookupRequest | None
     screenshot_dir: str               # absolute; "" means take no screenshot
     timeouts: ApplyTimeouts = ApplyTimeouts()
@@ -218,6 +226,7 @@ class ApplyAgentLike(Protocol):
         hand_over: Callable[[], bool] | None = None,
         cancelled: Callable[[], bool] | None = None,
         link: "HandoffLink | None" = None,
+        check_file: Callable[[str, str, str], bool] | None = None,   # (key, ref, sha256); given only when a cover letter is to be attached (M7)
     ) -> RunResult: ...
 
 

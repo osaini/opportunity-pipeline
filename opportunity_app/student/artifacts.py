@@ -7,7 +7,7 @@ import re
 import sqlite3
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from uuid import uuid4
 
 from .preparation import document_record
@@ -15,6 +15,11 @@ from ..core.timestamps import utc_now
 
 
 PDF_MEDIA_TYPE = "application/pdf"
+
+
+def content_digest(content: str) -> str:
+    """The SHA-256 of a document's text: what ``content_sha256`` records and what Apply for me puts in its plan."""
+    return hashlib.sha256(str(content).encode("utf-8")).hexdigest()
 
 
 def _safe_name(value: str) -> str:
@@ -88,6 +93,34 @@ def _render_pdf(content: str, target: Path) -> None:
     document.build(story)
 
 
+def document_file_name(document: dict[str, Any]) -> str:
+    """The name the employer sees for a document's PDF (company, role, kind and version), never a storage name."""
+    return _safe_name(f"{document.get('company', '')}-{document.get('title', '')}-{document['document_type']}-v{document['version']}")
+
+
+def _stored_file(storage_root: Path, artifact: Any) -> Path | None:
+    """The artifact's file inside the generated folder, or None when it is missing or outside it."""
+    root = (storage_root.resolve() / "generated").resolve()
+    path = (root / str(artifact["storage_path"])).resolve()
+    return path if path.parent == root and path.is_file() else None
+
+
+def _is_current(artifact: Any, document: dict[str, Any], storage_root: Path) -> bool:
+    """The stored PDF was rendered from this exact text, carries the name the role gives it now, and the file on disk is still the one stored.
+
+    The name is made from the role's company and title, so a role renamed since the PDF was made gets a new PDF with the new name:
+    the plan and the preview name the file from the role as it is now.
+
+    An artifact made before ``content_sha256`` existed has none recorded, so it cannot be shown to match and is made again.
+    """
+    if str(artifact["content_sha256"] or "") != content_digest(str(document["content"])):
+        return False
+    if str(artifact["filename"] or "") != document_file_name(document):
+        return False
+    path = _stored_file(storage_root, artifact)
+    return path is not None and hashlib.sha256(path.read_bytes()).hexdigest() == str(artifact["sha256"])
+
+
 def ensure_document_artifact(
     conn: sqlite3.Connection,
     document_id: str,
@@ -95,6 +128,12 @@ def ensure_document_artifact(
     *,
     user_id: str,
 ) -> dict[str, Any]:
+    """The PDF of an approved document, rendered from the text as it is now.
+
+    A stored PDF is returned only when it was rendered from this exact text (its recorded ``content_sha256``) and the file
+    still matches its own hash. Otherwise it is rendered again and the old file removed, so a PDF of an older draft is never
+    returned, whatever happened to the delete that was meant to remove it (the edit route commits first and deletes after).
+    """
     document = document_record(conn, document_id, user_id=user_id)
     if document["status"] != "approved":
         raise ValueError("Only approved documents can become attachable artifacts")
@@ -102,17 +141,13 @@ def ensure_document_artifact(
         "SELECT * FROM generated_document_artifacts WHERE document_id=? AND user_id=?",
         (document_id, user_id),
     ).fetchone()
-    if existing:
-        path = (storage_root.resolve() / "generated" / str(existing["storage_path"])).resolve()
-        if path.parent == (storage_root.resolve() / "generated").resolve() and path.exists():
-            return dict(existing)
+    if existing and _is_current(existing, document, storage_root):
+        return dict(existing)
 
     artifact_root = (storage_root.resolve() / "generated").resolve()
     artifact_root.mkdir(parents=True, exist_ok=True)
     artifact_id = f"document-artifact-{uuid4().hex}"
-    filename = _safe_name(
-        f"{document.get('company', '')}-{document.get('title', '')}-{document['document_type']}-v{document['version']}"
-    )
+    filename = document_file_name(document)
     stored_name = f"{artifact_id}.pdf"
     target = (artifact_root / stored_name).resolve()
     if target.parent != artifact_root:
@@ -134,8 +169,8 @@ def ensure_document_artifact(
                 """
                 INSERT INTO generated_document_artifacts(
                     id, document_id, user_id, filename, media_type,
-                    byte_size, sha256, storage_path, created_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    byte_size, sha256, storage_path, created_at, content_sha256
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     artifact_id,
@@ -147,8 +182,16 @@ def ensure_document_artifact(
                     digest,
                     stored_name,
                     timestamp,
+                    content_digest(str(document["content"])),
                 ),
             )
+        if existing:
+            stale = _stored_file(storage_root, existing)
+            if stale is not None and stale != target:
+                try:
+                    stale.unlink(missing_ok=True)
+                except OSError:
+                    pass   # the new artifact is committed; an old file left behind is only clutter, and never returned
         return dict(
             conn.execute(
                 "SELECT * FROM generated_document_artifacts WHERE id=? AND user_id=?",
@@ -160,6 +203,32 @@ def ensure_document_artifact(
         raise
     finally:
         temp_path.unlink(missing_ok=True)
+
+
+class AttachableFile(NamedTuple):
+    """An approved document's PDF read for attaching: the name the employer sees, its bytes, and the hashes that identify it."""
+
+    name: str
+    media_type: str
+    data: bytes
+    sha256: str            # of the bytes
+    content_sha256: str    # of the approved text the bytes were rendered from
+
+
+def attachable_file(conn: sqlite3.Connection, document_id: str, storage_root: Path, *, user_id: str) -> AttachableFile:
+    """The PDF of an approved document, current and read now. ValueError when the document is not approved or its file cannot be read.
+
+    Renders the PDF when there is none that matches the text (``ensure_document_artifact``), so the bytes returned always come from the
+    text the document has at this moment.
+    """
+    artifact = ensure_document_artifact(conn, document_id, storage_root, user_id=user_id)
+    path = _stored_file(storage_root, artifact)
+    if path is None:
+        raise ValueError("The approved document's file is unavailable")
+    data = path.read_bytes()
+    if hashlib.sha256(data).hexdigest() != str(artifact["sha256"]):
+        raise ValueError("The approved document's file no longer matches what was rendered")
+    return AttachableFile(str(artifact["filename"]), str(artifact["media_type"]), data, str(artifact["sha256"]), str(artifact["content_sha256"]))
 
 
 def delete_document_artifact(

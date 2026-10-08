@@ -13,6 +13,7 @@ import base64
 import hashlib
 import json
 import pickle
+import re
 import socket
 import sys
 import tempfile
@@ -48,18 +49,18 @@ from opportunity_app.apply import runs as apply_runs
 from opportunity_app.apply.agent import ApplyAgent, GreenhouseAdapter
 from opportunity_app.apply import agent_types as apply_agent_types
 from opportunity_app.apply.agent_types import (
-    HANDOFF_CRASHED, HANDOFF_EARLY, HANDOFF_ELSEWHERE, HANDOFF_HIDDEN, HANDOFF_NO_LOADER, HANDOFF_NOT_SUBMITTED, HANDOFF_S3, HANDOFF_UNRECORDED, HANDOFF_UPLOAD, LEFT_COVER_LETTER,
-    WINDOW_CLOSED, AgentJob, ApplyTimeouts, LookupRequest,
+    HANDOFF_CRASHED, HANDOFF_EARLY, HANDOFF_ELSEWHERE, HANDOFF_HIDDEN, HANDOFF_NO_LOADER, HANDOFF_NOT_SUBMITTED, HANDOFF_S3, HANDOFF_UNRECORDED, HANDOFF_UPLOAD, LEFT_COVER_LETTER_CHANGED,
+    PROGRESS_STEPS, WINDOW_CLOSED, AgentJob, ApplyTimeouts, LookupRequest,
 )
 
 EMAIL = "sam.rivera@example.test"
-CHECKBOX_KEYS = {"question_4000000109", "question_4000000110", "question_4000000113", "gdpr_consent_given"}
 GUARDED = {"last_name": "Rivera", "email": EMAIL, "question_4000000101": fakes.WHY, "question_4000000102": fakes.PORTFOLIO}
 STATE_JS = """() => {
   const one = (id) => document.getElementById(id);
   const mirror = (name) => { const e = document.querySelector('input[name="' + name + '"][aria-hidden]'); return e ? e.value : null; };
   const shown = (name) => Array.from(one(name).closest('.rs').querySelectorAll('.select__single-value, .select__multi-value__label')).map((n) => n.textContent.trim());
   const file = one('resume').files[0];
+  const letter = one('cover_letter').files[0];
   return {
     first: one('first_name').value, last: one('last_name').value, email: one('email').value, phone: one('phone').value,
     why: one('question_4000000101').value, portfolio: one('question_4000000102').value, trap: one('website_url').value,
@@ -70,6 +71,7 @@ STATE_JS = """() => {
     informed: one('question_4000000113').checked, previous: (document.querySelector('input[name="question_4000000111"]:checked') || {}).value || null,
     term: one('question_4000000108').value,
     resume: file ? {name: file.name, size: file.size} : null,
+    letter: letter ? {name: letter.name, size: letter.size, shown: one('cover_letter-file-name').textContent} : null,
   };
 }"""
 PIXELS_JS = """(args) => new Promise((resolve) => {
@@ -112,18 +114,24 @@ class AgentCase(unittest.TestCase):
         self.dir = Path(self.tempdir.name)
 
     def go(self, scenario="confirm", *, mode="rehearse", sources=None, plan=None, schema=None, files="default", lookup=None, replan=None,
-           cancelled=None, lookup_endpoints=fakes.FIXTURE_LOOKUP, inspect=None, on_progress=None, headless=True, timeouts=None):
+           cancelled=None, lookup_endpoints=fakes.FIXTURE_LOOKUP, inspect=None, on_progress=None, headless=True, timeouts=None, check_file="default", letter_required=False):
         sources = sources or fakes.full_sources()
         schema = fakes.fixture_schema() if schema is None else schema
-        steps, beats, holder = [], [], {}
+        steps, beats, holder, asked = [], [], {}, []
+        files = {"resume": fakes.resume_payload()} if files == "default" else files
+        if check_file == "default":
+            # The runner hands the agent a check only when there is a cover letter to attach; this one says yes and keeps what it was asked.
+            check_file = (lambda key, ref, sha: asked.append((key, ref, sha)) or True) if "cover_letter" in files else None
 
         def progress(step, text):
             steps.append(step)
             if on_progress:
                 on_progress(holder["agent"], step)
 
+        fake = FakeGreenhouse(scenario)
+        fake.letter_required = letter_required
         agent = fakes.RecordingAgent(
-            fake=FakeGreenhouse(scenario), mode=mode, adapter=GreenhouseAdapter(), run_id="run-test", screenshot_dir=self.dir,
+            fake=fake, mode=mode, adapter=GreenhouseAdapter(), run_id="run-test", screenshot_dir=self.dir,
             timeouts=timeouts or fakes.TEST_TIMEOUTS, lookup_endpoints=lookup_endpoints, on_progress=progress, heartbeat=lambda: beats.append(1),
         )
         agent.headless = headless
@@ -131,8 +139,8 @@ class AgentCase(unittest.TestCase):
         with agent:
             result = agent.run(
                 fakes.draft_plan(sources, schema=schema) if plan is None else plan, page_url=JOB_URL, schema=schema,
-                files={"resume": fakes.resume_payload()} if files == "default" else files, lookup=lookup,
-                replan=replan or fakes.fixture_replan(sources, schema=schema), cancelled=cancelled,
+                files=files, lookup=lookup,
+                replan=replan or fakes.fixture_replan(sources, schema=schema), cancelled=cancelled, check_file=check_file,
             )
             seen = inspect(agent._page, result) if inspect else None
             record = agent.record()
@@ -142,7 +150,7 @@ class AgentCase(unittest.TestCase):
         # -1 means the run never opened a page, so there was nothing to click.
         self.assertIn(record["forbidden_clicks"], (0, -1) if not record["requests"] else (0,), "the agent pressed a button it must never press")
         self.assertEqual([entry for entry in record["requests"] if entry["method"] not in ("GET", "HEAD", "OPTIONS")], [])
-        return SimpleNamespace(result=result, record=record, steps=steps, beats=beats, seen=seen, agent=agent)
+        return SimpleNamespace(result=result, record=record, steps=steps, beats=beats, seen=seen, agent=agent, asked=asked)
 
     def state(self, page, _result=None):
         return page.evaluate(STATE_JS)
@@ -163,7 +171,7 @@ class RehearsalTests(AgentCase):
         self.assertEqual(run.steps, ["open", "read", "fill", "check", "picture"])
         self.assertTrue(run.beats)
         self.assertEqual(result.check_problems, [])
-        self.assertLessEqual({entry["key"] for entry in result.join_problems}, CHECKBOX_KEYS)
+        self.assertEqual(result.join_problems, [], "the form's four bare consent boxes are not a disagreement with the listing")
         self.assertTrue(result.plan_hash)
         self.assertFalse(result.handed_over)
         self.assertEqual(result.requests, [])
@@ -338,6 +346,25 @@ class RehearsalTests(AgentCase):
         self.assertIn("resume", [problem["key"] for problem in run.result.check_problems if problem["kind"] == "file"])
         self.assertIsNone(run.seen["resume"])
 
+    def test_a_form_with_more_than_one_page_is_not_rehearsed_as_if_it_were_read_whole(self):
+        for scenario in ("next_button", "continue_link", "step_indicator", "continue_to_step", "next_section", "next_review", "page_slash_counter",
+                         "next_button_aria", "counter_outside", "next_review_submit", "continue_to_submit", "go_to_step"):
+            with self.subTest(scenario=scenario):
+                run = self.go(scenario)
+                result = run.result
+                self.assertEqual((result.outcome, result.reasons), ("needs_you", [apply_agent.MORE_PAGES]))
+                self.assertFalse(apply_checks.clean_rehearsal({
+                    "outcome": result.outcome, "plan": result.plan, "join_problems": result.join_problems, "check_problems": result.check_problems,
+                }))
+                self.assertTrue(result.evidence["more_pages"])
+                self.assertEqual(result.requests, [])
+                self.assertEqual([entry for entry in result.refused if entry["method"] != "GET"], [])
+
+    def test_the_submit_button_and_the_forms_other_buttons_are_not_a_second_page(self):
+        run = self.go()
+        self.assertEqual(run.result.outcome, "rehearsed")
+        self.assertFalse(run.result.evidence["more_pages"])
+
     def test_a_file_the_form_does_not_accept_is_refused_before_it_is_attached(self):
         payload = fakes.resume_payload(name="resume.exe")
         run = self.go(files={"resume": payload}, inspect=self.state)
@@ -495,8 +522,7 @@ class RehearsalTests(AgentCase):
         result = run.result
         self.assertEqual((result.outcome, result.reasons), ("rehearsed", []), "nothing stops a run for a field that is not there")
         self.assertEqual(run.seen, 0)
-        # The only join problems are the fictional form's four bare consent boxes (the wording defect in docs/known-defects.md): none is for the field the page lacks.
-        self.assertEqual({entry["key"] for entry in result.join_problems} - CHECKBOX_KEYS, set(), "an optional question the page does not draw is not a disagreement with the listing (6.5, 9.2)")
+        self.assertEqual(result.join_problems, [], "an optional question the page does not draw is not a disagreement with the listing (6.5, 9.2)")
         field = next(entry for entry in result.plan if entry["key"] == "question_4000000102")
         self.assertEqual(field["disposition"], "blank")
         self.assertEqual(field["problem"], apply_checks.OPTIONAL_NOT_DRAWN_MESSAGE.format(question=field["question"]), "it still shows as left blank, and says why")
@@ -505,9 +531,12 @@ class RehearsalTests(AgentCase):
             self.assertIn(key, result.evidence["filled_keys"], f"{key} was filled and read back")
         self.assertTrue(apply_checks.clean_rehearsal({
             "outcome": result.outcome, "check_problems": result.check_problems,
-            "plan": [entry for entry in result.plan if entry["key"] not in CHECKBOX_KEYS],
-            "join_problems": [entry for entry in result.join_problems if entry["key"] not in CHECKBOX_KEYS],
-        }), "an optional field left blank does not make a rehearsal unclean (9.2): nothing but those four consent boxes (the known wording defect) is in the way")
+            # The form's data-consent box carries a statement only the form shows, which the plan honestly cannot match to one the student stored:
+            # a gap of its own, so it is left out here. Nothing else is in the way.
+            "plan": [entry for entry in result.plan if entry["key"] != "gdpr_consent_given"], "join_problems": result.join_problems,
+        }), "an optional field left blank does not make a rehearsal unclean (9.2)")
+        gdpr = next(entry for entry in result.plan if entry["key"] == "gdpr_consent_given")
+        self.assertTrue(gdpr["problem"] and gdpr["disposition"] == "blank", "the consent box the plan cannot match is still a gap the student sees")
 
     def test_an_optional_planned_field_that_goes_missing_after_the_plan_is_a_gap_and_not_a_stop(self):
         entries = [
@@ -530,20 +559,103 @@ class RehearsalTests(AgentCase):
         run = self.go(plan=plan, replan=lambda scan, uploads: plan)
         self.assertEqual((run.result.outcome, run.result.reasons[0]), ("needs_you", apply_agent.NO_CONTROL.format(question="A box the form lacks")))
 
-    def test_a_required_cover_letter_is_said_to_be_left_for_the_student_and_not_called_unreadable(self):
-        entries = [planned("cover_letter", "Cover Letter", None, control="file", source="cover_letter", file_sha256="c" * 64)]
-        plan = FakePlan(entries)
-        letter = apply_agent_types.FilePayload(name="letter.pdf", mime_type="application/pdf", buffer=b"%PDF-1.4 a letter", sha256="c" * 64)
-        run = self.go(plan=plan, replan=lambda scan, uploads: plan, files={"cover_letter": letter}, inspect=lambda page, _result: page.evaluate(
-            "() => document.getElementById('cover_letter').files.length"))
+    def letter_run(self, *, files=None, check_file="default", sources=None, schema=None, scenario="confirm", **more):
+        """A rehearsal of the fictional form with a required cover letter and an approved one to attach."""
+        sources = sources or fakes.with_letter(fakes.full_sources())
+        files = {"resume": fakes.resume_payload(), "cover_letter": fakes.letter_payload()} if files is None else files
+        return self.go(scenario, sources=sources, schema=schema or fakes.schema_with_required_letter(), files=files, check_file=check_file, inspect=self.state,
+                       letter_required=True, **more)
+
+    def letter_problems(self, run):
+        return [(problem["kind"], problem["message"], problem["required"]) for problem in run.result.check_problems
+                if problem["key"] == "cover_letter" and problem["kind"] == "file"]
+
+    def test_an_approved_cover_letter_is_attached_under_its_own_name_and_read_back(self):
+        run = self.letter_run()
+        self.assertEqual((run.result.outcome, run.result.reasons), ("rehearsed", []))
+        self.assertEqual((run.seen["letter"]["name"], run.seen["letter"]["size"]), (fakes.LETTER_NAME, len(fakes.LETTER_BYTES)))
+        self.assertIn(fakes.LETTER_NAME, run.seen["letter"]["shown"], "the group shows the name the student sees")
+        self.assertEqual(run.seen["resume"], {"name": fakes.RESUME_NAME, "size": len(fakes.RESUME_BYTES)}, "the résumé is attached as before")
+        self.assertIn("cover_letter", run.result.evidence["filled_keys"])
+        self.assertEqual([problem for problem in run.result.check_problems if problem["key"] == "cover_letter"], [], "the required field is not empty, and nothing else is wrong with it")
+        entry = next(item for item in run.result.plan if item["key"] == "cover_letter")
+        self.assertEqual((entry["disposition"], entry["source"]["kind"], entry["source"]["ref"]), ("fill", "cover_letter", "doc-1@2"))
+        self.assertEqual(run.asked, [("cover_letter", "doc-1@2", fakes.letter_source()["content_sha256"])], "the runner was asked once, just before the file went in")
+
+    def test_the_cover_letter_is_attached_only_after_the_runner_says_it_is_still_the_approved_one(self):
+        def broken(key, ref, sha):
+            raise RuntimeError("the pipe broke")
+
+        for label, check in (("no", lambda key, ref, sha: False), ("none given", None), ("raises", broken)):
+            with self.subTest(label):
+                run = self.letter_run(check_file=check)
+                self.assertEqual(run.result.outcome, "rehearsed")
+                self.assertIsNone(run.seen["letter"], "nothing was attached")
+                self.assertEqual(self.letter_problems(run), [("file", apply_agent.LETTER_CHANGED.format(question="Cover Letter"), True)])
+                self.assertNotIn("cover_letter", run.result.evidence["filled_keys"])
+                self.assertNotIn("the pipe broke", json.dumps(run.result.check_problems), "an exception's message is never kept")
+                self.assertEqual(run.seen["resume"]["name"], fakes.RESUME_NAME, "the résumé does not wait for the letter")
+
+    def test_a_letter_whose_bytes_or_text_are_not_the_ones_the_plan_names_is_not_attached(self):
+        other_text = fakes.letter_payload(text="Dear Hiring Team,\n\nA different letter.\n")
+        own = fakes.letter_payload()
+        tampered = fakes.FilePayload(name=fakes.LETTER_NAME, mime_type="application/pdf", buffer=b"%PDF-1.4 other bytes", sha256=own.sha256, content_sha256=own.content_sha256)
+        unhashed = fakes.FilePayload(name=fakes.LETTER_NAME, mime_type="application/pdf", buffer=fakes.LETTER_BYTES)
+        for label, payload in (("text", other_text), ("bytes", tampered), ("no hashes", unhashed)):
+            with self.subTest(label):
+                run = self.letter_run(files={"resume": fakes.resume_payload(), "cover_letter": payload})
+                self.assertEqual(run.result.outcome, "rehearsed")
+                self.assertIsNone(run.seen["letter"])
+                self.assertEqual(len(self.letter_problems(run)), 1)
+                self.assertEqual(run.asked, [], "the runner is not asked about a file that is already wrong")
+
+    def test_a_letter_under_another_name_than_the_plan_shows_is_not_attached(self):
+        renamed = fakes.letter_payload(name="Example-Robotics-Other-Role-cover_letter-v2.pdf")
+        run = self.letter_run(files={"resume": fakes.resume_payload(), "cover_letter": renamed})
         self.assertEqual(run.result.outcome, "rehearsed")
-        self.assertEqual(run.seen, 0, "nothing was attached")
-        letters = [problem for problem in run.result.check_problems if problem["key"] == "cover_letter"]
-        self.assertEqual([(problem["kind"], problem["message"]) for problem in letters],
-                         [("file", apply_agent.NO_COVER_LETTER.format(question="Cover Letter"))])
-        self.assertNotIn("could not read", letters[0]["message"])
-        self.assertNotIn("cover_letter", run.result.evidence["filled_keys"])
-        # A missing résumé keeps its own sentence.
+        self.assertIsNone(run.seen["letter"], "the preview would name a file the employer did not get")
+        self.assertEqual(len(self.letter_problems(run)), 1)
+        self.assertEqual(run.asked, [], "the runner is not asked about a file that is already wrong")
+
+    def test_a_missing_letter_file_is_a_gap_in_the_rehearsal(self):
+        run = self.letter_run(files={"resume": fakes.resume_payload()})
+        self.assertEqual(run.result.outcome, "rehearsed")
+        self.assertIsNone(run.seen["letter"])
+        self.assertEqual(self.letter_problems(run), [("file", apply_agent.NO_FILE.format(question="Cover Letter"), True)])
+
+    def test_a_letter_the_form_does_not_accept_is_refused_before_it_is_attached(self):
+        sources = fakes.with_letter(fakes.full_sources())
+        sources = replace(sources, cover_letter={**sources.cover_letter, "file_name": "letter.exe"})
+        run = self.letter_run(sources=sources, files={"resume": fakes.resume_payload(), "cover_letter": fakes.letter_payload(name="letter.exe")})
+        self.assertEqual((run.result.outcome, run.result.reasons[0]), ("needs_you", apply_agent.FILE_TYPE.format(question="Cover Letter")))
+        self.assertIsNone(run.seen["letter"])
+
+    def test_an_optional_cover_letter_is_left_empty_even_when_a_letter_is_approved(self):
+        run = self.go(sources=fakes.with_letter(fakes.full_sources()), files={"resume": fakes.resume_payload()}, inspect=self.state)
+        self.assertEqual(run.result.outcome, "rehearsed")
+        self.assertIsNone(run.seen["letter"])
+        entry = next(item for item in run.result.plan if item["key"] == "cover_letter")
+        self.assertEqual((entry["disposition"], entry["source"]["kind"]), ("blank", "none"))
+
+    def test_a_form_that_uploads_on_attach_defers_the_letter_too(self):
+        run = self.letter_run(scenario="s3_upload")
+        self.assertEqual(run.result.outcome, "rehearsed")
+        self.assertIsNone(run.seen["letter"], "nothing is uploaded before the student presses Submit")
+        entry = next(item for item in run.result.plan if item["key"] == "cover_letter")
+        self.assertEqual(entry["disposition"], "deferred")
+        self.assertEqual(run.asked, [])
+
+    def test_a_custom_cover_letter_question_is_never_answered_with_the_letter(self):
+        listing = fixture_json("schema_new.json")
+        listing["questions"].append({"description": None, "label": "Cover letter", "required": False, "fields": [{"name": "question_4000000150", "type": "input_file", "values": []}]})
+        listing["questions"].append({"description": None, "label": "Writing sample", "required": True, "fields": [{"name": "question_4000000151", "type": "input_file", "values": []}]})
+        plan = fakes.draft_plan(fakes.with_letter(fakes.full_sources()), schema=apply_policy.parse_schema(listing))
+        for key in ("question_4000000150", "question_4000000151"):
+            entry = next(item for item in plan.fields if item.key == key)
+            self.assertEqual((entry.source.kind, entry.file_sha256), ("none", ""), "only the field named cover_letter gets the letter")
+        self.assertEqual(next(item for item in plan.fields if item.key == "cover_letter").disposition, "blank", "the named field is optional here, so it is left empty")
+
+    def test_a_missing_resume_keeps_its_own_sentence(self):
         again = self.go(files={})
         resume = [problem for problem in again.result.check_problems if problem["key"] == "resume" and problem["kind"] == "file"]
         self.assertEqual([problem["message"] for problem in resume], [apply_agent.NO_FILE.format(question="Resume/CV")])
@@ -1263,14 +1375,18 @@ class HandoffCase(unittest.TestCase):
         self.dir = Path(self.tempdir.name)
 
     def handoff(self, scenario="confirm", *, student="complete_and_submit", hook=None, sources=None, schema=None, files="default", link="default",
-                accept=True, cancelled=None, timeouts=None, on_progress=None, beat=None, plan=None, label_checkboxes=True):
+                accept=True, cancelled=None, timeouts=None, on_progress=None, beat=None, plan=None, label_checkboxes=True, check_file="default", letter_required=False):
         sources = sources or sources_without(TEAM)
         schema = fakes.fixture_schema() if schema is None else schema
         fake = fakes.HandoffGreenhouse(scenario)
+        fake.letter_required = letter_required
         link = fakes.FakeLink() if link == "default" else link
-        steps, beats, purposes = [], [], []
+        steps, beats, purposes, asked, texts = [], [], [], [], []
         calls = SimpleNamespace(count=0, posts=[], answers=[])
         holder = {}
+        files = {"resume": fakes.resume_payload()} if files == "default" else files
+        if check_file == "default":
+            check_file = (lambda key, ref, sha: asked.append((key, ref, sha)) or True) if "cover_letter" in files else None
 
         def hand_over():
             calls.count += 1
@@ -1282,6 +1398,7 @@ class HandoffCase(unittest.TestCase):
 
         def progress(step, text):
             steps.append(step)
+            texts.append((step, text))
             if on_progress:
                 on_progress(holder["agent"], step)
 
@@ -1306,12 +1423,12 @@ class HandoffCase(unittest.TestCase):
         with agent:
             result = agent.run(
                 fakes.draft_plan(sources, schema=schema, mode="handoff") if plan is None else plan, page_url=JOB_URL, schema=schema,
-                files={"resume": fakes.resume_payload()} if files == "default" else files,
+                files=files,
                 replan=fakes.fixture_replan(sources, schema=schema, mode="handoff", label_checkboxes=label_checkboxes), hand_over=hand_over,
-                cancelled=cancelled, link=link,
+                cancelled=cancelled, link=link, check_file=check_file,
             )
             record = agent.record()
-        run = SimpleNamespace(result=result, record=record, steps=steps, beats=beats, link=link, fake=fake, calls=calls, agent=agent, purposes=purposes)
+        run = SimpleNamespace(result=result, record=record, steps=steps, texts=texts, beats=beats, link=link, fake=fake, calls=calls, agent=agent, purposes=purposes, asked=asked)
         self.assertIn(record["forbidden_clicks"], (0, -1), "the agent pressed a button it must never press")
         self.assertEqual([entry for entry in record["non_get"] if not (entry["host"] == SUBMIT_HOST and entry["path"] == JOB_PATH)], [],
                          "a request other than the submit POST reached the fake")
@@ -1434,6 +1551,43 @@ class HandoffTests(HandoffCase):
         self.assertEqual(run.calls.count, 0, "the parent was asked to commit a POST that was not the submit path's")
         self.assertEqual(run.result.evidence["handoff_end"], "elsewhere")
 
+    def test_a_form_that_posts_its_application_to_an_address_the_app_does_not_recognize_is_stopped_and_the_student_is_told(self):
+        run = self.handoff("form_posts_elsewhere", timeouts=replace(fakes.HANDOFF_TIMEOUTS, handoff_s=4))
+        result = run.result
+        # The refusal stays: nothing reached the other address, the parent was never asked to commit, and the window stayed the student's.
+        self.assertEqual((result.outcome, result.reasons), ("needs_you", [HANDOFF_NOT_SUBMITTED]))
+        self.assertEqual(result.evidence["handoff_end"], "timeout")
+        self.assertEqual(run.calls.count, 0)
+        self.assertSent_nothing(run)
+        sent = self.refused(run, host="apply.example-robotics.test")
+        self.assertEqual([entry["method"] for entry in sent], ["POST"], "the request to the other address was refused (by the value guard: it carried the email)")
+        # ... and the student is told what happened, in the app's words, with the host and without anything the form held.
+        told = [text for step, text in run.texts if step == "form_elsewhere"]
+        self.assertEqual(told, [PROGRESS_STEPS["form_elsewhere"].format(host="apply.example-robotics.test")])
+        self.assertIn("doesn't recognize", told[0])
+        self.assertNotIn("Nothing was sent", told[0], "the step is about the stopped request, not about the application")
+        self.assertIn("stopped that request", told[0])
+        self.assertEqual(result.evidence["elsewhere_seen"], {"host": "apply.example-robotics.test"})
+        self.assertLess(run.steps.index("your_turn"), run.steps.index("form_elsewhere"))
+        self.assertNotIn("Rivera", json.dumps(result.evidence) + json.dumps(told))
+
+    def test_a_beacon_after_the_press_is_refused_without_telling_the_student_the_form_tried_to_send(self):
+        run = self.handoff("telemetry")
+        self.assertNotIn("form_elsewhere", run.steps)
+        self.assertNotIn("elsewhere_seen", run.result.evidence)
+
+    def test_a_tracker_that_reports_the_submit_click_leaves_no_notice_on_a_submission_that_went_through(self):
+        # The tracker's request is refused like any other, but the form's own submission is handed over and sent: nothing the student is told
+        # or shown afterwards may say that nothing was sent.
+        run = self.handoff("tracker_on_submit")
+        result = run.result
+        self.assertEqual(result.outcome, "submitted", result.reasons)
+        self.assertTrue(result.handed_over)
+        self.assertEqual(self.refused(run, host="events.example-analytics.test")[0]["method"], "POST", "the tracker's request was refused")
+        self.assertEqual(run.fake.requests_to("events.example-analytics.test"), [])
+        self.assertNotIn("elsewhere_seen", result.evidence, "the submission went on, so what the form tried before it is not the run's to report")
+        self.assertEqual([text for step, text in run.texts if step == "form_elsewhere" and re.search("nothing was sent", text, re.IGNORECASE)], [])
+
     def test_telemetry_does_not_end_the_turn(self):
         run = self.handoff("telemetry")
         self.assertEqual(run.result.outcome, "submitted", run.result.reasons)
@@ -1501,6 +1655,69 @@ class HandoffTests(HandoffCase):
         self.assertEqual(self.submit_posts(run), 2, "the 428 and exactly one code POST, the student's own")
         self.assertEqual(link.results, [(1, True, "")])
 
+    def test_a_widget_that_submits_at_once_and_again_after_2_5_seconds_is_refused_until_the_student_presses(self):
+        # Owner decision 2026-10-08 (Q4): the code POST waits for the student's press, however long the widget waits and however often it retries.
+        link = fakes.FakeLink(({"status": "found", "code": CODE},))
+        fakes.PRESSES.clear()
+        run = self.handoff("security_code_retry", student="press_after_the_widget_gave_up", link=link)
+        result = run.result
+        self.assertEqual(result.outcome, "submitted", result.reasons)
+        self.assertEqual(len(fakes.PRESSES), 1)
+        posts = run.fake.post_times
+        self.assertEqual(len(posts), 2, "the 428 and exactly one code POST")
+        self.assertGreater(posts[1], fakes.PRESSES[0], "the code POST reached Greenhouse before the student pressed Submit")
+        self.assertTrue(self.refused(run, rule="code_post_while_typing") or self.refused(run, rule="code_post_before_press"))
+        self.assertGreaterEqual(len(self.refused(run, rule="code_post_before_press")), 1, "the retry after 2.5 s was not refused by name")
+        evidence = result.evidence["security_code"]
+        self.assertTrue(evidence["auto_submit_blocked"])
+        self.assertIn("code_typed", run.steps)
+        self.assertNotIn("code_yours", run.steps)
+        self.assertEqual(link.results, [(1, True, "")])
+
+    def test_a_retrying_widget_cannot_send_the_app_typed_code_again_at_a_second_prompt_without_a_new_press(self):
+        # The press that sent the first code POST is used up. When the code is asked for again, the boxes still hold what the app typed and the
+        # widget keeps retrying: every code POST, the second prompt's included, needs a press made after the one before it went through.
+        link = fakes.FakeLink(({"status": "found", "code": CODE},))
+        fakes.PRESSES.clear()
+        run = self.handoff("security_code_retry_twice", student="press_at_each_prompt", link=link,
+                           timeouts=replace(fakes.HANDOFF_TIMEOUTS, security_code_s=20, code_read_s=4))
+        self.assertEqual(run.result.outcome, "submitted", run.result.reasons)
+        self.assertEqual(len(fakes.PRESSES), 2)
+        posts = run.fake.post_times
+        self.assertEqual(len(posts), 3, "the 428, the first code POST (428 again) and the second code POST")
+        self.assertGreater(posts[1], fakes.PRESSES[0])
+        self.assertGreater(posts[2], fakes.PRESSES[1], "the second prompt's code POST reached Greenhouse before the student pressed Submit again")
+
+    def test_a_code_widget_cannot_fake_the_students_press(self):
+        link = fakes.FakeLink(({"status": "found", "code": CODE},))
+        fakes.PRESSES.clear()
+        seen = {}
+
+        def look(agent, step):
+            if step == "code_typed" and "agent" not in seen:
+                seen["agent"] = agent
+
+        def student(page, step):
+            agent = seen.get("agent")
+            if step == "security_code" and agent is not None and page.locator("#security-input-0").count() and page.input_value("#security-input-0"):
+                if page.evaluate("() => !!window.__forged") and "before" not in seen:
+                    seen["before"] = (len(agent.fake.submit_posts()), getattr(agent._state, "code_pressed", False), page.evaluate("() => window.__forged"))
+            fakes.press_after_the_widget_gave_up(page, step)
+
+        run = self.handoff("security_code_forger", hook=student, link=link, on_progress=look)
+        result = run.result
+        self.assertEqual(result.outcome, "submitted", result.reasons)
+        self.assertIn("before", seen, "the widget never ran its forgeries")
+        posts, pressed, forged = seen["before"]
+        self.assertEqual(posts, 1, "a forged press let the code POST through")
+        self.assertFalse(pressed, "the app counted a press the student never made")
+        self.assertEqual(forged["tried"], ["dispatch", "click", "pointer"])
+        # The form's own scripts define these three; anything else the page can see that a fresh frame lacks would be the app's.
+        self.assertEqual(sorted(forged["functions"]), ["grAfterSubmit", "grLookupUrl", "grValidate"], forged["functions"])
+        self.assertEqual(len(run.fake.post_times), 2, "the 428 and exactly one code POST")
+        self.assertGreater(run.fake.post_times[1], fakes.PRESSES[0])
+        self.assertGreaterEqual(len(self.refused(run, rule="code_post_before_press")), 1)
+
     def test_a_second_press_while_the_code_post_is_still_answering_is_refused_and_starts_no_second_prompt(self):
         # A real submit takes one to three seconds, and the boxes stay on the page until it answers: that is one prompt, not two.
         link = fakes.FakeLink(({"status": "found", "code": CODE},))
@@ -1526,32 +1743,54 @@ class HandoffTests(HandoffCase):
         self.assertEqual(result.evidence["security_code"]["rounds"], 1)
         self.assertEqual(link.results, [(1, True, "")])
 
-    def test_a_press_while_the_code_settles_is_refused_and_is_not_the_widget_sending_by_itself(self):
+    def test_a_press_right_after_the_code_is_typed_goes_through_and_is_not_the_widget_sending_by_itself(self):
+        # Before 2026-10-08 the app refused every send for two seconds after the last box. The wait is for the student's press now, so a
+        # quick student is not held up, and the press (reported by the browser a few ms before its request) is not mistaken for the widget.
         link = fakes.FakeLink(({"status": "found", "code": CODE},))
-        told = {}
 
-        def arm(agent, step):
-            if step == "security_code" and fakes._once(agent._page, "arm"):
-                # The student sees the code appear and presses at once: 0.9 s after the last box is filled.
-                agent._page.evaluate("""() => { const timer = setInterval(() => {
-                  const boxes = Array.from(document.querySelectorAll('#security-code input'));
-                  if (boxes.length === 8 && boxes.every((box) => box.value)) {
-                    clearInterval(timer);
-                    setTimeout(() => document.querySelector('form#application-form button[type=submit]').click(), 900);
-                  }
-                }, 25); }""")
-            if step == "code_typed":
-                told["refused"] = len(self.refused(SimpleNamespace(result=SimpleNamespace(refused=agent._refused)), rule="code_post_while_typing"))
+        def student(page, step):
+            if step == "handoff":
+                fakes.complete_and_submit(page, step)
+            elif step == "security_code" and page.locator("#security-input-0").count() and page.input_value("#security-input-0") and fakes._once(page, "quick"):
+                press_submit(page)                   # at once: the first look after the app told the student
 
-        run = self.handoff("security_code", student="press_when_typed", link=link, on_progress=arm)
+        run = self.handoff("security_code", hook=student, link=link)
         result = run.result
         self.assertEqual(result.outcome, "submitted", result.reasons)
-        self.assertEqual(len(self.refused(run, rule="code_post_while_typing")), 1, "the early press was not refused")
-        self.assertEqual(told.get("refused"), 1, "the student was told to press Submit before the guard on submit POSTs had ended")
+        self.assertEqual(self.refused(run, rule="code_post_before_press"), [], "a real press was refused for want of a press")
+        self.assertEqual(self.refused(run, rule="code_post_while_typing"), [])
         evidence = result.evidence["security_code"]
         self.assertFalse(evidence["auto_submit_blocked"], "the student's own press was recorded as the widget sending by itself")
         self.assertNotIn("code_yours", run.steps)
         self.assertEqual(self.submit_posts(run), 2)
+
+    def test_the_enter_key_in_the_form_is_the_students_press_too(self):
+        link = fakes.FakeLink(({"status": "found", "code": CODE},))
+
+        def student(page, step):
+            if step == "handoff":
+                fakes.complete_and_submit(page, step)
+            elif step == "security_code" and page.locator("#security-input-0").count() and page.input_value("#security-input-0") and fakes._once(page, "enter"):
+                page.focus("#security-input-7")
+                page.keyboard.press("Enter")
+
+        run = self.handoff("security_code", hook=student, link=link)
+        self.assertEqual(run.result.outcome, "submitted", run.result.reasons)
+        self.assertEqual(self.refused(run, rule="code_post_before_press"), [])
+
+    def test_a_script_click_on_submit_is_not_the_students_press(self):
+        link = fakes.FakeLink(({"status": "found", "code": CODE},))
+
+        def student(page, step):
+            if step == "handoff":
+                fakes.complete_and_submit(page, step)
+            elif step == "security_code" and page.locator("#security-input-0").count() and page.input_value("#security-input-0") and fakes._once(page, "script"):
+                page.evaluate("() => document.querySelector('form#application-form button[type=submit]').click()")
+
+        run = self.handoff("security_code", hook=student, link=link)
+        self.assertEqual(self.submit_posts(run), 1, "a click made by script sent the code")
+        self.assertTrue(self.refused(run, rule="code_post_before_press"))
+        self.assertEqual(run.result.outcome, "needs_you", run.result.reasons)
 
     def test_a_security_code_left_in_the_boxes_is_covered_in_the_final_picture(self):
         link = fakes.FakeLink(({"status": "found", "code": CODE},))
@@ -1896,11 +2135,13 @@ class HandoffTests(HandoffCase):
                 self.assertEqual(run.steps, ["open"], "the form was read or filled")
                 self.assertSent_nothing(run)
                 self.assertEqual(run.link.ready_messages, [])
+                self.assertEqual(run.result.evidence["handoff_end"], "board", "a property of the board, which a second try meets again")
 
     def test_an_upload_on_attach_without_the_marker_stops_the_run(self):
         run = self.handoff("upload_on_attach_unmarked")
         self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [HANDOFF_S3]))
         self.assertEqual(run.result.evidence["upload_refused"], {"host": "example-robotics-uploads.s3.amazonaws.com", "rule": "s3_upload"})
+        self.assertEqual(run.result.evidence["handoff_end"], "board", "a board that uploads on attach is a property of the board, not something the student did")
         self.assertEqual(run.link.ready_messages, [])
         self.assertSent_nothing(run)
 
@@ -1942,17 +2183,56 @@ class HandoffTests(HandoffCase):
         self.assertNotEqual(run.result.outcome, "failed")
         self.assertEqual(run.result.reasons, [apply_checks.UNCONFIRMED_NOTE])
 
-    def test_a_cover_letter_is_left_for_the_student(self):
-        listing = fixture_json("schema_new.json")
-        block = next(block for block in listing["questions"] if block["label"] == "Cover Letter")
-        block["required"] = True
-        sources = replace(sources_without(TEAM), cover_letter=helpers_apply.LETTER_OK)
-        run = self.handoff(student="do_nothing", schema=apply_policy.parse_schema(listing), sources=sources, timeouts=replace(fakes.HANDOFF_TIMEOUTS, handoff_s=1))
+    def letter_handoff(self, *, student="do_nothing", files=None, check_file="default", seen=None, **more):
+        """A Finish in browser run on a form that requires a cover letter, with an approved one to attach. ``seen`` collects the page at the student's turn."""
+        files = {"resume": fakes.resume_payload(), "cover_letter": fakes.letter_payload()} if files is None else files
+
+        def watch(page, step):
+            if step == "handoff" and seen is not None and fakes._once(page, "look"):
+                seen.append(page.evaluate("() => { const f = document.getElementById('cover_letter').files[0]; return f ? {name: f.name, size: f.size} : null; }"))
+            fakes.STUDENTS[student](page, step)
+
+        return self.handoff(
+            student=student, hook=watch, schema=fakes.schema_with_required_letter(), sources=fakes.with_letter(sources_without(TEAM)), files=files,
+            check_file=check_file, letter_required=True, timeouts=replace(fakes.HANDOFF_TIMEOUTS, handoff_s=1) if student == "do_nothing" else None, **more,
+        )
+
+    def test_an_approved_cover_letter_is_attached_in_the_window_and_shown_as_filled(self):
+        seen = []
+        run = self.letter_handoff(seen=seen)
+        self.assertEqual(seen, [{"name": fakes.LETTER_NAME, "size": len(fakes.LETTER_BYTES)}], "the file is in the page when the student's turn begins")
         ready = run.link.ready_messages[0]
         for entries in (ready["plan"], run.result.plan):
             letter = next(entry for entry in entries if entry["key"] == "cover_letter")
-            self.assertEqual((letter["disposition"], letter["problem"]), ("left_for_you", LEFT_COVER_LETTER))
-        self.assertIn(LEFT_COVER_LETTER, [item["reason"] for item in ready["left"] if item["key"] == "cover_letter"])
+            self.assertEqual((letter["disposition"], letter["problem"], letter["source"]["ref"]), ("fill", "", "doc-1@2"))
+        self.assertNotIn("cover_letter", [item["key"] for item in ready["left"]])
+        self.assertEqual(run.asked, [("cover_letter", "doc-1@2", fakes.letter_source()["content_sha256"])])
+        self.assertIn("cover_letter", run.result.evidence["filled_keys"])
+
+    def test_the_student_submits_a_form_with_the_letter_the_app_attached(self):
+        run = self.letter_handoff(student="complete_and_submit")
+        self.assertEqual((run.result.outcome, run.result.handed_over), ("submitted", True), run.result.reasons)
+        self.assertIn(fakes.LETTER_NAME, run.fake.submit_posts()[0].post_data, "the file went out under the name the student saw")
+
+    def test_a_cover_letter_that_is_no_longer_the_approved_one_is_left_for_the_student(self):
+        seen = []
+        run = self.letter_handoff(check_file=lambda key, ref, sha: False, seen=seen)
+        self.assertEqual(seen, [None], "nothing was attached")
+        ready = run.link.ready_messages[0]
+        for entries in (ready["plan"], run.result.plan):
+            letter = next(entry for entry in entries if entry["key"] == "cover_letter")
+            self.assertEqual((letter["disposition"], letter["problem"]), ("left_for_you", LEFT_COVER_LETTER_CHANGED))
+        self.assertIn(LEFT_COVER_LETTER_CHANGED, [item["reason"] for item in ready["left"] if item["key"] == "cover_letter"])
+        self.assertNotIn("cover_letter", run.result.evidence["filled_keys"])
+
+    def test_a_cover_letter_with_nothing_approved_is_left_for_the_student(self):
+        seen = []
+        run = self.handoff(student="do_nothing", schema=fakes.schema_with_required_letter(), sources=sources_without(TEAM), letter_required=True,
+                           timeouts=replace(fakes.HANDOFF_TIMEOUTS, handoff_s=1), hook=lambda page, step: seen.append(page.evaluate("document.getElementById('cover_letter').files.length")) if step == "handoff" else None)
+        letter = next(entry for entry in run.link.ready_messages[0]["plan"] if entry["key"] == "cover_letter")
+        self.assertEqual(letter["disposition"], "left_for_you")
+        self.assertEqual(set(seen), {0})
+        self.assertEqual(run.asked, [])
 
     def test_a_hidden_field_the_app_would_have_filled_stops_before_any_input(self):
         listing = fixture_json("schema_new.json")
@@ -1960,17 +2240,37 @@ class HandoffTests(HandoffCase):
         sources = fakes.full_sources(extra_answers=(answer("Leave this empty", "a bot would fill this in"),))
         run = self.handoff(student="do_nothing", schema=apply_policy.parse_schema(listing), sources=sources)
         self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [HANDOFF_HIDDEN.format(question="Leave this empty")]))
+        self.assertEqual(run.result.evidence["handoff_end"], "board")
         self.assertNotIn("fill", run.steps, "a field was typed into before the hidden one was found")
         self.assertEqual(run.link.ready_messages, [])
         self.assertSent_nothing(run)
 
     def test_a_join_problem_leaves_the_field_for_the_student_with_the_join_s_own_words(self):
-        run = self.handoff(student="do_nothing", label_checkboxes=False, timeouts=replace(fakes.HANDOFF_TIMEOUTS, handoff_s=1))
+        listing = fixture_json("schema_new.json")
+        for question in listing["questions"]:
+            if question["label"] == "Last Name":
+                question["label"] = "Family name"      # the page still asks for the old wording
+        run = self.handoff(student="do_nothing", schema=apply_policy.parse_schema(listing), timeouts=replace(fakes.HANDOFF_TIMEOUTS, handoff_s=1))
         ready = run.link.ready_messages[0]
         left = {item["key"]: item for item in ready["left"]}
-        self.assertIn("question_4000000109", left)
-        self.assertIn("The form's wording differs", left["question_4000000109"]["reason"])
-        self.assertEqual({entry["key"]: entry["disposition"] for entry in ready["plan"]}["question_4000000109"], "left_for_you")
+        self.assertIn("last_name", left)
+        self.assertIn("The form's wording differs", left["last_name"]["reason"])
+        self.assertEqual({entry["key"]: entry["disposition"] for entry in ready["plan"]}["last_name"], "left_for_you")
+
+    def test_a_bare_consent_box_whose_words_differ_from_the_listing_is_left_for_the_student_and_not_ticked(self):
+        run = self.handoff("consent_box_reworded", student="do_nothing", label_checkboxes=False, timeouts=replace(fakes.HANDOFF_TIMEOUTS, handoff_s=1))
+        ready = run.link.ready_messages[0]
+        left = {item["key"]: item for item in ready["left"]}
+        self.assertIn("The form's wording differs", left["question_4000000110"]["reason"])
+        self.assertEqual({entry["key"]: entry["disposition"] for entry in ready["plan"]}["question_4000000110"], "left_for_you")
+        self.assertNotIn("question_4000000110", run.result.evidence["filled_keys"], "the box was ticked from the listing's words, not the form's")
+        # The box that does say what the listing says is still the app's to tick.
+        self.assertNotIn("question_4000000109", left)
+
+    def test_a_bare_consent_box_is_not_left_for_the_student_for_its_wording(self):
+        run = self.handoff(student="do_nothing", label_checkboxes=False, timeouts=replace(fakes.HANDOFF_TIMEOUTS, handoff_s=1))
+        ready = run.link.ready_messages[0]
+        self.assertEqual([item for item in ready["left"] if "wording differs" in item["reason"]], [])
 
     def test_a_late_fill_shortens_the_turn_and_never_the_time_after_the_press(self):
         t = fakes.HANDOFF_TIMEOUTS

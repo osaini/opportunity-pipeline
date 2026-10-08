@@ -52,7 +52,7 @@ from .agent_types import (
     HANDOFF_UNRECORDED,
     HANDOFF_UPLOAD,
     LEFT_CAPTCHA,
-    LEFT_COVER_LETTER,
+    LEFT_COVER_LETTER_CHANGED,
     LEFT_FIELD,
     LEFT_UNPLANNED,
     MAX_LOOKUP_OPTIONS,
@@ -72,6 +72,7 @@ from .checks import (
     CONFIRMED_CAPTCHA_HOSTS,
     FORM_POST_HOSTS,
     GREENHOUSE_LOOKUP_ENDPOINTS,
+    MORE_PAGES_SCRIPT,
     PHASE_AFTER_HAND_OVER,
     STATIC_ASSET_HOSTS,
     TYPED_LOOKUP_KINDS,
@@ -95,6 +96,7 @@ from .checks import (
     confirmation_reached,
     decide_outcome,
     is_upload,
+    looks_like_a_send,
     leaked_field,
     new_code_prompt,
     question_key,
@@ -125,12 +127,13 @@ KEPT_CHANGING = "The form kept changing as it was filled in"
 FILE_CHANGED = "The résumé file changed since it was confirmed. Upload it again"
 FILE_TYPE = 'The form does not accept this kind of file for "{question}"'
 NO_FILE = 'The app could not read the file for "{question}"'
-NO_COVER_LETTER = 'The app does not attach cover letters yet; attach the one for "{question}" yourself when you submit'
+LETTER_CHANGED = 'Your cover letter for this role changed while the rehearsal ran, so the app did not attach one for "{question}". Approve the one you want and run again'
 NO_CONTROL = 'The form has no field for "{question}"'
 NO_OPTIONS = "No options came back for what you typed"
 NO_ENDPOINT = "The app has not confirmed Greenhouse's lookup service for this list yet, so it did not ask it"
 PLAN_FAILED = "The app could not plan this form"
 # Not in the shared list: what the agent says when a whole step, not one field, went wrong.
+MORE_PAGES = "This form has more than one page, and the app read only the first"
 OPEN_FAILED = "The app could not open the Greenhouse form"
 READ_FAILED = "The app could not read the form"
 CHECK_FAILED = "The app could not check the filled form"
@@ -172,8 +175,8 @@ MAX_REFUSED = 500
 MAX_TELEMETRY_RECORDED = 20
 MAX_REQUESTS = 300
 CODE_PATTERN = re.compile(r"[A-Za-z0-9]{8}")
-CODE_GUARD_S = 2.0       # after the app typed a security code, no submit POST passes for this long (a widget that submits by itself)
 CODE_SETTLE_S = 0.3      # after typing the code: time for a widget that sends by itself to try, before the student is told what to do
+PRESS_GRACE_S = 0.15     # a code POST refused for want of a press waits this long for the press to be reported (it is reported first, by a few ms)
 TURN_POLL_MS = 250
 OUTCOME_POLL_MS = 500
 
@@ -279,6 +282,31 @@ NO_SIDE_CHANNELS = """(() => {
     });
   } catch (error) { /* no shadow roots */ }
 })();"""
+# The student's own press of Submit, seen from a world the page cannot reach. Finish in browser types the emailed security code and then waits for
+# the student: the code POST passes only after a trusted click on the form's submit control (or Enter in the form, which the browser turns into
+# one) was seen after the typing (owner decision 2026-10-08, open question Q4; ``RouteState.code_pressed``).
+#
+# The listener runs in an isolated world (a JavaScript realm of its own over the same page, made by the browser through the DevTools protocol), and
+# the binding it calls exists in that world only, so no script on the page can call it, read its name, or reach the listener's variables or copies
+# of the built-ins (the page changing ``Event.prototype`` or ``Element.prototype.closest`` changes its own realm, not this one). A click the page
+# makes itself (a script click, a made-up event, a submit by script) has ``isTrusted`` false and is ignored, and the property cannot be set by a
+# script. It is registered on the window, in the capture phase, before any script of the page runs, so a page listener cannot stop the event first.
+# Only a board's own page counts, so a frame the page makes up (about:blank, srcdoc) with a form of that name in it does not.
+PRESS_WORLD = "apply-student-press"
+PRESS_BINDING = "applyStudentPress"
+PRESS_LISTENER = """(() => {
+  const hosts = __HOSTS__;
+  if (hosts.indexOf(location.hostname) < 0) return;
+  const submit = "form#application-form button[type='submit'], form#application-form input[type='submit'], #application_form #submit_app";
+  window.addEventListener('click', (event) => {
+    if (!event.isTrusted) return;
+    const target = event.target;
+    if (target && typeof target.closest === 'function' && target.closest(submit)) window.__BINDING__('1');
+  }, true);
+})();""".replace("__HOSTS__", json.dumps(sorted(BOARD_HOSTS))).replace("__BINDING__", PRESS_BINDING)
+# The only DevTools calls the agent makes, and nothing else (tests/test_apply_agent_static.py reads the syntax tree for it).
+PRESS_CDP_CALLS = ("Page.enable", "Runtime.enable", "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument")
+
 # Chromium switches that turn some of those features off, and one that closes the rest at the network layer. None changes how the browser
 # presents itself to a page (user agent, language, screen); they only remove features this app has no use for. WebTransport has no switch
 # (measured on Playwright 1.62's Chromium: neither a feature flag nor --disable-quic stops its packets), so it, and every worker that could
@@ -309,7 +337,18 @@ def resolver_rule(extra_hosts: Sequence[str] = ()) -> str:
     return "--host-resolver-rules=MAP * ~NOTFOUND , " + " , ".join(f"EXCLUDE {host}" for host in (*RESOLVABLE_HOSTS, *extra_hosts))
 
 
-LAUNCH_ARGS = ("--disable-blink-features=FetchLaterAPI,WebSocketStream", "--disable-features=FedCm", resolver_rule())
+# What Playwright 1.62 switches off in Chromium at launch (its own ``--disable-features``). Chromium reads one value of a repeated switch, the
+# last, and the agent's follows Playwright's on the command line, so the agent's one switch names this list too and Playwright's takes
+# effect as it does everywhere else; FedCm is added to it. A test reads the installed Playwright's list and fails when it differs from this one.
+PLAYWRIGHT_DISABLED_FEATURES: tuple[str, ...] = (
+    "AvoidUnnecessaryBeforeUnloadCheckSync", "BoundaryEventDispatchTracksNodeRemoval", "DestroyProfileOnBrowserClose", "DialMediaRouteProvider",
+    "GlobalMediaControls", "HttpsUpgrades", "LensOverlay", "MediaRouter", "PaintHolding", "ThirdPartyStoragePartitioning",
+    "BlockOriginHeaderModificationOnRedirect", "Translate", "AutoDeElevate", "OptimizationHints", "msForceBrowserSignIn",
+    "msEdgeUpdateLaunchServicesPreferredVersion",
+)
+LAUNCH_ARGS = (
+    "--disable-blink-features=FetchLaterAPI,WebSocketStream", "--disable-features=" + ",".join((*PLAYWRIGHT_DISABLED_FEATURES, "FedCm")), resolver_rule(),
+)
 
 _SCAN = "(a) => OpportunityApplyEngine.scan(a.profile, a.answers, {tag: true})"
 _CONTAINS = "(c, e) => c.contains(e)"
@@ -347,7 +386,10 @@ class ClickRefused(RuntimeError):
 
 
 class _Stop(Exception):
-    """The run ends here, with this outcome and this sentence. Never carries a value. ``end`` is a handoff's ``handoff_end``."""
+    """The run ends here, with this outcome and this sentence. Never carries a value. ``end`` is a handoff's ``handoff_end``.
+
+    "board" is a stop on a property of the board itself (no submit address the app knows, a board that uploads on attach, a hidden
+    field): trying again meets it again, so the page does not offer Finish in browser again for it."""
 
     def __init__(self, outcome: str, reason: str, end: str = "") -> None:
         super().__init__(outcome)
@@ -853,7 +895,7 @@ class ApplyAgent:
         # The deferred keys whose comparison found the form does not offer the answer, or could not be read (a subset of the above).
         self._deferred_failed: set[str] = set()
         self._evidence_bits: dict[str, Any] = {
-            "page": "", "loader": {"submit_path": False, "confirmation_path": False}, "uploads_on_attach": False, "captcha_widget": False,
+            "page": "", "loader": {"submit_path": False, "confirmation_path": False}, "uploads_on_attach": False, "captcha_widget": False, "more_pages": False,
         }
         # The run's inputs.
         self._plan: Any = None
@@ -862,6 +904,7 @@ class ApplyAgent:
         self._lookup: LookupRequest | None = None
         self._cancelled: Callable[[], bool] = lambda: False
         self._hand_over: Callable[[], bool] | None = None
+        self._check_file: Callable[[str, str, str], bool] | None = None
         self._loaded = False
         self._step = "open"
         self._doing = ""
@@ -881,11 +924,12 @@ class ApplyAgent:
         self._page_defaults: list[str] = []
         self._initial: dict[str, Any] = {}
         self._handoff_end = ""
+        self._elsewhere_seen: dict[str, str] | None = None   # the first refused send, after the student's press, to an address the app does not know
         self._browser_closed = False
         self._parent_gone = False
         self._code_typed_once = False
-        # A refused submit POST counts as the widget sending the code by itself only before this instant (inf while the app types).
-        self._code_auto_until = 0.0
+        self._cdp: Any = None                # the DevTools session that carries the student's presses (handoff only)
+        self._press_channel = False          # the press listener is in place: only then does the app type the code
         # Handoff: the keys of the fields the agent filled and read back. Only these are described as filled in the result.
         self._filled: set[str] = set()
         # Handoff: the keys the agent acted on at all, recorded as each action starts. A key here and not in ``_filled`` was typed (or may
@@ -940,6 +984,31 @@ class ApplyAgent:
         self._context.route("**/*", self._route)
         self._context.route_web_socket("**/*", self._refuse_socket)
         self._page = self._context.new_page()
+        if self.mode == "handoff":
+            self._watch_presses()
+
+    def _watch_presses(self) -> None:
+        """Have the browser report the student's own presses of Submit, from a world the page's scripts cannot reach (``PRESS_LISTENER``).
+
+        A failure leaves ``_press_channel`` False: the app then does not type the emailed code, since it could not tell the student's press
+        from the widget's own send. This is the one DevTools session the agent opens, and it makes the four calls in ``PRESS_CDP_CALLS``.
+        """
+        try:
+            cdp = self._context.new_cdp_session(self._page)
+            cdp.on("Runtime.bindingCalled", self._on_binding)
+            cdp.send("Page.enable")
+            cdp.send("Runtime.enable")
+            cdp.send("Runtime.addBinding", {"name": PRESS_BINDING, "executionContextName": PRESS_WORLD})
+            cdp.send("Page.addScriptToEvaluateOnNewDocument", {"source": PRESS_LISTENER, "worldName": PRESS_WORLD, "runImmediately": True})
+        except Exception:  # noqa: BLE001 - a browser without DevTools sessions: no press can be seen
+            return
+        self._cdp = cdp
+        self._press_channel = True
+
+    def _on_binding(self, event: Mapping[str, Any]) -> None:
+        """The press listener called its binding. The binding exists only in the listener's world, and the listener calls it with "1" only."""
+        if event.get("name") == PRESS_BINDING and event.get("payload") == "1":
+            self._state.note_student_press()
 
     # --- the request policy -----------------------------------------------------------------------------------
 
@@ -969,6 +1038,8 @@ class ApplyAgent:
                 public=True, headers=request.headers, body=body,
             )
             decision = route_decision(self.mode, self._phase, facts, self._state)
+            if isinstance(decision, Abort) and decision.rule == "code_post_before_press" and self._press_arrives():
+                decision = route_decision(self.mode, self._phase, facts, self._state)   # the press was reported a moment after the request
             # Resolved last, and only for a request the policy would let through: the name of a request that is refused anyway
             # (after the first input, anything but Greenhouse's own hosts) is never sent to a resolver, since a hostname can carry a value.
             # A name the browser itself could not look up is not looked up here either: the resolver below runs in this process, outside the
@@ -1005,6 +1076,25 @@ class ApplyAgent:
             except Exception:  # noqa: BLE001 - already handled
                 pass
 
+    def _press_arrives(self, *, after: float | None = None) -> bool:
+        """Wait up to ``PRESS_GRACE_S`` for the student's press to be reported. The press is reported before the request it makes, but the two
+        reach this process by different routes, so a request can be judged first. True when the press is in: the code's press (the default), or,
+        with ``after``, any press newer than that instant of ``RouteState.last_press_at``. Page events run during the wait."""
+        deadline = time.monotonic() + PRESS_GRACE_S
+        while time.monotonic() < deadline:
+            if (self._state.code_pressed if after is None else self._state.last_press_at > after):
+                break
+            try:
+                self._page.wait_for_timeout(20)
+            except Exception:  # noqa: BLE001 - the page is going away: the request is refused
+                break
+        return self._state.code_pressed if after is None else self._state.last_press_at > after
+
+    def _send_after_a_late_press(self, facts: RouteRequest) -> bool:
+        """``looks_like_a_send`` for a request whose press has not been reported yet: wait a moment for it, and ask again."""
+        before = self._state.last_press_at
+        return self._press_arrives(after=before) and looks_like_a_send(facts, self._state)
+
     def _resolvable(self, host: str) -> bool:
         """Whether this host is one of the names the browser may look up (``RESOLVABLE_HOSTS`` and a test's own lookup endpoints)."""
         if not host:
@@ -1028,9 +1118,8 @@ class ApplyAgent:
         if self.mode == "handoff":
             if self._phase == PHASE_AFTER_HAND_OVER and unsafe and self._observer is not None:
                 self._observer.track(request, passed=False)
-            if decision.rule == "code_post_while_typing" and time.monotonic() < self._code_auto_until:
-                # Only a POST that arrives while the code is being typed, or within CODE_SETTLE_S of it, is the widget's own: a press
-                # by the student a moment later is refused too (the guard runs CODE_GUARD_S) but says nothing about the widget.
+            if decision.rule in ("code_post_while_typing", "code_post_before_press"):
+                # The code POST of a page nobody pressed Submit on: the widget sent it by itself, as the last box filled or later.
                 self._evidence_code["auto_submit_blocked"] = True
             if unsafe and self._phase == PHASE_FILL:
                 if decision.rule == "before_hand_over":
@@ -1053,6 +1142,11 @@ class ApplyAgent:
                     self._closing, self._why_closing = True, "elsewhere"
                 elif file_leaving:
                     self._closing, self._why_closing = True, "upload"
+                elif self._elsewhere_seen is None and (looks_like_a_send(facts, self._state) or self._send_after_a_late_press(facts))                         and self._phase == PHASE_STUDENT and not self._handed_over:
+                    # Refused as always, and the turn goes on; but the page would only show its own error, so the student is told.
+                    # (Not when the student's own submission was handed over while the late press was waited for: that one is on its way.)
+                    self._elsewhere_seen = {"host": safe_host(host, self._state.values)}
+                    self._progress("form_elsewhere", host=self._elsewhere_seen["host"])
         route.abort("blockedbyclient")
 
     def _hand_over_and_continue(self, route: Any, request: Any, decision: Any) -> None:
@@ -1388,7 +1482,7 @@ class ApplyAgent:
             if self._early:
                 raise _Stop("needs_you", HANDOFF_EARLY, "early")
             if self._upload_refused:
-                raise _Stop("needs_you", HANDOFF_S3, "upload")
+                raise _Stop("needs_you", HANDOFF_S3, "board")
             if self._closed():
                 raise _Stop("failed", WINDOW_CLOSED, "closed")
         if self._cancel_requested():
@@ -1407,9 +1501,15 @@ class ApplyAgent:
         self, plan: Any, *, page_url: str, schema: list[Any], files: dict[str, FilePayload], lookup: LookupRequest | None = None,
         replan: Callable[[list[dict[str, Any]], bool], Any] | None = None, hand_over: Callable[[], bool] | None = None,
         cancelled: Callable[[], bool] | None = None, link: HandoffLink | None = None, ends_at: float | None = None,
+        check_file: Callable[[str, str, str], bool] | None = None,
     ) -> RunResult:
-        """One run. Never raises. Before hand-over nothing could have left the page; after it the outcome says so."""
+        """One run. Never raises. Before hand-over nothing could have left the page; after it the outcome says so.
+
+        ``check_file(key, ref, sha256)`` asks the runner whether the cover letter the plan names is still the latest approved version
+        with the same text (D11); without it, or on anything but True, no letter is attached.
+        """
         self._plan, self._schema, self._files, self._lookup = plan, list(schema or []), dict(files or {}), lookup
+        self._check_file = check_file
         self._hand_over = hand_over
         self._cancelled = cancelled or (lambda: False)
         self._link = link
@@ -1587,9 +1687,9 @@ class ApplyAgent:
             # Before any input. On a board whose submit address is not the one the request rules know, every Submit would be
             # stopped: safe, and useless.
             if not (submit_path and confirmation_path and submit_host == SUBMIT_HOST):
-                raise _Stop("needs_you", HANDOFF_NO_LOADER)
+                raise _Stop("needs_you", HANDOFF_NO_LOADER, "board")
             if uploads:
-                raise _Stop("needs_you", HANDOFF_S3)
+                raise _Stop("needs_you", HANDOFF_S3, "board")
         else:
             if not (submit_path and confirmation_path):
                 self._reasons.append(NO_LOADER)
@@ -1738,13 +1838,22 @@ class ApplyAgent:
         if handoff:
             self._between()
 
-        # 12: a picture, and a rehearsal ends here.
+        # 12: a picture, and a rehearsal ends here. A form that goes on to another page was read only as far as its first, so a rehearsal of
+        # it does not call itself done (it stops as needs_you, and is never a clean rehearsal).
         self._progress("picture")
         self._screenshot("filled")
         if not handoff:
+            if self._more_pages(frame):
+                return self._finish("needs_you", [MORE_PAGES])
             return self._finish("rehearsed")
         self._between()
         return self._student_turn()
+
+    def _more_pages(self, frame: Any) -> bool:
+        """Whether the form shows a way on to another page (a Next control or a step counter). Recorded in the evidence. Read-only."""
+        more = bool(frame.evaluate(MORE_PAGES_SCRIPT))   # a page that cannot be asked ends the run as "could not check", the step it is in
+        self._evidence_bits["more_pages"] = more
+        return more
 
     def _check_view(self) -> Any:
         """The plan as the check should read it: the agent's own changes included (a field it left for the student is skipped)."""
@@ -1758,7 +1867,7 @@ class ApplyAgent:
         for problem in self._join_problems:
             entry = raw.get(problem["key"])
             if problem["kind"] == "hidden_control" and entry is not None and _source_kind(entry) != "none":
-                raise _Stop("needs_you", HANDOFF_HIDDEN.format(question=problem["question"] or self._question(problem["key"])))
+                raise _Stop("needs_you", HANDOFF_HIDDEN.format(question=problem["question"] or self._question(problem["key"])), "board")
         for key, entry in raw.items():
             if key in self._overrides:
                 continue
@@ -1766,9 +1875,6 @@ class ApplyAgent:
             disposition, source_kind = _attr(entry, "disposition"), _source_kind(entry)
             if disposition == "deferred":
                 self._leave(key, "left_for_you", str(_attr(entry, "problem") or _attr(entry, "note") or LEFT_FIELD.format(question=question)))
-            elif disposition == "fill" and source_kind == "cover_letter":
-                # The app attaches no cover letter in this version: an approved one is the student's to attach, never shown as filled.
-                self._leave(key, "left_for_you" if _attr(entry, "required") else "blank", LEFT_COVER_LETTER)
         for problem in self._join_problems:
             if problem["key"] not in raw and problem["kind"] != "hidden_control":
                 self._add_left(problem["key"], problem["question"] or problem["key"], LEFT_FIELD.format(question=problem["question"] or "a field"))
@@ -2093,27 +2199,33 @@ class ApplyAgent:
                 continue
             key = str(_attr(entry, "key"))
             question = str(_attr(entry, "question") or key)
+            letter = source_kind == "cover_letter"
             self._doing = question
-            payload = self._files.get("resume" if source_kind == "resume" else "cover_letter")
-            if source_kind == "cover_letter":
-                # Attached from M7 on. Until then the field stays empty, and the sentence says so: the app never tried to read the letter.
-                # A handoff has already left it for the student (_prepare_handoff, LEFT_COVER_LETTER).
-                if not handoff:
-                    self._check_problems.append(problem_dict(Problem("file", key, NO_COVER_LETTER.format(question=question), question, bool(_attr(entry, "required")))))
-                continue
+            payload = self._files.get("cover_letter" if letter else "resume")
             if payload is None:
-                # A missing résumé file is a gap, not a stop.
+                # A missing file is a gap, not a stop.
                 if handoff:
                     self._leave(key, "left_for_you", NO_FILE.format(question=question))
                     continue
                 self._check_problems.append(problem_dict(Problem("file", key, NO_FILE.format(question=question), question, bool(_attr(entry, "required")))))
                 continue
             self._between()
-            if hashlib.sha256(payload.buffer).hexdigest() != _attr(entry, "file_sha256"):
+            if not self._file_matches(entry, payload, letter):
+                # Nothing is attached; the student can attach their own.
                 if handoff:
-                    self._leave(key, "left_for_you", FILE_CHANGED)   # nothing is attached; the student can attach their own
+                    self._leave(key, "left_for_you", LEFT_COVER_LETTER_CHANGED if letter else FILE_CHANGED)
+                    continue
+                if letter:
+                    self._left_letter(key, question, entry)
                     continue
                 raise _Stop("needs_you", FILE_CHANGED)
+            if letter and not self._letter_current(key, entry):
+                # Asked again just before the file goes in: the letter was edited, replaced by a newer draft or unapproved since the run started.
+                if handoff:
+                    self._leave(key, "left_for_you", LEFT_COVER_LETTER_CHANGED)
+                else:
+                    self._left_letter(key, question, entry)
+                continue
             control = self.adapter.control(frame, key)
             if not control.count():
                 raise _Stop("needs_you", NO_CONTROL.format(question=question))
@@ -2133,6 +2245,32 @@ class ApplyAgent:
                 raise _Stop("needs_you", FIELD_TOOK.format(question=question))
             self._done.add(key)
             self._filled.add(key)
+
+    @staticmethod
+    def _file_matches(entry: Any, payload: FilePayload, letter: bool) -> bool:
+        """The bytes are the ones the plan was made from. A résumé: they hash to the plan's hash. A letter: they hash to what the runner
+        stored for them, the text they were rendered from is the text the plan names, and the file's name is the one the plan shows."""
+        digest = hashlib.sha256(payload.buffer).hexdigest()
+        if letter:
+            return (
+                bool(payload.sha256) and digest == payload.sha256 and bool(payload.content_sha256) and payload.content_sha256 == _attr(entry, "file_sha256")
+                and bool(payload.name) and payload.name == _attr(entry, "file_name")
+            )
+        return digest == _attr(entry, "file_sha256")
+
+    def _letter_current(self, key: str, entry: Any) -> bool:
+        """Ask the runner, once more, whether the letter is still the latest approved version with this text. No answer is a no."""
+        if self._check_file is None:
+            return False
+        source = _attr(entry, "source")
+        try:
+            return self._check_file(key, str(_attr(source, "ref") or ""), str(_attr(entry, "file_sha256") or "")) is True
+        except Exception:  # noqa: BLE001 - never its message
+            return False
+
+    def _left_letter(self, key: str, question: str, entry: Any) -> None:
+        """A rehearsal could not attach the letter: a problem, said once, and the rehearsal goes on."""
+        self._check_problems.append(problem_dict(Problem("file", key, LETTER_CHANGED.format(question=question), question, bool(_attr(entry, "required")))))
 
     @staticmethod
     def _accepts(accept: str, payload: FilePayload) -> bool:
@@ -2402,9 +2540,9 @@ class ApplyAgent:
                             pending = None                         # answered: the link holds nothing for it any more
                             ev["typed"] = typed
                             if typed:
-                                # The page's own script, if it sends the code by itself, does so now; the guard on submit POSTs runs a
-                                # little longer. Only after it is the student told to press Submit, so that press is never refused.
-                                self._wait(max(CODE_SETTLE_S, self._state.code_typing_until - time.monotonic()))
+                                # The page's own script, if it sends the code by itself, does so now and is refused. Only after a moment
+                                # is the student told to press Submit (the refusal is then in the evidence).
+                                self._wait(CODE_SETTLE_S)
                             if typed:
                                 if ev["auto_submit_blocked"]:
                                     ev["reason"] = "auto_submit_blocked"   # the code is in the boxes; the page's own send was stopped
@@ -2455,6 +2593,8 @@ class ApplyAgent:
             return False, "already_typed"
         if not CODE_PATTERN.fullmatch(code):
             return False, "bad_code"                     # email text is data from outside: only eight letters or digits are typed
+        if not self._press_channel:
+            return False, "press_unseen"                 # the student's press could not be told from the widget's send: they type it
         try:
             parts = urlsplit(self._page.url)
             if (parts.hostname or "").lower() not in BOARD_HOSTS or not parts.path.rstrip("/").startswith(self._job_path):
@@ -2470,7 +2610,6 @@ class ApplyAgent:
         except Exception:  # noqa: BLE001
             return False, "inputs_missing"
         self._state.code_typing_until = math.inf
-        self._code_auto_until = math.inf
         self._code_typed_once = True
         held = False
         try:
@@ -2482,8 +2621,8 @@ class ApplyAgent:
         except Exception:  # noqa: BLE001 - a box that would not take its character is the student's to finish, never a crash of the run
             held = False
         finally:
-            self._state.code_typing_until = time.monotonic() + CODE_GUARD_S
-            self._code_auto_until = time.monotonic() + CODE_SETTLE_S
+            self._state.code_typing_until = 0.0
+            self._state.require_code_press()             # from here the code POST waits for the student's own press of Submit
         return (True, "") if held else (False, "typing_failed")
 
     # --- the picture and the result ------------------------------------------------------------------------------
@@ -2555,6 +2694,8 @@ class ApplyAgent:
             "confirmation_path": str(outcome.get("confirmation_path") or ""),
             "form_absent": bool(outcome.get("form_absent", False)),
             "upload_refused": dict(self._upload_refused) if self._upload_refused else None,
+            # Only for a turn that did not go on to the board: after a hand-over the refused request was a tracker beside the submission.
+            **({"elsewhere_seen": dict(self._elsewhere_seen)} if self._elsewhere_seen and not self._handed_over else {}),
             "security_code": {**self._evidence_code, "posted": self._state.code_posts_passed > 0},
             "challenge": self._challenge,
             "browser_closed": self._browser_closed,

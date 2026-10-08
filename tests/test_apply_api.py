@@ -770,7 +770,7 @@ class RunApiCase(ApplyApiCase):
 
 RUN_KEYS = {"id", "opportunity_id", "kind", "status", "outcome", "clean", "started_at", "finished_at", "heartbeat_at", "deadline_at", "stalled", "summary",
             "measured", "progress", "reasons", "problems", "fields", "options", "lookup", "screenshots", "refused_count", "review", "review_note",
-            "reviewed_at", "can_review", "can_cancel", "phase", "handed_over", "left_for_you", "handoff_until", "page_defaults", "claim", "can_front"}
+            "reviewed_at", "can_review", "can_cancel", "phase", "handed_over", "handoff_end", "finish_again", "left_for_you", "handoff_until", "page_defaults", "claim", "can_front"}
 
 
 class StartRouteTests(RunApiCase):
