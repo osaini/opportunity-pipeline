@@ -18,7 +18,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Apply for me | 0 | 5 | 9 | 14 |
+| Apply for me | 0 | 3 | 5 | 8 |
 | Mail, Gmail and inboxes | 0 | 4 | 8 | 12 |
 | Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
@@ -26,7 +26,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Scoring, scheduling and configuration | 1 | 2 | 6 | 9 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **30** | **34** | **65** |
+| **Total** | **1** | **28** | **30** | **59** |
 
 ## Start here: the high-severity entries
 
@@ -135,20 +135,6 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **Suggested fix:** Keep adding wordings from real Greenhouse questions as students meet them. A word list cannot be complete; the per-company rule is what bounds a miss.
 - **Regression suite:** tests/ unittest (`test_apply_broad_net`, `tests/fixtures/apply/broad_net.json`), node tests/extension/run_tests.mjs
 
-### A rehearsal does not notice a multi-page Greenhouse form, so it can call a form it only half read "rehearsed"
-- **Severity:** medium (found 2026-10-02, while building the rehearsal engine, M5a)
-- **Where:** `opportunity_app/apply/agent.py` `ApplyAgent.run` (step 4 reads the page, step 11 checks it), and the `runner` view's summary sentence for `rehearsed`
-- **What happens:** The agent reads one page of the form. A Greenhouse form that shows a second page after the first is filled (or that reveals further required questions on Next) has no fixture here, so nothing detects it. The rehearsal checks the fields it can see, reports `rehearsed`, and says "Here is what the app would send", although the later pages were never read or checked.
-- **Suggested fix:** Record a multi-page fixture from a board that has one, then end such a rehearsal as `needs_you` with a sentence ("This form has more pages than the app can check yet") whenever a second page, a Next button or a step indicator is present after the first page is filled. Until then, do not offer a one-click submit for a form the rehearsal did not fully read.
-- **Regression suite:** tests/test_apply_agent_browser.py (a fixture with a Next button) and tests/test_apply_runner.py (the view's wording)
-
-### Every lone checkbox on a form reads as a wording mismatch, so a form with a consent box is never a clean rehearsal
-- **Severity:** medium (found 2026-10-03, by the rehearsal driver tests, M5a)
-- **Where:** `apps/extension/apply-engine.js` `rawQuestion` (a radio or checkbox reports its group's question, and "" when there is no fieldset legend) with `opportunity_app/apply/checks.py` `join` (`heard is not None and question_key(heard) != question_key(label)`)
-- **What happens:** On a form whose consent or acknowledgment box is a bare label-wrapped input, the scan's question for the box is "". `join` reports `wording_mismatch` for it, `build_plan` blanks the box (even a required consent the student stored an answer for), and `clean_rehearsal` is False. The fictional form shows it for `question_4000000109`, `question_4000000110`, `question_4000000113` and `gdpr_consent_given`.
-- **Suggested fix:** In `join`, skip the wording comparison when `heard` is empty for a radio or checkbox control, or have the engine report the wrapping label's own text for a lone checkbox. Then tighten the browser test to `join_problems == []`.
-- **Regression suite:** tests/test_apply_agent_browser.py (`RehearsalTests.test_a_clean_run_fills_reads_back_and_stops_without_sending_anything`)
-
 ### A request a page makes while its window is closing skips the route handler, so a hostile script can carry a typed value to one of the allowed hosts
 - **Severity:** medium, privacy (found 2026-10-03, in the M5a recheck)
 - **Where:** `opportunity_app/apply/agent.py` `NO_SIDE_CHANNELS` (the dismissal listeners, `sendBeacon`, keepalive) and `RESOLVABLE_HOSTS`; Playwright's `Page._onRoute` (stalls every request once `page.close()` has been called) with Chromium (lets a stalled request go when the page's session ends)
@@ -168,28 +154,8 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **Where:** `opportunity_app/apply/runner.py` `orphaned` and `ApplyRunner._finish`, `opportunity_app/web/routers/apply_agent.py` the cancel route, `opportunity_app/apply/runs.py` `recover_stale`
 - **What happens:** `orphaned` decides a "running" row is dead because this process holds no run of that id, on the reasoning that only this server runs rehearsals. Two servers on one database (`python -m opportunity_app.api` on another port beside the launcher's) break that: the second shows the first's live run as stopped after 15 seconds, its Stop closes the row as "The app stopped during this run", and `recover_stale` can do the same after two minutes of failed heartbeat writes. When the first run ends, its result is not stored (the runner now logs that and reports the row's outcome, not its own).
 - **Suggested fix:** Write a server instance id on the run row when it starts, and let `orphaned`, the cancel route and `recover_stale` close only rows that carry this server's id (or none).
+- **Left open on 2026-10-08 (the Apply for me hardening branch):** the id needs a new column on `apply_runs`, so a migration, and a migration number taken now would collide with the migrations other open branches add. Keeping the id in `evidence_json` instead is not safe: `record_ready` and the finish write replace the whole document while the run is going. `recover_stale` also decides by the claim's in-process hold (`claim_held`), which would need the same id. Do it with the next planned migration, as one change with the three readers.
 - **Regression suite:** tests/test_apply_runner.py (two runners on one database; the second does not close the first's running row)
-
-### LAUNCH_ARGS passes a second --disable-features switch, which replaces Playwright's own list
-- **Severity:** low (found 2026-10-03, in review of the rehearsal engine, M5a)
-- **Where:** `opportunity_app/apply/agent.py` `LAUNCH_ARGS` and `ApplyAgent.launch_options`
-- **What happens:** Playwright starts Chromium with its own `--disable-features=...` (HttpsUpgrades, Translate, OptimizationHints and others), and the agent's `--disable-features=FedCm` follows it on the command line. Chromium reads one value of a repeated switch, the last, so Playwright's list is not in effect (the process's command line shows both). Nothing the app relies on is known to change, but the browser is not the one Playwright's defaults describe.
-- **Suggested fix:** Put FedCm into one `--disable-features` that also names every feature Playwright's list does (read from the installed Playwright at launch, or pinned and tested against it), or close FedCM by the init script alone.
-- **Regression suite:** tests/test_apply_agent_static.py (the launch arguments carry one `--disable-features`, and it names Playwright's list)
-
-### A form that posts its application to an address the app does not recognize is stopped without a word on the page
-- **Severity:** low (found 2026-10-03, planning Finish in browser, M5b part 2)
-- **Where:** `opportunity_app/apply/checks.py` `FORM_POST_HOSTS`, `student_submit_elsewhere` and `route_decision` (handoff, the student's turn); `opportunity_app/apply/agent.py` `_route`
-- **What happens:** Finish in browser aborts every non-GET that is not the form's own submission, and it knows the form's own submission only by its path on `boards.greenhouse.io`. A board whose form posts the application to another host outside `FORM_POST_HOSTS` is aborted without the app saying so while the student's turn is open: the page shows its own error, nothing is sent, and the panel's only advice is to fix the field and press Submit again, or to press Stop. A form whose address is outside `job-boards.greenhouse.io`, `boards.greenhouse.io` and `boards-api.greenhouse.io` ends the turn only if it is a form navigation.
-- **Suggested fix:** Record, from a live board that does this, which host its submission goes to, add it to `FORM_POST_HOSTS`, and say in the panel when a refused request looks like a submission ("The form tried to send to {host}, which the app doesn't recognize") instead of waiting for the student to notice.
-- **Regression suite:** tests/test_apply_agent_browser.py (a fixture whose form posts to another host) and tests/ui/test_apply_handoff.py (the panel's sentence)
-
-### The security-code widget has not been seen live: one that sends the typed code by itself more than 2 seconds later goes through without the student's press
-- **Severity:** low (found 2026-10-03, planning Finish in browser, M5b part 2; the owner's open question Q4 in `docs/phase5-apply-agent-spec.md`, called Q1 in the plan)
-- **Where:** `opportunity_app/apply/agent.py` `_security_code` and `_type_security_code`; `opportunity_app/apply/checks.py` `RouteState.code_typing` and `route_decision` (`code_post_while_typing`)
-- **What happens:** After the student presses Submit, Greenhouse may ask for an emailed security code. The app reads it from Gmail (D10 B) and types it into the window, but never presses the second Submit (D1 B: the student presses every Submit). The route refuses a submit POST while the code is typed and for two seconds after (`CODE_GUARD_S`), and the window is told to press Submit only after those two seconds, with the run view saying "The app typed the security code from your email. Press Submit application in the window". That is all the guard does; it does not wait for a press. A widget that submits by itself after more than two seconds, or that retries a refused send later, sends a POST that passes as the prompt's one code POST, so the final submission can reach Greenhouse without the student's press on it (the student did press Submit for the same application first). A refusal in the first 0.3 seconds is recorded as the widget sending by itself (`auto_submit_blocked`); a refusal after that is the student's own early press and is not. No fixture or recording of the live widget exists, so which behaviour it has is not known.
-- **Suggested fix:** Watch the first real Finish in browser that asks for a code, and write down whether the page sent by itself. If it does, the owner decides whether the app should stop typing the code (and show it instead), or whether typing it and leaving the press to the student is what is wanted. Add a recording of the widget to `tests/fixtures/apply/greenhouse/`. To make the claim "the student presses every Submit" hold for a slow or retrying widget, allow the code POST only after a trusted click on the submit control in the form frame (a click listener that reports `isTrusted`) was seen after the typing, and add a fixture whose widget retries after 2.5 seconds.
-- **Regression suite:** tests/test_apply_agent_browser.py (`security_code_autosubmit` fixture) and tests/test_apply_handoff.py (the sentences)
 
 ### The answers the student types in the Finish in browser window are not watched by the request guard
 - **Severity:** low (found 2026-10-03, review of Finish in browser, M5b part 2)
@@ -197,13 +163,6 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** The request guard looks for the values the app planned and typed (plain, URL-encoded, base64 and escaped forms). A field the app left for the student, and any answer the student types or changes in the window, is not in that set, so a page script that sends it in a request to another address is not stopped. After the press, reads from `job-boards.greenhouse.io` and `boards.greenhouse.io` are not checked (the confirmation page loads from there); every other address still is.
 - **Suggested fix:** None that is cheap: guarding what the student types means reading the form's values in the window, which the app does not do. State it in the student-facing documents (done) and keep the boards' own addresses the only exemption.
 - **Regression suite:** tests/test_apply_checks.py (`test_in_a_handoff_a_get_to_another_host_is_guarded_after_the_press_too`)
-
-### A Finish in browser run that stopped on a property of the board still offers Finish in browser again, and it stops the same way
-- **Severity:** low (found 2026-10-03, review of Finish in browser, M5b part 2)
-- **Where:** `opportunity_app/static/app-apply.js` `applyResultPanel` (`sent` is false for every claim card status "stopped"); `opportunity_app/apply/runner.py` `handoff_settlement` rows 11 and 13; `opportunity_app/apply/preflight.py` `_eligibility`
-- **What happens:** A handoff that ends before the hand-over because of the board itself (no loader submit path, `HANDOFF_NO_LOADER`; a board that uploads on attach, `HANDOFF_S3`; a control the app cannot find, `HANDOFF_HIDDEN`) settles `needs_you` with `after_click` 0, which the card calls "stopped". The result panel then offers Finish in browser under a heading that ends "Apply from the posting instead". Nothing in the pre-start check knows these properties, so a second start opens a window, fills nothing and stops with the same sentence, and adds another `apply_agent_started` timeline event. It costs no limit (a stopped attempt that sent nothing is released) and sends nothing. The plan says "stopped: the note and Finish in browser again" with no exceptions, so the code does what the plan says.
-- **Suggested fix:** Offer Finish in browser again only when the run's `handoff_end` says the student or the clock ended the turn (`stopped`, `closed`, `timeout`, `refused`, `early`); otherwise show only the posting link. `HANDOFF_ELSEWHERE` and `HANDOFF_UPLOAD` can follow from what the student did in the window, so a retry for those is reasonable.
-- **Regression suite:** tests/ui/test_apply_handoff.py (a run that ends `HANDOFF_NO_LOADER` shows no Finish in browser button) and tests/test_apply_handoff.py (the view's `handoff_end`)
 
 ### The Greenhouse embed form is never used when a posting redirects to the company's own site
 - **Severity:** low (found 2026-10-04, comparison with another project's ATS notes)

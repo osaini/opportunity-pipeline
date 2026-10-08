@@ -707,6 +707,19 @@ class PhaseTests(HandoffCase):
         self.assertEqual(apply_runner._summary(row, [], {}, "", "", [], False, phase="your_turn", nothing_left=True), YOUR_TURN_NONE_LEFT)
         self.assertEqual(apply_runner._summary(row, [], {}, "", "", [{"step": "fill", "text": "Filling 3 fields"}], False, phase="filling"), "Filling 3 fields")
 
+    def test_a_form_that_tried_to_send_elsewhere_is_still_the_students_turn_and_says_so_in_its_own_words(self):
+        phase = apply_runner._handoff_phase
+        card = {"status": "your_turn"}
+        told = [{"step": "your_turn", "text": "x"}, {"step": "form_elsewhere", "text": "The form tried to send to apply.example.test, which the app doesn't recognize"}]
+        self.assertEqual(phase(told, card, "claimed"), "form_elsewhere")
+        # The student's next press commits the hand-over: the phase is submitting at once, not the stale notice.
+        self.assertEqual(phase(told, None, "clicking"), "submitting")
+        row = {"status": "running", "kind": "handoff", "outcome": ""}
+        text = apply_runner._summary(row, [], {}, "Acme", "Intern", told, False, phase="form_elsewhere")
+        self.assertEqual(text, told[-1]["text"], "the sentence names the host the agent saw, so it is the step's own text")
+        self.assertIn("doesn't recognize", PROGRESS_STEPS["form_elsewhere"])
+        self.assertNotIn("Nothing was sent", PROGRESS_STEPS["form_elsewhere"], "the step is about the stopped request, not about the application")
+
     def test_a_turn_with_nothing_left_for_the_student_says_so(self):
         run_id = self.handoff(handoff_factory(wait=30))
         self.turn(run_id)

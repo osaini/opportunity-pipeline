@@ -18,6 +18,7 @@ from urllib.parse import quote
 from opportunity_app.apply import checks as apply_checks
 from opportunity_app.apply.checks import (
     CAPTCHA_ENDPOINTS,
+    looks_like_a_send,
     PHASE_AFTER_HAND_OVER,
     PHASE_AFTER_INPUT,
     PHASE_BEFORE_INPUT,
@@ -773,15 +774,53 @@ class TelemetryAndCodeGuardTests(unittest.TestCase):
         refused = route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run)
         self.assertEqual(refused.rule, "code_post_while_typing")
         self.assertEqual((run.code_posts_passed, run.security_code_prompts), (0, 1))
-        # A refusal is not recorded as a pass, so the student's own press, after the guard, still gets the prompt's one POST.
-        run.code_typing_until = time.monotonic() + 0.05
-        self.assertEqual(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run).rule, "code_post_while_typing")
-        time.sleep(0.08)
+        # A refusal is not recorded as a pass. With the guard over and no code typed by the app, the next POST is the prompt's one.
+        run.code_typing_until = 0.0
         self.assertFalse(run.code_typing)
         allowed = route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run)
         self.assertEqual(allowed, Allow("security_code", code_post=True))
         run.record(allowed)
         self.assertEqual(run.code_posts_passed, 1)
+
+    def test_once_the_app_typed_the_code_the_code_post_waits_for_the_students_press_however_long_it_takes(self):
+        run = state()
+        run.record(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run))
+        run.note_security_code_prompt()
+        run.code_typing_until = float("inf")
+        run.note_student_press()                              # a press while the app types is not the press that counts
+        self.assertFalse(run.code_pressed)
+        run.code_typing_until = 0.0
+        run.require_code_press()
+        for _ in range(3):                                    # a widget that retries: refused each time, nothing spent
+            refused = route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run)
+            self.assertEqual(refused.rule, "code_post_before_press")
+            self.assertEqual((run.code_posts_passed, run.security_code_prompts), (0, 1))
+        run.note_student_press()
+        allowed = route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run)
+        self.assertEqual(allowed, Allow("security_code", code_post=True))
+        run.record(allowed)
+        self.assertEqual((run.code_press_required, run.code_pressed), (True, False), "the press was used up; the rule stays on")
+        self.assertEqual(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run).rule, "second_submit_post")
+        run.note_security_code_prompt()                       # the code is asked for again: the retry has no new press, so it is refused
+        self.assertEqual(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run).rule, "code_post_before_press")
+        run.note_student_press()
+        self.assertEqual(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run), Allow("security_code", code_post=True))
+
+    def test_a_press_is_forgotten_when_the_app_starts_typing_again_and_does_not_count_before_the_app_typed(self):
+        run = state()
+        run.note_student_press()
+        self.assertFalse(run.code_pressed, "no code was typed, so there is no press to wait for")
+        run.require_code_press()
+        run.note_student_press()
+        self.assertTrue(run.code_pressed)
+        run.require_code_press()
+        self.assertFalse(run.code_pressed)
+
+    def test_a_code_the_student_typed_needs_no_press_from_the_guard(self):
+        run = state()
+        run.record(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run))
+        run.note_security_code_prompt()
+        self.assertEqual(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run), Allow("security_code", code_post=True))
 
     def test_the_guard_covers_only_the_submit_post(self):
         run = state(code_typing_until=float("inf"))
@@ -810,6 +849,30 @@ class StudentSubmitElsewhereAndUploadTests(unittest.TestCase):
         for asked, expected in cases:
             with self.subTest(method=asked.method, url=asked.url):
                 self.assertEqual(student_submit_elsewhere(asked, state()), expected)
+
+    def test_a_send_after_the_students_press_to_an_address_the_app_does_not_recognize_looks_like_the_form_sending(self):
+        FORM = {"content-type": "application/x-www-form-urlencoded"}
+        run = state()
+        other = "https://apply.example-robotics.test/submit"
+        # No press seen: nothing says this request has to do with Submit.
+        self.assertFalse(looks_like_a_send(request("POST", other, headers=MULTIPART, body=WITH_FILE), run))
+        run.note_student_press()
+        cases = (
+            (request("POST", other, headers=MULTIPART, body=WITHOUT_FILE), True),
+            (request("POST", other, headers=FORM, body="a=1"), True),
+            (request("PUT", other, headers={"content-type": "application/json"}, body="{}"), True),
+            (request("POST", other, headers=FORM), False),                                  # no body: a ping
+            (request("POST", other, headers={"content-type": "text/csv"}, body="a"), False),
+            (request("POST", TELEMETRY_URL, headers=FORM, body="a=1"), False),
+            (request("POST", "https://www.google.com/recaptcha/api2/reload", headers=FORM, body="a=1"), False),
+            (request("GET", other), False),
+            (request("POST", SUBMIT_URL, headers=FORM, body="a=1"), False),                  # the form's own address is the route's business, not this
+        )
+        for asked, expected in cases:
+            with self.subTest(method=asked.method, url=asked.url):
+                self.assertEqual(looks_like_a_send(asked, run), expected)
+        run.last_press_at = time.monotonic() - apply_checks.SEND_AFTER_PRESS_S - 1
+        self.assertFalse(looks_like_a_send(request("POST", other, headers=MULTIPART, body=WITHOUT_FILE), run), "a press long ago explains nothing")
 
     def test_is_upload_table(self):
         cases = (
@@ -953,6 +1016,33 @@ class JoinTests(unittest.TestCase):
         for wording in ("why  us", "WHY US?*", "Why us? (required)".replace(" (required)", "")):
             with self.subTest(wording=wording):
                 self.assertEqual(join([field_of("q", "Why us?")], [scan_of("q", wording)]), [])
+
+    def test_a_lone_checkbox_with_no_question_of_its_own_is_compared_by_its_own_words(self):
+        # The engine reports "" for a checkbox (or radio) with no fieldset legend, such as a consent box wrapped in its own label. Its
+        # words are in the scan's label (with the control's name and id after them), and they must be ones the listing has.
+        consent = field_of("gdpr_consent_given", "I consent to Example Robotics storing my application data for 365 days", type="multi_value_multi_select")
+        for kind in ("checkbox", "radio"):
+            with self.subTest(kind=kind):
+                same = scan_of("gdpr_consent_given", "", type=kind, label="I consent to Example Robotics storing my application data for 365 days gdpr_consent_given gdpr_consent_given")
+                self.assertEqual(join([consent], [same]), [])
+        # A control that is not a choice still needs its wording, and a choice that does report a different question still disagrees.
+        text = field_of("q", "Why us?")
+        self.assertEqual([p.kind for p in join([text], [scan_of("q", "")])], ["wording_mismatch"])
+        self.assertEqual([p.kind for p in join([consent], [scan_of("gdpr_consent_given", "Something else", type="checkbox")])], ["wording_mismatch"])
+
+    def test_a_lone_checkbox_whose_own_words_differ_from_the_listing_is_a_wording_mismatch(self):
+        # Finish in browser ticks a statement box from the listing's words alone; a form that says something else must be left to the student.
+        notice = field_of("question_1", "I have read the privacy notice", type="multi_value_multi_select")
+        marketing = scan_of("question_1", "", type="checkbox", label="I agree to receive marketing calls question_1 question_1")
+        self.assertEqual([(p.kind, p.key) for p in join([notice], [marketing])], [("wording_mismatch", "question_1")])
+        self.assertEqual([p.kind for p in join([notice], [scan_of("question_1", "", type="checkbox")])], ["wording_mismatch"], "no words at all cannot be compared")
+        # The listing's option words and a longer statement that contains the box's words are the listing's own.
+        heading = dict(field_of("question_2", "Data processing", type="multi_value_multi_select"), options=("I agree to the processing of my data",))
+        self.assertEqual(join([heading], [scan_of("question_2", "", type="checkbox", label="I agree to the processing of my data question_2")]), [])
+        self.assertEqual([p.kind for p in join([heading], [scan_of("question_2", "", type="checkbox", label="I agree to the sale of my data question_2")])], ["wording_mismatch"])
+        # A statement the listing does not carry (the page is its only source) has nothing to be compared with.
+        page_only = dict(field_of("gdpr_consent_given", "GDPR data consent (shown on the form only)", type="multi_value_multi_select"), label_from_page=True)
+        self.assertEqual(join([page_only], [scan_of("gdpr_consent_given", "", type="checkbox", label="Whatever it says gdpr_consent_given")]), [])
 
     def test_a_required_control_the_listing_does_not_mention_is_a_problem(self):
         problems = join([field_of("first_name", "First Name")], [scan_of("first_name", "First Name"), scan_of("surprise", "Extra question")])

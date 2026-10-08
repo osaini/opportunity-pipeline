@@ -27,7 +27,7 @@ import realdata_guard
 
 realdata_guard.install()
 
-from opportunity_app.apply import checks as apply_checks, policy as apply_policy, preflight as apply_preflight, runner as apply_runner, runs as apply_runs
+from opportunity_app.apply import agent as apply_agent, checks as apply_checks, policy as apply_policy, preflight as apply_preflight, runner as apply_runner, runs as apply_runs
 from opportunity_app.apply import runner_child as apply_runner_child
 from opportunity_app.apply import security_code as apply_security_code
 from opportunity_app.apply.agent_types import AgentJob, ApplyTimeouts, RunResult
@@ -1206,7 +1206,7 @@ class ViewTests(RunnerCase):
         keys = {"id", "opportunity_id", "kind", "status", "outcome", "clean", "started_at", "finished_at", "heartbeat_at", "deadline_at", "stalled",
                 "summary", "measured", "progress", "reasons", "problems", "fields", "options", "lookup", "screenshots", "refused_count",
                 "review", "review_note", "reviewed_at", "can_review", "can_cancel",
-                "phase", "handed_over", "left_for_you", "handoff_until", "page_defaults", "claim", "can_front"}
+                "phase", "handed_over", "handoff_end", "finish_again", "left_for_you", "handoff_until", "page_defaults", "claim", "can_front"}
         for view in (self.make(), self.make(outcome="rehearsed"), self.make("lookup", outcome="looked_up")):
             self.assertEqual(set(view), keys)
 
@@ -1343,6 +1343,52 @@ class ViewTests(RunnerCase):
             with self.subTest(outcome=outcome, end=evidence["handoff_end"]):
                 self.assertEqual(self.make("handoff", outcome=outcome, plan=plan, evidence=evidence)["handed_over"], expected)
         self.assertFalse(self.make(outcome="rehearsed", plan=plan)["handed_over"])
+
+    def test_a_finished_run_that_saw_the_form_try_to_send_elsewhere_says_so_once_and_nothing_was_sent(self):
+        plan = self.plan()
+        not_submitted = "You didn't submit it in the window. Your application was not sent."
+        seen = self.make("handoff", outcome="needs_you", plan=plan, reasons=[not_submitted],
+                         evidence={"handoff_end": "timeout", "elsewhere_seen": {"host": "apply.example.test"}})
+        sentence = ("While the window was open the form tried to send a request to apply.example.test, which the app doesn't recognize. "
+                    "The app stopped that request; nothing went to that address.")
+        self.assertEqual(seen["reasons"], [not_submitted, sentence])
+        self.assertEqual(seen["summary"], not_submitted, "the result's title is still the run's own")
+        plain = self.make("handoff", outcome="needs_you", plan=plan, reasons=[not_submitted], evidence={"handoff_end": "timeout"})
+        self.assertEqual(plain["reasons"], [not_submitted])
+        # A made-up evidence entry is read as a host only: anything else is dropped.
+        odd = self.make("handoff", outcome="needs_you", plan=plan, reasons=[not_submitted], evidence={"elsewhere_seen": {"host": ["x"]}})
+        self.assertEqual(odd["reasons"], [not_submitted])
+
+    def test_a_run_that_went_on_to_the_board_does_not_carry_the_elsewhere_notice(self):
+        # A tracker that reports the Submit click is refused as the form sending elsewhere, but the form's own submission then goes through.
+        plan = self.plan()
+        seen = {"host": "events.example-analytics.test"}
+        for outcome, reasons in (("submitted", []), ("unconfirmed", [apply_checks.UNCONFIRMED_NOTE])):
+            with self.subTest(outcome=outcome):
+                view = self.make("handoff", outcome=outcome, plan=plan, reasons=reasons, evidence={"handoff_end": "posted", "elsewhere_seen": seen})
+                self.assertEqual(view["reasons"], reasons)
+                self.assertNotIn("nothing", " ".join(view["reasons"]).lower())
+
+    def test_finish_in_browser_is_offered_again_after_every_stop_but_one_on_a_property_of_the_board(self):
+        plan = self.plan()
+        offered = ("stopped", "closed", "timeout", "refused", "early", "elsewhere", "upload", "crashed", "")
+        for end in offered:
+            with self.subTest(end=end):
+                view = self.make("handoff", outcome="needs_you", plan=plan, evidence={"handoff_end": end})
+                self.assertEqual((view["handoff_end"], view["finish_again"]), (end, True))
+        # A stop with no end of its own (a page that would not open, a Greenhouse 503, a résumé that changed, a popup) can come out differently
+        # next time, and the result panel has no other way to start again.
+        for reasons in (["The form did not open"], ["Greenhouse answered 503"], ["The résumé file changed since it was confirmed"]):
+            with self.subTest(reasons=reasons):
+                self.assertTrue(self.make("handoff", outcome="needs_you", plan=plan, reasons=reasons, evidence={"handoff_end": ""})["finish_again"])
+        view = self.make("handoff", outcome="needs_you", plan=plan, evidence={"handoff_end": "board"})
+        self.assertEqual((view["handoff_end"], view["finish_again"]), ("board", False), "a stop on a property of the board is met again")
+        # A run the app's own process failed (no report from the browser at all) is not the board's doing: try again.
+        self.assertTrue(self.make("handoff", outcome="failed", plan=plan, evidence={})["finish_again"])
+        # After the press went on the page asks only when the student released the attempt ("It didn't go through"), which it reads from the claim.
+        self.assertTrue(self.make("handoff", outcome="unconfirmed", plan=plan, evidence={"handoff_end": "posted"})["finish_again"])
+        # A rehearsal or lookup has no Finish in browser to offer.
+        self.assertFalse(self.make(outcome="rehearsed", plan=plan)["finish_again"])
 
     def test_a_rehearsal_reads_with_its_sentences_its_problems_and_a_value_free_table(self):
         join = [{"kind": "hidden_control", "key": "spam", "message": "The form hides this field", "question": "Spam", "required": False}]
@@ -1507,6 +1553,10 @@ class ViewTests(RunnerCase):
         needs = self.make(outcome="needs_you", reasons=["This is Greenhouse's older form, which the app does not fill yet"])
         self.assertEqual(needs["summary"], "The rehearsal stopped: This is Greenhouse's older form, which the app does not fill yet. No application was sent.")
         self.assertTrue(needs["can_review"])
+        pages = self.make(outcome="needs_you", reasons=[apply_agent.MORE_PAGES], evidence={"more_pages": True})
+        self.assertEqual(pages["summary"], "The rehearsal stopped: This form has more than one page, and the app read only the first. No application was sent.")
+        self.assertFalse(pages["clean"], "a form the rehearsal read only the first page of is never clean")
+        self.assertNotIn("Here is what the app would send", pages["summary"])
         failed = self.make(outcome="failed", reasons=["Greenhouse answered HTTP 503"])
         self.assertEqual(failed["summary"], "Greenhouse answered HTTP 503. No application was sent.")
         self.assertFalse(failed["can_review"])
