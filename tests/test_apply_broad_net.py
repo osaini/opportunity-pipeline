@@ -61,6 +61,19 @@ class VectorTests(unittest.TestCase):
             self.assertEqual(possibly_sensitive(row["text"]), row["possibly_sensitive"], row["text"])
             self.assertEqual(never_storable(row["text"]), row["never_storable"], row["text"])
 
+    def test_the_section_headings_match_the_shared_vectors_the_javascript_engine_also_runs(self):
+        rows = json.loads((FIXTURES / "broad_net.json").read_text(encoding="utf-8"))["sections"]
+        self.assertGreaterEqual(len(rows), 15)
+        for row in rows:
+            self.assertEqual(apply_classify.section_never(row["text"]), row["never"], row["text"])
+        self.assertFalse(apply_classify.section_never(None))
+
+    def test_the_standard_profile_fields_and_common_prompts_the_net_was_widened_around_are_not_caught(self):
+        for label in ("First name", "Last name", "Preferred first name", "Email", "Phone", "LinkedIn Profile", "Website", "GitHub", "Portfolio URL", "Resume/CV",
+                      "Cover Letter", "Address", "Describe your experience with fraud detection systems", "How do you identify bottlenecks in a system?",
+                      "Describe a cross-disciplinary project", "Why do you want to make an impact here?"):
+            self.assertEqual(net_topics(label), (), label)
+
     def test_every_topic_and_every_never_storable_topic_is_covered_by_the_vectors(self):
         seen = {topic for row in net_vectors() for topic in row["topics"]}
         self.assertEqual(seen, set(apply_classify.NET_TOPICS) | {"adult"})
@@ -84,6 +97,44 @@ class VectorTests(unittest.TestCase):
         for text in ("Why are you interested in this role?", "Tell us about yourself", "Describe a time you worked on a team", "Are you willing to relocate?",
                      "What is your expected graduation date?", "LinkedIn profile", "Portfolio URL", "What programming languages do you know?"):
             self.assertEqual(net_topics(text), (), text)
+
+
+class PageSectionTests(unittest.TestCase):
+    """A question the page shows under a demographic, compliance or background heading is never storable (the engine reads the page)."""
+
+    LABEL = "Tell us about your experience"
+
+    def test_the_engines_never_storable_mark_leaves_the_question_for_the_student_at_every_company(self):
+        field = F("q", self.LABEL, "textarea", parent="Resume/CV")
+        rows = [answer(self.LABEL, "Robots", COMPANY), answer(self.LABEL, "Robots", OTHER, ["reusable"])]
+        plain = plan(BASE + [field], sources(answers=rows)).get("q")
+        self.assertEqual((plain.source.kind, plain.net_never), ("answer", ()), "without the mark it fills here")
+        for scan in ([{"name": "q", "never_storable": True}], [{"id": "q", "never_storable": True}]):
+            for company in (COMPANY, OTHER):
+                got = plan(BASE + [field], sources(answers=rows), company=company, scan=scan).get("q")
+                self.assertEqual((got.source.kind, got.value, got.problem_kind), ("none", None, "sensitive_never"), company)
+                self.assertIn("personal", got.net_never)
+                self.assertEqual(apply_preflight._action(got, {})["type"], "manual", "no form offers to save it")
+        marked_false = plan(BASE + [field], sources(answers=rows), scan=[{"name": "q", "never_storable": False}]).get("q")
+        self.assertEqual(marked_false.source.kind, "answer")
+
+    def test_the_mark_is_the_fields_own_what_follows_it_is_marked_by_the_engine_by_the_same_chain_and_a_profile_link_is_not_touched(self):
+        parent = F("q", self.LABEL, "textarea", parent="Resume/CV")
+        child = F("c", "Please tell us more about that", "textarea", parent=self.LABEL)
+        got = plan(BASE + [parent, child], scan=[{"name": "q", "never_storable": True}])
+        self.assertEqual(got.get("c").net_never, (), "an unmarked field after a marked one takes nothing from the mark")
+        got = plan(BASE + [parent, child], scan=[{"name": "q", "never_storable": True}, {"name": "c", "never_storable": True}])
+        self.assertIn("personal", got.get("c").net_never)
+        link = F("l", "LinkedIn profile", "input_text", parent="Resume/CV")
+        facts = copy.deepcopy(apply_helpers.FACTS)
+        facts["contact"]["linkedin"] = "https://linkedin.example/in/sam"
+        kept = plan(BASE + [link], sources(facts=facts), scan=[{"name": "l", "never_storable": True}]).get("l")
+        self.assertEqual((kept.source.kind, kept.net_never), ("profile", ()))
+
+    def test_a_scan_that_is_a_generator_is_still_joined_to_the_listing(self):
+        field = F("q", self.LABEL, "textarea", parent="Resume/CV")
+        scan = [{"name": "q", "id": "q", "type": "textarea", "question": self.LABEL, "required_any": False, "visible_css": True}]
+        self.assertEqual(kinds(plan(BASE + [field], scan=iter(scan))), kinds(plan(BASE + [field], scan=scan)))
 
 
 class OrdinaryQuestionsFillOnlyAtTheirOwnCompanyTests(unittest.TestCase):
@@ -510,7 +561,7 @@ class NoCrossCompanyReuseTests(unittest.TestCase):
     """A. In Apply for me an answer library row is used at the company it was saved for, and never at another, whatever it is tagged."""
 
     # Wordings no list in this repo recognizes as personal: the safety must not rest on a list.
-    UNLISTED = ("Have you ever been refused a licence by a professional board?", "Have you ever been dismissed from a program for a rules violation?",
+    UNLISTED = ("Have you ever been refused a licence by a professional board?", "Have you ever been removed from a program for breaking its rules?",
                 "Is there anything in your past that could embarrass an employer?")
 
     def test_a_wording_no_list_recognizes_still_never_travels(self):

@@ -11,6 +11,7 @@
 //   container              {hiddenMirror, spanRequired, others}: the field container
 //   style, rect            computed style and box; without rect, visible_css is unknown
 //   tabIndex, ariaHiddenAncestor   for the visible_css checks beyond the box (rect.left too)
+//   section                {heading, id, className, ariaLabel}: the section the control sits in, read for a never-storable heading
 //   groupQuestion          {legend, labelledby, ariaLabel}: the fieldset or group a radio or
 //                          checkbox sits in, its legend or aria-labelledby text or aria-label
 import vm from "node:vm";
@@ -89,6 +90,24 @@ class StubGroup {
   }
 }
 
+// The section, fieldset or group a control sits in, as the engine reads it for a never-storable heading: its heading, id and aria-label.
+class StubSection {
+  constructor(descriptor) {
+    this.descriptor = descriptor;
+    this.id = descriptor.id || "";
+    this.className = descriptor.className || "";
+    this.parentElement = null;
+  }
+
+  querySelector(selector) {
+    return /^h2, h3/.test(selector) && this.descriptor.heading ? { textContent: this.descriptor.heading } : null;
+  }
+
+  getAttribute(name) {
+    return name === "aria-label" ? this.descriptor.ariaLabel || null : null;
+  }
+}
+
 class StubElement {
   constructor(descriptor) {
     this.tagName = String(descriptor.tag || "input").toUpperCase();
@@ -116,6 +135,7 @@ class StubElement {
     this.style = descriptor.style || null;
     this.tabIndex = descriptor.tabIndex ?? 0;
     this.ariaHiddenAncestor = Boolean(descriptor.ariaHiddenAncestor);
+    this.section = descriptor.section ? new StubSection(descriptor.section) : null;
     this.groupQuestion = descriptor.groupQuestion ? new StubGroup(descriptor.groupQuestion) : null;
     if (descriptor.rect) this.getBoundingClientRect = () => ({ right: 1000, bottom: 1000, ...descriptor.rect });
     this.parentElement = descriptor.container ? new StubContainer(this, descriptor.container) : null;
@@ -155,6 +175,7 @@ class StubElement {
       return new StubLabel([{ text: this.labelText }, { text: this.ownText, inner: true }]);
     }
     if (selector === 'fieldset, [role="radiogroup"], [role="group"]') return this.groupQuestion;
+    if (selector.startsWith("section, fieldset")) return this.section;
     if (selector === "[aria-hidden='true']") return this.ariaHiddenAncestor ? {} : null;
     if (selector === '[role="group"]' && this.group) {
       return { getAttribute: (name) => (name === "aria-required" && this.group.ariaRequired ? "true" : null) };

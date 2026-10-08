@@ -2386,6 +2386,14 @@ only tightens what may be done with a question the classifier called ordinary:
   ("Asian", "White", "$40,000-$50,000"). The lists are best-effort: they do not catch every wording (a fresh one is
   at worst saved for one company), and the extension's Save can only judge the question in front of it plus the chain
   of follow-ups above it (below).
+- **A heading can make every question under it never storable.** The listing reports the demographic, compliance and data
+  compliance blocks as sections of their own, and `classify_sensitive` already sends every field in them through the store. The
+  page shows the same blocks, and a custom question can sit under one, under a heading or an id that says demographic, voluntary
+  self-identification, equal employment opportunity, compliance, background check, criminal or diversity (`NET_SECTION`,
+  repeated as `SECTION_NEVER` and pinned by the `sections` rows of `broad_net.json`). The engine reads the section, fieldset or
+  group around each control and marks it `never_storable`; `build_plan` takes that mark from the scan, for a custom question that
+  is not a profile link, and leaves the question for the student. Over-blocking costs a Save button; a title like "Apply for
+  Compliance Analyst" over the whole form is read the same way.
 - **No checkbox or agreement control is filled from the answer library** (D9 B). A checkbox, single or a group, never is;
   nor is a select or multiselect whose option labels, heading or description agree to, accept, acknowledge, consent to,
   certify, attest or confirm something (an agreement word in the heading alone is enough: "Do you certify that your

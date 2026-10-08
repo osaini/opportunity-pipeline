@@ -112,14 +112,14 @@ The entry flagged for an owner decision is
 
 ## Apply for me
 
-The first three were left open by PR #54 (the fail-closed net) and recorded here on 2026-10-03. Apply for me never carries an answer across companies, so each of those can at worst affect one company's own saved answer, and the student still presses Submit (D1 B). The next six were found while building the rehearsal engine (M5a), and the last four while building Finish in browser (M5b part 2); none was fixed there.
+The first was one of three left open by PR #54 (the fail-closed net) and recorded here on 2026-10-03; the other two were fixed on 2026-10-08 and the first narrowed. Apply for me never carries an answer across companies, so it can at worst affect one company's own saved answer, and the student still presses Submit (D1 B). The next six were found while building the rehearsal engine (M5a), and the last four while building Finish in browser (M5b part 2); none was fixed there.
 
-### The broad never-storable net misses most fresh wordings
-- **Severity:** medium (PR #54 review)
-- **Where:** `opportunity_app/apply/classify.py` `NET_TOPICS` / `net_topics()`; `apps/extension/apply-engine.js` `netTopics`
-- **What happens:** In the PR #54 review, 29 of 30 newly written never-storable wordings (criminal history, demographics, money, security clearance phrased in other words) were not caught, and two wordings from confirmed finding 0 still are not. A missed question is treated as ordinary, so the student can save its answer for that company and a later posting at the same company fills it.
-- **Suggested fix:** Widen the net from a labelled set of real Greenhouse questions, or treat every custom question in a demographic, compliance or background section as never storable.
-- **Regression suite:** tests/ unittest (`test_apply_broad_net`, `tests/fixtures/apply/broad_net.json`)
+### The broad never-storable net still misses wordings no list has, and a heading covers only the questions under it
+- **Severity:** medium (PR #54 review; narrowed on 2026-10-08)
+- **Where:** `opportunity_app/apply/classify.py` `NET_TOPICS` / `net_topics()` / `NET_SECTION`; `apps/extension/apply-engine.js` `netTopics` / `inNeverSection`
+- **What happens:** The lists were widened from a fresh set of 128 never-storable wordings (criminal history, demographics, pay, security): the net missed 59 of them before and misses 11 now. Those left have no keyword to read ("Have you ever been fired?", "Do you have a record of any violations?", "Did you grow up in a rural community?", "Do you have relatives who live outside the US?"), or are immigration-status questions the precise classifier already files by category. Every question under a demographic, compliance or background heading is now never storable whatever it says (the engine reads the page's headings, and the plan takes the engine's mark from the scan), but a custom question under a plain heading ("Application questions") or none still depends on the lists. A missed question is treated as ordinary, so the student can save its answer for that company and a later posting at the same company fills it; nothing carries across companies.
+- **Suggested fix:** Keep adding wordings from real Greenhouse questions as students meet them. A word list cannot be complete; the per-company rule is what bounds a miss.
+- **Regression suite:** tests/ unittest (`test_apply_broad_net`, `tests/fixtures/apply/broad_net.json`), node tests/extension/run_tests.mjs
 
 ### A rehearsal does not notice a multi-page Greenhouse form, so it can call a form it only half read "rehearsed"
 - **Severity:** medium (found 2026-10-02, while building the rehearsal engine, M5a)

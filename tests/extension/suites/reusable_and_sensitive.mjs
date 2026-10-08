@@ -328,3 +328,36 @@ tests.a_one_option_select_and_an_agreement_in_other_words_never_carry_a_reusable
   const row = [{ id: "r", question: "Which team are you most interested in?", answer: "Controls", company: "Acme Robotics", tags: ["reusable"] }];
   assert.equal(loadContentScript(plain).scan(profile, row, "Acme Robotics").fields[0].confidence, 0.9, "an ordinary choice still matches at its own company");
 };
+
+tests.the_section_headings_match_the_shared_vectors_the_python_plan_also_runs = () => {
+  // apply.classify.section_never repeats this rule; tests/fixtures/apply/broad_net.json ("sections").
+  const { sections } = loadApplyFixture("broad_net.json");
+  const ext = loadContentScript(pageOf({ tag: "input", type: "text", id: "q", label: "Q" }), { contentScript: false });
+  assert.ok(sections.length >= 15);
+  for (const { text, never } of sections) assert.equal(ext.engine.sectionNeverText(text), never, text);
+  assert.equal(ext.engine.sectionNeverText(undefined), false);
+};
+
+tests.every_question_under_a_demographic_compliance_or_background_heading_is_never_storable = () => {
+  // A wording no list knows, under three headings: the question is left for the student, nothing carries onto it, and the panel offers no Save.
+  const question = "What do you enjoy most about robotics projects";
+  const underHeading = (section) => pageOf(
+    { tag: "input", type: "text", id: "question_1", name: "question_1", label: "Tell us about your best project" },
+    { tag: "input", type: "text", id: "question_2", name: "question_2", label: question, section },
+  );
+  const row = [{ id: "r", question, answer: "Answer", company: "Acme Robotics", tags: ["reusable"] }];
+  for (const section of [{ heading: "Voluntary Self-Identification" }, { heading: "Demographic information" }, { id: "eeoc_fields" }, { ariaLabel: "Background check disclosure" }, { heading: "Compliance" }]) {
+    const scanned = loadContentScript(underHeading(section)).scan(profile, row, "Orbit Systems");
+    assert.equal(fieldById(scanned, "question_2").never_storable, true, JSON.stringify(section));
+    assert.equal(preTicked(scanned, "question_2"), false, JSON.stringify(section));
+    assert.equal(fieldById(scanned, "question_1").never_storable, false, "a question outside it is untouched");
+  }
+  for (const section of [{ heading: "Your information" }, { heading: "Application questions" }, { heading: "Your background in robotics" }, undefined]) {
+    const scanned = loadContentScript(underHeading(section)).scan(profile, row, "Acme Robotics");
+    assert.equal(fieldById(scanned, "question_2").never_storable, false, JSON.stringify(section));
+    assert.equal(fieldById(scanned, "question_2").confidence, 0.9, "an ordinary section leaves the same company's row exact");
+  }
+  // The standard profile fields are filled from the profile whatever the heading says; only their Save is hidden.
+  const standard = loadContentScript(pageOf({ tag: "input", type: "text", id: "first_name", name: "first_name", label: "First Name", section: { heading: "Demographic information" } })).scan(profile, [], "Acme Robotics");
+  assert.equal(fieldById(standard, "first_name").proposed_value, "Test");
+};

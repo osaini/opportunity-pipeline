@@ -286,6 +286,7 @@ NET_TOPICS: dict[str, tuple[str, ...]] = {
         r"\bguilty", r"\bno contest", r"\bnolo\b", r"\bplea(?:d|ded)?\b", r"\bpled\b", r"\bwarrant", r"\bdui\b", r"\bdwi\b", r"\bjail", r"\bprison", r"\bpolice", r"\bindict", r"\blegal proceeding", r"\badjudicat", r"\bexpunge", r"\bsealed\b", r"\bdetained\b",
         r"\blegal matters?", r"\brestraining order", r"\blicen[sc]e\b.{0,40}\b(?:suspen|revo)", r"\blitigation", r"\blaw enforcement",
         r"\bcaution(?:ed|s)?\b", r"\boffender",
+        r"\blawsuit", r"\bsued\b", r"\bdefendant", r"\bliable\b", r"\boutstanding judgm", r"\bjudgments? against", r"(?<!cross )(?<!multi )(?<!inter )\bdisciplinary", r"\bdisciplined (?:by|for)\b", r"\b(?:traffic|moving|legal|ethics|policy|compliance) violation", r"\bviolated (?:any )?(?:law|polic|rule)", r"\bfraud", r"\bdebar", r"\b(?:under|subject (?:of|to)) (?:an? )?(?:investigation|inquiry)", r"\binvestigated by\b", r"\bjustice system", r"\bdriving record", r"\bmotor vehicle record", r"\bbackground screen", r"\bcivil (?:suit|case|action|judg)", r"\bmisconduct", r"\blegal disputes?", r"\b(?:fired|terminated|dismissed) (?:from|for)\b", r"\basked to resign",
     ),
     "demographic": (
         r"\bgender", r"\bsex", r"\bfemales?\b", r"\bmales?\b", r"\bwom[ae]n\b", r"\bnon ?binary\b", r"\brace\b", r"\bracial", r"\bethnic", r"\bhispanic", r"\blatin[oax]", r"\bveteran", r"\bmilitary",
@@ -295,6 +296,7 @@ NET_TOPICS: dict[str, tuple[str, ...]] = {
         r"\bperson of colou?r", r"\bpeople of colou?r", r"\bbipoc", r"\bblack\b", r"\bindigenous", r"\bnative american", r"\balaska native", r"\bpacific islander", r"\bunderrepresent", r"\bminorit", r"\bover 40\b", r"\bborn\b", r"\bnational origin", r"\bmedical", r"\bhealth condition", r"\baccommodat", r"\bnational guard", r"\breserves\b", r"\bneurodiver", r"\bhe him\b", r"\bshe her\b", r"\bthey them\b", r"\braces\b",
         r"\blearning (?:difference|disabilit)", r"\badhd\b", r"\bdyslex", r"\bautis", r"\bdeaf", r"\bhard of hearing", r"\bchronic", r"\bcaregiver",
         r"\bchildren\b", r"\bcaste\b", r"\baboriginal", r"\btorres strait", r"\bfirst language", r"\bmother tongue",
+        r"\bfirst gen", r"\bfirst in (?:your |the )?family", r"\bparents? or guardians?", r"\bsingle parent", r"\bdependents\b", r"\bany dependent", r"\bworkplace (?:adjustment|accommodation)", r"\bhow do you identify$", r"\bidentify as\b", r"\bidentify with (?:a|an|any|the following|one)\b", r"\bwhich (?:of these |of the following )?groups? (?:do you|best|describe)", r"\bheritage\b", r"\bfree or reduced", r"\bpell\b", r"\btribal", r"(?<!good )\bfaith\b", r"\bsocioeconomic",
     ),
     "money": (
         r"\bsalar", r"\bcompensat", r"\bpay\b", r"\bpaid\b", r"\bwages?\b", r"\bstipend", r"\bhourly\b", r"\bremunerat",
@@ -303,8 +305,9 @@ NET_TOPICS: dict[str, tuple[str, ...]] = {
         r"\bincome", r"\bctc\b", r"\bote\b", r"\bper hour\b", r"\bhow much (?:do you |are you )?(?:currently |now )?(?:make|earn|paid)", r"\b(?:are|were|was) you (?:currently |now |still )?(?:making|earning)\b",
         r"\bcomp\b(?! (?:sci|science|eng|engineering|arch|architecture|org|bio|lit|vision|geometry|neuro|networks?|theory|systems?)\b)",
         r"\bfixed component", r"\blast drawn", r"\bvariable (?:pay|component)", r"\byour ask\b", r"\bbankrupt", r"\bcredit (?:score|check|history|report)",
+        r"\bdesired base\b", r"\b(?:current|expected|desired|total|target|annual) package\b", r"\blooking to (?:make|earn)$", r"\b(?:expects?|hope|hopes|want|wants|need|needs|like|plan|plans) to (?:earn|be paid)\b", r"\bexpect(?:s|ed)? to make\b", r"\bfinancial (?:expectation|requirement|need)", r"\bacceptable rate\b", r"\brate expectations?\b", r"\bequity (?:expectation|grant|package|compensation|stake)", r"\b(?:seeking|expect\w*|want\w*|require\w*) (?:\w+ )?equity\b", r"\btotal cash\b", r"\bcash expectations?", r"\bhow much equity", r"\bequity (?:are|do|would) you",
     ),
-    "security": (r"\bclearance", r"\bexport", r"\bitar\b", r"\bear\b", r"\bu s person", r"\bus person", r"\bsecurity", r"\bpolygraph", r"\btop secret", r"\bts sci\b", r"\bdod\b", r"\bpublic trust", r"\bbackground investigation", r"\bsanction", r"\bofac\b", r"\bsecret clearance", r"\bvetting", r"\bpoly\b", r"\baccess authori", r"\bnato\b"),
+    "security": (r"\bclearance", r"\bexport", r"\bitar\b", r"\bear\b", r"\bu s person", r"\bus person", r"\bsecurity", r"\bpolygraph", r"\btop secret", r"\bts sci\b", r"\bdod\b", r"\bpublic trust", r"\bbackground investigation", r"\bsanction", r"\bofac\b", r"\bsecret clearance", r"\bvetting", r"\bpoly\b", r"\baccess authori", r"\bnato\b", r"\bactive (?:secret|ts|sci)\b", r"\btraffic in arms", r"\bclassified (?:information|material|access)", r"\bgranted (?:an? )?sci\b", r"\bsci (?:access|eligib|clearance)", r"\bcommon access card", r"\bcac card", r"\bforeign (?:contacts?|government|travel|interests?|influence)", r"\bcountr(?:y|ies) of concern", r"\bcontrolled (?:technology|unclassified|information)"),
     "agreement": (
         r"\bagree", r"\backnowledg", r"\bconsent", r"\bcertif", r"\battest", r"\baffirm", r"\bdeclar", r"\bconfirm", r"\bunderstand that",
         r"\bunderstood\b", r"\baccept", r"\bterms\b", r"\bpolic(?:y|ies)\b", r"\bprivacy", r"\bnotice", r"\bdisclos", r"\bstatement",
@@ -335,6 +338,8 @@ NET_BENIGN = (
     r"\bsecurity (?:tools?|testing|concepts|best practices|research|vulnerabilit(?:y|ies))\b",
     r"\bexport(?:s|ed|ing)? (?:data|files?|results?|reports?|tables?|to (?:csv|excel|pdf|json|xml))\b",
     r"\bhourly (?:availability|schedule|commitment)\b",
+    r"\bfraud (?:detection|prevention|analytics|analysis|team|models?)\b",
+    r"\banti ?fraud\b",
 )
 _BENIGN = re.compile("|".join(NET_BENIGN))
 _ADULT = "adult"   # an 18-or-older wording: possibly sensitive, but a storable kind, so never on the never-storable list
@@ -349,7 +354,7 @@ CATEGORY_TOPIC = {
 NEVER_TOPICS = frozenset((*NEVER_STORABLE_TOPICS, "personal"))
 NET_WORDS = {
     "criminal": "criminal history", "demographic": "personal details such as age, gender or background", "money": "pay",
-    "security": "security clearance or export control", "agreement": "a legal agreement", "personal": "a personal question",
+    "security": "security clearance or export control", "agreement": "a legal agreement", "personal": "personal details",
 }
 
 
@@ -366,6 +371,25 @@ def net_topics(text: Any) -> tuple[str, ...]:
 def possibly_sensitive(text: Any) -> bool:
     """Whether the broad net finds anything in a text. It says "look closer", never which category."""
     return bool(net_topics(text))
+
+
+# The heading of a part of the form whose questions are never storable, whatever they say: a demographic or voluntary self-identification
+# block, equal employment opportunity, a compliance block, a background-check or criminal-record block, a diversity survey. The listing
+# reports the first three kinds as sections of their own (``compliance``, ``demographic``, ``data_compliance``), and classify_sensitive
+# already sends every field in them through the store, never the library; the page shows each under a heading, and a custom question
+# can sit under one. Every question under such a heading is left for the student: a wording the lists above miss ("How do you identify?")
+# is still under its heading. The engine repeats this as ``SECTION_NEVER`` and reads it on the page (the headings, ids and labels around
+# a control); the plan reads the engine's answer from the scan (``never_storable``, see build_plan). tests/fixtures/apply/broad_net.json
+# ("sections") is run by both suites.
+NET_SECTION = re.compile(
+    r"\bdemographic|\bself identif|\bequal (?:employment|opportunity)|\beeoc?\b|\bcompliance|\bcriminal"
+    r"|\bbackground (?:check|screen|investigation|information|disclosure|question)|\bvoluntary (?:disclosure|survey|information|self)|\bdiversity"
+)
+
+
+def section_never(heading: Any) -> bool:
+    """Whether the words around a part of the form (its heading, label, id or class) say its questions are never storable."""
+    return bool(NET_SECTION.search(normalized_text(heading)))
 
 
 def never_storable(text: Any) -> bool:

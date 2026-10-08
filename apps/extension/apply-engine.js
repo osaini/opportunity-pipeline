@@ -264,6 +264,7 @@
       /\bguilty/, /\bno contest/, /\bnolo\b/, /\bplea(?:d|ded)?\b/, /\bpled\b/, /\bwarrant/, /\bdui\b/, /\bdwi\b/, /\bjail/, /\bprison/, /\bpolice/, /\bindict/, /\blegal proceeding/, /\badjudicat/, /\bexpunge/, /\bsealed\b/, /\bdetained\b/,
       /\blegal matters?/, /\brestraining order/, /\blicen[sc]e\b.{0,40}\b(?:suspen|revo)/, /\blitigation/, /\blaw enforcement/,
       /\bcaution(?:ed|s)?\b/, /\boffender/,
+      /\blawsuit/, /\bsued\b/, /\bdefendant/, /\bliable\b/, /\boutstanding judgm/, /\bjudgments? against/, /(?<!cross )(?<!multi )(?<!inter )\bdisciplinary/, /\bdisciplined (?:by|for)\b/, /\b(?:traffic|moving|legal|ethics|policy|compliance) violation/, /\bviolated (?:any )?(?:law|polic|rule)/, /\bfraud/, /\bdebar/, /\b(?:under|subject (?:of|to)) (?:an? )?(?:investigation|inquiry)/, /\binvestigated by\b/, /\bjustice system/, /\bdriving record/, /\bmotor vehicle record/, /\bbackground screen/, /\bcivil (?:suit|case|action|judg)/, /\bmisconduct/, /\blegal disputes?/, /\b(?:fired|terminated|dismissed) (?:from|for)\b/, /\basked to resign/,
     ],
     demographic: [
       /\bgender/, /\bsex/, /\bfemales?\b/, /\bmales?\b/, /\bwom[ae]n\b/, /\bnon ?binary\b/, /\brace\b/, /\bracial/, /\bethnic/, /\bhispanic/, /\blatin[oax]/, /\bveteran/, /\bmilitary/,
@@ -273,6 +274,7 @@
       /\bperson of colou?r/, /\bpeople of colou?r/, /\bbipoc/, /\bblack\b/, /\bindigenous/, /\bnative american/, /\balaska native/, /\bpacific islander/, /\bunderrepresent/, /\bminorit/, /\bover 40\b/, /\bborn\b/, /\bnational origin/, /\bmedical/, /\bhealth condition/, /\baccommodat/, /\bnational guard/, /\breserves\b/, /\bneurodiver/, /\bhe him\b/, /\bshe her\b/, /\bthey them\b/, /\braces\b/,
       /\blearning (?:difference|disabilit)/, /\badhd\b/, /\bdyslex/, /\bautis/, /\bdeaf/, /\bhard of hearing/, /\bchronic/, /\bcaregiver/,
       /\bchildren\b/, /\bcaste\b/, /\baboriginal/, /\btorres strait/, /\bfirst language/, /\bmother tongue/,
+      /\bfirst gen/, /\bfirst in (?:your |the )?family/, /\bparents? or guardians?/, /\bsingle parent/, /\bdependents\b/, /\bany dependent/, /\bworkplace (?:adjustment|accommodation)/, /\bhow do you identify$/, /\bidentify as\b/, /\bidentify with (?:a|an|any|the following|one)\b/, /\bwhich (?:of these |of the following )?groups? (?:do you|best|describe)/, /\bheritage\b/, /\bfree or reduced/, /\bpell\b/, /\btribal/, /(?<!good )\bfaith\b/, /\bsocioeconomic/,
     ],
     money: [
       /\bsalar/, /\bcompensat/, /\bpay\b/, /\bpaid\b/, /\bwages?\b/, /\bstipend/, /\bhourly\b/, /\bremunerat/,
@@ -281,8 +283,9 @@
       /\bincome/, /\bctc\b/, /\bote\b/, /\bper hour\b/, /\bhow much (?:do you |are you )?(?:currently |now )?(?:make|earn|paid)/, /\b(?:are|were|was) you (?:currently |now |still )?(?:making|earning)\b/,
       /\bcomp\b(?! (?:sci|science|eng|engineering|arch|architecture|org|bio|lit|vision|geometry|neuro|networks?|theory|systems?)\b)/,
       /\bfixed component/, /\blast drawn/, /\bvariable (?:pay|component)/, /\byour ask\b/, /\bbankrupt/, /\bcredit (?:score|check|history|report)/,
+      /\bdesired base\b/, /\b(?:current|expected|desired|total|target|annual) package\b/, /\blooking to (?:make|earn)$/, /\b(?:expects?|hope|hopes|want|wants|need|needs|like|plan|plans) to (?:earn|be paid)\b/, /\bexpect(?:s|ed)? to make\b/, /\bfinancial (?:expectation|requirement|need)/, /\bacceptable rate\b/, /\brate expectations?\b/, /\bequity (?:expectation|grant|package|compensation|stake)/, /\b(?:seeking|expect\w*|want\w*|require\w*) (?:\w+ )?equity\b/, /\btotal cash\b/, /\bcash expectations?/, /\bhow much equity/, /\bequity (?:are|do|would) you/,
     ],
-    security: [/\bclearance/, /\bexport/, /\bitar\b/, /\bear\b/, /\bu s person/, /\bus person/, /\bsecurity/, /\bpolygraph/, /\btop secret/, /\bts sci\b/, /\bdod\b/, /\bpublic trust/, /\bbackground investigation/, /\bsanction/, /\bofac\b/, /\bsecret clearance/, /\bvetting/, /\bpoly\b/, /\baccess authori/, /\bnato\b/],
+    security: [/\bclearance/, /\bexport/, /\bitar\b/, /\bear\b/, /\bu s person/, /\bus person/, /\bsecurity/, /\bpolygraph/, /\btop secret/, /\bts sci\b/, /\bdod\b/, /\bpublic trust/, /\bbackground investigation/, /\bsanction/, /\bofac\b/, /\bsecret clearance/, /\bvetting/, /\bpoly\b/, /\baccess authori/, /\bnato\b/, /\bactive (?:secret|ts|sci)\b/, /\btraffic in arms/, /\bclassified (?:information|material|access)/, /\bgranted (?:an? )?sci\b/, /\bsci (?:access|eligib|clearance)/, /\bcommon access card/, /\bcac card/, /\bforeign (?:contacts?|government|travel|interests?|influence)/, /\bcountr(?:y|ies) of concern/, /\bcontrolled (?:technology|unclassified|information)/],
     agreement: [
       /\bagree/, /\backnowledg/, /\bconsent/, /\bcertif/, /\battest/, /\baffirm/, /\bdeclar/, /\bconfirm/, /\bunderstand that/,
       /\bunderstood\b/, /\baccept/, /\bterms\b/, /\bpolic(?:y|ies)\b/, /\bprivacy/, /\bnotice/, /\bdisclos/, /\bstatement/,
@@ -306,7 +309,20 @@
     /\bsecurity (?:tools?|testing|concepts|best practices|research|vulnerabilit(?:y|ies))\b/,
     /\bexport(?:s|ed|ing)? (?:data|files?|results?|reports?|tables?|to (?:csv|excel|pdf|json|xml))\b/,
     /\bhourly (?:availability|schedule|commitment)\b/,
+    /\bfraud (?:detection|prevention|analytics|analysis|team|models?)\b/,
+    /\banti ?fraud\b/,
   ].map((item) => item.source).join("|"), "g");
+  // The heading of a part of the form whose questions are never storable, whatever they say (a demographic or voluntary self-identification
+  // block, equal employment opportunity, a compliance block, a background-check or criminal-record block, a diversity survey). The listing
+  // reports the first three as sections of their own and the page shows each under a heading. Python's apply.classify.NET_SECTION repeats
+  // this; tests/fixtures/apply/broad_net.json ("sections") is run by both suites. Read on the normalized text.
+  const SECTION_NEVER = /\bdemographic|\bself identif|\bequal (?:employment|opportunity)|\beeoc?\b|\bcompliance|\bcriminal|\bbackground (?:check|screen|investigation|information|disclosure|question)|\bvoluntary (?:disclosure|survey|information|self)|\bdiversity/;
+  // The parts of a page a control can sit in: a section, a fieldset, a region or group, or anything whose id or class names one of those blocks.
+  const SECTION_SELECTOR = [
+    "section", "fieldset", '[role="region"]', '[role="group"]', "[data-section]",
+    ...["demographic", "eeo", "compliance", "self-identif", "diversity", "background-check"].flatMap((word) => [`[id*="${word}" i]`, `[class*="${word}" i]`]),
+  ].join(", ");
+
   // An 18-or-older wording is its own topic ("adult"): possibly sensitive, but a storable kind, so never on the never-storable list.
   const AGE_TAIL = "(?: years?)?(?: (?:of age|old|or older|or over|and older|and over))*";
   const AGE_18 = `\\b(?:(?:at least|over|above|older than) (?:the age of )?18${AGE_TAIL}|(?:the )?age of 18${AGE_TAIL}|18(?: years?)?(?: (?:of age|old|or older|or over|and older|and over))+|(?:are you|you are|must be) 18(?!\\d)${AGE_TAIL})`;
@@ -329,6 +345,31 @@
 
   function neverStorable(text) {
     return netTopics(text).some((topic) => NEVER_STORABLE_TOPICS.includes(topic));
+  }
+
+  function sectionNeverText(text) {
+    return SECTION_NEVER.test(plainWords(text));
+  }
+
+  // Whether the control sits under a heading that makes its question never storable: the heading, label, id or class of the section,
+  // fieldset or group around it, up to four levels out. A heading that merely names the whole form ("Apply for Compliance Analyst") is
+  // read the same, so the cost of a title like that is a Save button the panel does not show.
+  function inNeverSection(control) {
+    if (typeof control.closest !== "function") return false;
+    const owner = control.ownerDocument || document;
+    let node = null;
+    try { node = control.closest(SECTION_SELECTOR); } catch (_) { return false; }
+    for (let depth = 0; node && depth < 4; depth += 1) {
+      let heading = "";
+      try { heading = typeof node.querySelector === "function" ? collapse(node.querySelector("h2, h3, h4, h5, h6, legend")?.textContent) : ""; } catch (_) { heading = ""; }
+      const words = [node.id, typeof node.className === "string" ? node.className : "", node.getAttribute?.("aria-label"),
+        textOfIds(owner, node.getAttribute?.("aria-labelledby")), heading].join(" ");
+      if (sectionNeverText(words)) return true;
+      let outer = null;
+      try { outer = typeof node.parentElement?.closest === "function" ? node.parentElement.closest(SECTION_SELECTOR) : null; } catch (_) { outer = null; }
+      node = outer;
+    }
+    return false;
   }
 
   function needsLabelKey(key) {
@@ -560,9 +601,11 @@
       const agrees = type === "select" && (choice.length === 1 || AGREEMENT_OPTION.test(plainWords([read, ...choice].join(" ")))
         || choice.some((option) => netTopics(option).includes("agreement")));
       const typed = !["select", "radio", "checkbox", "file", "custom_select"].includes(type);
+      // Under a demographic, compliance or background heading every question is left for the student (apply.classify.section_never).
+      const section = inNeverSection(control);
       const hit = SENSITIVE.test(screened) || SENSITIVE.test(question) || possiblySensitive(read) || fromOptions.length > 0 || agrees
-        || (typed && SIGNATURE.test(plainWords(read)));
-      const never = neverStorable(`${question} ${described}`) || fromOptions.some((topic) => NEVER_STORABLE_TOPICS.includes(topic));
+        || (typed && SIGNATURE.test(plainWords(read))) || section;
+      const never = neverStorable(`${question} ${described}`) || fromOptions.some((topic) => NEVER_STORABLE_TOPICS.includes(topic)) || section;
       const shaped = followUpShaped(question);
       const follows = passes;
       const followsNever = passesNever && shaped;
@@ -746,5 +789,6 @@
     netTopics,
     possiblySensitive,
     neverStorable,
+    sectionNeverText,
   });
 })();
