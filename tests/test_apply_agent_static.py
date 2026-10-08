@@ -998,7 +998,8 @@ class PinnedRules(unittest.TestCase):
         self.assertEqual(DENYLIST, (
             "autofill my application", "apply with seek", "apply with linkedin", "locate me", "dropbox", "google drive", "enter manually",
         ))
-        self.assertEqual(CLICK_PURPOSES, ("select_open", "select_option", "select_close", "submit", "captcha_checkbox"))
+        # option_pick is a press on an option of a list the app typed into (Lever's location), inside that field's own container, and nothing else.
+        self.assertEqual(CLICK_PURPOSES, ("select_open", "select_option", "select_close", "option_pick", "submit", "captcha_checkbox"))
         self.assertFalse(apply_agent.LEGACY_ENABLED)
         self.assertEqual(apply_agent.SCREENSHOT_MASK_COLOR, "#000000")
 

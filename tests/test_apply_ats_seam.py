@@ -279,6 +279,7 @@ class AdapterProtocolTests(unittest.TestCase):
             "form_frame", "detect_page", "loader_paths", "uploads_on_attach", "reads_on_attach", "posting_ids", "lookup_token", "confirmation_ids",
             "security_code_prompt", "security_code_inputs", "captcha_widget",
             "control", "control_kind", "is_react_select", "field_container", "choices", "fill_location", "read_options",
+            "scan", "page_facts", "page_managed", "owns", "is_typeahead", "parse_state", "guessed_fields", "cleared", "refuses",
         })
 
     def test_the_agent_calls_nothing_on_its_adapter_that_the_protocol_does_not_name(self):
@@ -776,7 +777,7 @@ class SecondAdapter(apply_agent.GreenhouseAdapter):
     def detect_page(self, page):
         return self.answers["kind"]
 
-    def loader_paths(self, html):
+    def loader_paths(self, html, url=""):
         return self.answers["loader"]
 
     def uploads_on_attach(self, frame):

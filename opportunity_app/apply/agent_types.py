@@ -100,6 +100,9 @@ HANDOFF_UPLOAD = ("The form tried to upload a file, which the app does not allow
                   "the window. Nothing was sent. Apply from the posting instead.")
 HANDOFF_HIDDEN = ('The form has a hidden field where the app expected "{question}", so the app stopped before filling '
                   "it. Nothing was sent. Apply from the posting instead.")
+# A page that reads an attached file at once (Lever): the one file read the app allowed is planned, so any other send before hand-over is the form doing what the app did not plan (spec 6.9).
+HANDOFF_UNPLANNED_FILE = "The form tried to send a file the app did not plan, so the app stopped it. Nothing was sent."
+HANDOFF_UNPLANNED_SEND = "The form tried to send something the app did not plan, so the app stopped it. Nothing was sent."
 WINDOW_CLOSED = "You closed the window. No application was sent."
 WINDOW_UNCONFIRMED = ("The app couldn't confirm the Chromium window closed, so it can't be sure nothing was sent. "
                       "Check your email for a confirmation from {ats}.")
@@ -130,6 +133,7 @@ class ApplyTimeouts:
     code_poll_s: float = 15.0        # between two asks while the reader says waiting (= security_code.POLL_EVERY)
     code_reply_s: float = 45.0       # an ask with no reply after this is SHOWN as waiting; it stays pending (= REPLY_TIMEOUT_S)
     heartbeat_s: float = 20.0        # every wait loop heartbeats at least this often (spec 5.2 rule 4: 30 s)
+    parse_s: float = 30.0            # Lever: how long the app waits for the page to finish reading an attached résumé (spec 6.5)
 
     @property
     def after_hand_over_s(self) -> float:   # one budget shared by every wait after hand-over except the outcome windows
@@ -220,6 +224,56 @@ class HandoffLink(Protocol):
     def abandon_code(self) -> None: ...                            # the agent stops waiting for its ask: a reply that comes later is dropped
     def front_requested(self) -> bool: ...                         # True once for each OP_FRONT
     def parent_gone(self) -> bool: ...                             # the pipe hit end-of-file or a bad frame
+
+
+class AdapterBase:
+    """What an ATS adapter does when its ATS needs nothing special: the behaviours Greenhouse has (docs/phase5-lever-handoff-spec.md 5.2, 6.4 to 6.8).
+
+    ``ApplyAgent`` asks an adapter these things as well as the ones ``apply.ats.AtsAdapter`` names beside them. An adapter overrides what its
+    form does differently: Lever reads the form with a scan of its own (``uses_engine`` False), reads an attached file at once, types its
+    location one key at a time, and keeps fields of its own (``owns``). The attributes say which of the agent's extra steps the ATS needs.
+    """
+
+    uses_engine = True                    # the shared extension engine scans the form (False: the adapter's own ``scan``)
+    closed_on_404 = False                 # an HTTP 404 on the posting's page means the posting is closed
+    waits_for_challenge = False           # a visible CAPTCHA challenge while the app fills makes it stop, touch nothing and wait for the student
+    required_from_load = False            # which controls are required is read from the page as it loaded (its script drops ``required`` from every box once one is ticked)
+    page_sentences: dict[str, str] = {}   # a kind of page ``detect_page`` answers -> the sentence a run ends with (needs_you) when it finds it
+
+    def scan(self, frame: Any) -> list[dict[str, Any]]:
+        raise NotImplementedError("this adapter reads its form with the shared engine")
+
+    def page_facts(self, frame: Any) -> dict[str, str]:
+        """Facts the page itself carries (read only): ``account_id``, which the request rules compare a file read with, and ``resume_storage_id``, which the page sets for a file it read."""
+        return {}
+
+    def page_managed(self, frame: Any) -> dict[str, str]:
+        """The fields the page keeps for itself, by name, with their values now (read only). The app writes none of them."""
+        return {}
+
+    def owns(self, name: str) -> bool:
+        """Whether a control of this name is one the page keeps for itself (never filled, never checked as an answer)."""
+        return False
+
+    def is_typeahead(self, frame: Any, key: str) -> bool:
+        """Whether this text field is a list the student's confirmed label is chosen from, typed key by key (``fill_location``)."""
+        return False
+
+    def parse_state(self, frame: Any) -> str:
+        """After a file was attached to a page that reads it: working, success, failure, oversize, or "" for none yet."""
+        return ""
+
+    def guessed_fields(self, frame: Any) -> list[str]:
+        """The keys of the controls on the page that its file reader may have filled, in the form's order (empty when it reads nothing)."""
+        return []
+
+    def cleared(self, frame: Any, key: str) -> bool:
+        """Whether the control and anything the page keeps beside it hold nothing."""
+        return True
+
+    def refuses(self, locator: Any) -> bool:
+        """Whether this element is one the app never presses (the ATS's own Submit controls), whatever else the click allowlist says."""
+        return False
 
 
 class ApplyAgentLike(Protocol):
