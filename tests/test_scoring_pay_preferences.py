@@ -199,5 +199,66 @@ class PaidOnlyTests(unittest.TestCase):
         )
 
 
+class ReviewFindingsTests(unittest.TestCase):
+    """Found in the independent review of this branch; each failed on the code before its fix."""
+
+    UNPAID = "-35 unpaid, and you asked for paid roles only"
+
+    def test_a_stated_salary_is_not_judged_by_a_smaller_hourly_extra(self):
+        for text in (
+            "Salary range: $95,000 - $120,000 per year. Night shift differential of $2.00 per hour.",
+            "Compensation: $80K per year. Overtime is paid at $1.50 per hour above base.",
+            "Pay: $6,000 per month. Weekend premium of $3 per hour.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(_pay_reasons(text, minimum_hourly=25), [])
+
+    def test_a_parking_donation_or_reimbursement_rate_is_not_the_wage(self):
+        for text in (
+            "Garage parking costs $3 per hour.",
+            "We donate $10 per hour you volunteer.",
+            "Mileage and travel are reimbursed at $8 per hour of driving.",
+            "Night shift differential: $2 per hour.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(_pay_reasons(text, minimum_hourly=25), [])
+        self.assertEqual(
+            _pay_reasons("Garage parking costs $3 per hour. The internship pays $18 per hour.", minimum_hourly=25),
+            ["-15 pays $18/hour, below your $25/hour minimum"],
+        )
+
+    def test_another_currency_symbol_is_not_dollars(self):
+        self.assertEqual(_pay_reasons("Pay: CA$30 per hour.", minimum_hourly=40), [])
+        self.assertEqual(_pay_reasons("Pay: A$30 per hour.", minimum_hourly=40), [])
+        self.assertEqual(
+            _pay_reasons("Pay: US$30 per hour.", minimum_hourly=40),
+            ["-15 pays $30/hour, below your $40/hour minimum"],
+        )
+
+    def test_unpaid_leave_and_negated_unpaid_internships_are_not_an_unpaid_role(self):
+        for text in (
+            "Our sabbatical program offers unpaid leave after five years.",
+            "The program offers unpaid time off between rotations.",
+            "We never offer an unpaid internship: every intern is paid.",
+            "Unlike an unpaid internship, this role is fully paid with benefits.",
+            "This is not, and never will be, an unpaid internship.",
+            "We do not offer an unpaid internship.",
+            "Compensation: $80K per year. Our family leave program offers unpaid leave.",
+            "Compensation: $80K per year. Former interns describe it as an unpaid internship.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(_pay_reasons(text, paid_only=True), [])
+
+    def test_an_unpaid_role_is_still_unpaid(self):
+        for text in (
+            "This is an unpaid internship. Parking is $5 per hour.",
+            "No stipend is offered. This is an unpaid internship.",
+            "No prior experience is needed for this unpaid internship.",
+            "The internship is unpaid.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(_pay_reasons(text, paid_only=True), [self.UNPAID])
+
+
 if __name__ == "__main__":
     unittest.main()

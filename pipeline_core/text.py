@@ -15,19 +15,44 @@ from html.parser import HTMLParser
 from .identity import normalized
 
 
+# How the Ashby adapter opens the sentence it writes from the posting's structured pay. Scoring reads a description that
+# is only this sentence as no description.
+ASHBY_PAY_SENTENCE_START = "Pay listed on the Ashby posting:"
+
+# Elements that end a line of text. Without the break, "<li>1+ years of experience</li><li>Following graduation ...</li>"
+# reads as one sentence, and a later bullet becomes the tail of the one before.
+_BLOCK_TAGS = frozenset({
+    "address", "article", "blockquote", "br", "dd", "div", "dl", "dt", "footer", "h1", "h2", "h3", "h4", "h5", "h6",
+    "header", "hr", "li", "ol", "p", "pre", "section", "table", "tr", "ul",
+})
+# A character no posting text contains, standing for a block break until the whitespace is collapsed.
+_BLOCK_BREAK = "\x00"
+
+
 class _TextExtractor(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.parts: list[str] = []
 
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in _BLOCK_TAGS:
+            self.parts.append(_BLOCK_BREAK)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in _BLOCK_TAGS:
+            self.parts.append(_BLOCK_BREAK)
+
     def handle_data(self, data: str) -> None:
-        self.parts.append(data)
+        self.parts.append(data.replace(_BLOCK_BREAK, " "))
 
 
 def strip_html(value: str | None) -> str:
+    """The text of an HTML fragment: whitespace collapsed, with each block element (paragraph, list item, heading,
+    line break) ending its own line. Line breaks in the source itself are only whitespace, as a browser shows them."""
     parser = _TextExtractor()
-    parser.feed(html.unescape(value or ""))
-    return re.sub(r"\s+", " ", " ".join(parser.parts)).strip()
+    parser.feed(html.unescape((value or "").replace(_BLOCK_BREAK, " ")))
+    lines = re.sub(r"\s+", " ", " ".join(parser.parts)).split(_BLOCK_BREAK)
+    return "\n".join(line for line in (line.strip() for line in lines) if line)
 
 
 class _ApplyControlExtractor(HTMLParser):

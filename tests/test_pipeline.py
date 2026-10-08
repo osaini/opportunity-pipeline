@@ -57,6 +57,20 @@ class PipelineTests(unittest.TestCase):
     def test_strip_html(self):
         self.assertEqual(text.strip_html("<p>Build &amp; test</p>"), "Build & test")
 
+    def test_strip_html_ends_each_block_on_its_own_line(self):
+        # Found in review: list items and paragraphs ran together, so one bullet read as the tail of the one before.
+        self.assertEqual(
+            text.strip_html("<ul><li>1+ years of experience</li><li>Following graduation, rotate</li></ul>"),
+            "1+ years of experience\nFollowing graduation, rotate",
+        )
+        self.assertEqual(
+            text.strip_html("<h2>About</h2><p>We  build\n things.</p><p>Line one<br>line <b>two</b></p>"),
+            "About\nWe build things.\nLine one\nline two",
+        )
+        self.assertEqual(text.strip_html("Plain text\n with  a break"), "Plain text with a break")
+        self.assertEqual(text.strip_html("&lt;p&gt;One&lt;/p&gt;&lt;p&gt;Two&lt;/p&gt;"), "One\nTwo")
+        self.assertEqual(text.strip_html("<div><p></p></div>  "), "")
+
     def test_role_classification(self):
         self.assertEqual(text.classify_role("Mechanical Engineering Intern", ""), "internship")
         self.assertEqual(text.classify_role("Spring Co-op", ""), "co-op")

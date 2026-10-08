@@ -25,7 +25,9 @@ What the board adapters keep of a posting, so the score has something to read:
   date is Lever's creation time.
 - **Ashby** skips a posting its board marks as not listed (`isListed` false), since the company keeps it off its
   public page. When Ashby gives a structured USD salary paid by the year or the hour, the description gains a
-  sentence ("Pay listed on the Ashby posting: $211,400 - $290,600 per year.") so the pay filter can read it. Other
+  sentence ("Pay listed on the Ashby posting: $211,400 - $290,600 per year.") so the pay filter can read it. When
+  Ashby's summary says the posting has several ranges, the sentence keeps its words ("... per year (Multiple
+  Ranges)."). A posting whose only text is that sentence still counts as having no description. Other
   currencies, other periods, equity, bonus and commission are not written out.
 
 ### API keys
