@@ -588,6 +588,14 @@ class RehearsalTests(AgentCase):
                 self.assertEqual(len(self.letter_problems(run)), 1)
                 self.assertEqual(run.asked, [], "the runner is not asked about a file that is already wrong")
 
+    def test_a_letter_under_another_name_than_the_plan_shows_is_not_attached(self):
+        renamed = fakes.letter_payload(name="Example-Robotics-Other-Role-cover_letter-v2.pdf")
+        run = self.letter_run(files={"resume": fakes.resume_payload(), "cover_letter": renamed})
+        self.assertEqual(run.result.outcome, "rehearsed")
+        self.assertIsNone(run.seen["letter"], "the preview would name a file the employer did not get")
+        self.assertEqual(len(self.letter_problems(run)), 1)
+        self.assertEqual(run.asked, [], "the runner is not asked about a file that is already wrong")
+
     def test_a_missing_letter_file_is_a_gap_in_the_rehearsal(self):
         run = self.letter_run(files={"resume": fakes.resume_payload()})
         self.assertEqual(run.result.outcome, "rehearsed")

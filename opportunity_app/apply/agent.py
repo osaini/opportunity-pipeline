@@ -2146,10 +2146,13 @@ class ApplyAgent:
     @staticmethod
     def _file_matches(entry: Any, payload: FilePayload, letter: bool) -> bool:
         """The bytes are the ones the plan was made from. A résumé: they hash to the plan's hash. A letter: they hash to what the runner
-        stored for them, and the text they were rendered from is the text the plan names."""
+        stored for them, the text they were rendered from is the text the plan names, and the file's name is the one the plan shows."""
         digest = hashlib.sha256(payload.buffer).hexdigest()
         if letter:
-            return bool(payload.sha256) and digest == payload.sha256 and bool(payload.content_sha256) and payload.content_sha256 == _attr(entry, "file_sha256")
+            return (
+                bool(payload.sha256) and digest == payload.sha256 and bool(payload.content_sha256) and payload.content_sha256 == _attr(entry, "file_sha256")
+                and bool(payload.name) and payload.name == _attr(entry, "file_name")
+            )
         return digest == _attr(entry, "file_sha256")
 
     def _letter_current(self, key: str, entry: Any) -> bool:
