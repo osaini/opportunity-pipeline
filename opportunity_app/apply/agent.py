@@ -98,7 +98,7 @@ from .checks import (
     safe_host,
     student_submit_elsewhere,
 )
-from .ats import REGISTRY, AtsAdapter, spec_for
+from .ats import REGISTRY, AtsAdapter, AtsSpec, spec_for
 from .greenhouse import ATS_GREENHOUSE, BOARD_HOSTS, SUBMIT_HOST
 from .runs import INSTALL_PLAYWRIGHT, PlaywrightProbe
 
@@ -321,12 +321,19 @@ PRESS_CDP_CALLS = ("Page.enable", "Runtime.enable", "Runtime.addBinding", "Page.
 # route handler refuses a name outside the list (``unlisted_host``) before its own resolver is asked about it, in every mode and phase. The third-party widgets a board may load (Google Drive,
 # Dropbox, a recruiting-analytics script) do not load either: the app presses none of them.
 FONT_HOSTS = ("fonts.googleapis.com", "fonts.gstatic.com")   # whatever the ATS, its pages ask Google for their fonts
-RESOLVABLE_HOSTS: tuple[str, ...] = tuple(sorted({*(host for spec in REGISTRY for host in spec.route_policy.resolvable_hosts), *FONT_HOSTS}))
 
 
-def resolver_rule(extra_hosts: Sequence[str] = ()) -> str:
-    """The ``--host-resolver-rules`` switch: every name fails to resolve but ``RESOLVABLE_HOSTS`` (and ``extra_hosts``, for a test's loopback page)."""
-    return "--host-resolver-rules=MAP * ~NOTFOUND , " + " , ".join(f"EXCLUDE {host}" for host in (*RESOLVABLE_HOSTS, *extra_hosts))
+def resolvable_hosts(registry: Sequence[AtsSpec]) -> tuple[str, ...]:
+    """The names the browser may look up for these ATSs: each spec's ``route_policy.resolvable_hosts`` and the font hosts, sorted."""
+    return tuple(sorted({*(host for spec in registry for host in spec.route_policy.resolvable_hosts), *FONT_HOSTS}))
+
+
+RESOLVABLE_HOSTS: tuple[str, ...] = resolvable_hosts(REGISTRY)
+
+
+def resolver_rule(extra_hosts: Sequence[str] = (), hosts: Sequence[str] | None = None) -> str:
+    """The ``--host-resolver-rules`` switch: every name fails to resolve but ``RESOLVABLE_HOSTS`` (``hosts``, for a test of another registry) and ``extra_hosts`` (a test's loopback page)."""
+    return "--host-resolver-rules=MAP * ~NOTFOUND , " + " , ".join(f"EXCLUDE {host}" for host in (*(RESOLVABLE_HOSTS if hosts is None else hosts), *extra_hosts))
 
 
 # What Playwright 1.62 switches off in Chromium at launch (its own ``--disable-features``). Chromium reads one value of a repeated switch, the

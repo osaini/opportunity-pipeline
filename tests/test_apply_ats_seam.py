@@ -15,6 +15,7 @@ import itertools
 import json
 import random
 import re
+import subprocess
 import sys
 import time
 import types
@@ -47,6 +48,7 @@ from pipeline_core.identity import employer_key
 from apply_fake_ats import FakeApplyAgentFactory, fixture_json, fixture_text
 from helpers_apply import USER, ApplyCase, FakePlan, setUpModule, tearDownModule  # noqa: F401
 
+ROOT = Path(__file__).resolve().parent.parent
 GREENHOUSE = apply_ats.GREENHOUSE
 
 
@@ -602,13 +604,42 @@ class ResolvableHostsTests(unittest.TestCase):
                 ]
                 self.assertTrue(reasons, "nothing in any registered policy needs this name to resolve")
 
-    def test_a_second_registered_ats_adds_its_hosts_to_the_rule(self):
-        second = dataclasses.replace(
+    def second_ats(self):
+        return dataclasses.replace(
             GREENHOUSE, key="second", route_policy=dataclasses.replace(POLICY, resolvable_hosts=("jobs.example-robotics.test",)),
         )
-        union = {host for spec in (GREENHOUSE, second) for host in spec.route_policy.resolvable_hosts} | set(apply_agent.FONT_HOSTS)
-        self.assertIn("jobs.example-robotics.test", union)
-        self.assertEqual(union - set(apply_agent.RESOLVABLE_HOSTS), {"jobs.example-robotics.test"})
+
+    def test_the_function_gives_the_old_list_for_greenhouse_alone_and_adds_a_second_ats_hosts(self):
+        self.assertEqual(list(apply_agent.resolvable_hosts((GREENHOUSE,))), self.OLD)
+        both = apply_agent.resolvable_hosts((GREENHOUSE, self.second_ats()))
+        self.assertIn("jobs.example-robotics.test", both)
+        self.assertEqual(set(both) - set(self.OLD), {"jobs.example-robotics.test"})
+        self.assertEqual(list(both), sorted(both))
+
+    def test_the_resolver_rule_built_from_a_second_ats_lets_its_host_through_and_the_font_hosts_stay(self):
+        hosts = apply_agent.resolvable_hosts((GREENHOUSE, self.second_ats()))
+        rule = apply_agent.resolver_rule(hosts=hosts)
+        self.assertIn("EXCLUDE jobs.example-robotics.test", rule)
+        self.assertIn("EXCLUDE fonts.gstatic.com", rule)
+        self.assertTrue(rule.startswith("--host-resolver-rules=MAP * ~NOTFOUND , "))
+        self.assertNotIn("jobs.example-robotics.test", apply_agent.resolver_rule(), "the live rule is the registry's, and the second ATS is not in it")
+
+    def test_the_module_builds_its_list_and_its_launch_switch_from_the_registry_it_imports(self):
+        """In a fresh process whose registry holds a second ATS, the agent's own list, rule and launch switch name that ATS's host."""
+        code = (
+            "import dataclasses, sys\n"
+            f"sys.path.insert(0, {str(ROOT)!r})\n"
+            "from opportunity_app.apply import ats\n"
+            "second = dataclasses.replace(ats.GREENHOUSE, key='second', route_policy=dataclasses.replace(ats.GREENHOUSE.route_policy, resolvable_hosts=('jobs.example-robotics.test',)))\n"
+            "ats.REGISTRY = (ats.GREENHOUSE, second)\n"
+            "from opportunity_app.apply import agent\n"
+            "assert 'jobs.example-robotics.test' in agent.RESOLVABLE_HOSTS, agent.RESOLVABLE_HOSTS\n"
+            "assert 'EXCLUDE jobs.example-robotics.test' in agent.resolver_rule()\n"
+            "assert any('EXCLUDE jobs.example-robotics.test' in arg for arg in agent.LAUNCH_ARGS)\n"
+            "print('ok')\n"
+        )
+        done = subprocess.run([sys.executable, "-I", "-c", code], cwd=str(ROOT), capture_output=True, text=True, timeout=120)
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, "ok"), done.stderr[-800:])
 
 
 class SendAndElsewhereParityTests(unittest.TestCase):
@@ -1080,6 +1111,7 @@ class ThePagesNameTheAtsFromThePayloadTests(unittest.TestCase):
             for number, line in enumerate(text.splitlines(), 1):
                 code = line.split("//", 1)[0]
                 self.assertNotIn("Greenhouse", code, f"{name}:{number} says Greenhouse in a sentence instead of the payload's name")
+
 
     def test_the_loading_line_says_what_it_said_for_greenhouse(self):
         """The one page sentence the payload cannot fill yet (the page asks before the check answers): the fallback name gives the old words."""
