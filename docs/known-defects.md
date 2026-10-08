@@ -18,7 +18,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Apply for me | 0 | 6 | 8 | 14 |
+| Apply for me | 0 | 6 | 9 | 15 |
 | Mail, Gmail and inboxes | 0 | 4 | 9 | 13 |
 | Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
@@ -26,7 +26,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Scoring, scheduling and configuration | 1 | 2 | 6 | 9 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **31** | **34** | **66** |
+| **Total** | **1** | **31** | **35** | **67** |
 
 ## Start here: the high-severity entries
 
@@ -112,7 +112,7 @@ The entry flagged for an owner decision is
 
 ## Apply for me
 
-The first three were left open by PR #54 (the fail-closed net) and recorded here on 2026-10-03. Apply for me never carries an answer across companies, so each of those can at worst affect one company's own saved answer, and the student still presses Submit (D1 B). The next six were found while building the rehearsal engine (M5a), and the last four while building Finish in browser (M5b part 2); none was fixed there.
+The first three were left open by PR #54 (the fail-closed net) and recorded here on 2026-10-03. Apply for me never carries an answer across companies, so each of those can at worst affect one company's own saved answer, and the student still presses Submit (D1 B). The next six were found while building the rehearsal engine (M5a), and the next four while building Finish in browser (M5b part 2); none was fixed there. The last two were found on 2026-10-04 and 2026-10-08.
 
 ### Agreement-shaped choices and signatures outside the word list still fill from a same-company saved answer
 - **Severity:** medium (PR #54 review)
@@ -211,6 +211,13 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** A company that embeds Greenhouse on its own domain makes `job-boards.greenhouse.io/<board>/jobs/<id>` redirect to that domain. The run navigates to the canonical URL, sees the redirect leave the Greenhouse hosts, and stops with "This posting sends applicants to {host}". Greenhouse's embed address (`job-boards.greenhouse.io/embed/job_app?for=<board>&token=<id>`) usually reaches the real form, is on `BOARD_HOSTS`, and the parser already accepts it as input, but nothing builds it as a fallback. Whether the form it opens can be filled under the app's browser policy has not been tried.
 - **Suggested fix:** When the canonical URL redirects off the Greenhouse hosts, try the embed address once, and stop as now if that redirects off them too. Check on a rehearsal first that the embed form's file input is reachable.
 - **Regression suite:** tests/test_apply_checks.py (an off-site redirect on the canonical URL falls back to the embed address once)
+
+### An interview the student never moved on keeps asking before every application to that company
+- **Severity:** low (found 2026-10-08, review of PR #81)
+- **Where:** `opportunity_app/apply/runs.py` `_active_elsewhere()` (reads `applications.stage IN ('interview', 'offer')` only), called from `duplicate_block()` (`ASK_ACTIVE_AT_COMPANY`)
+- **What happens:** The check reads the stage alone. An application left at "interview" after the process quietly ended (no rejection email, a stage the student never updated) counts as an interview in progress indefinitely, so every later Apply for me run at that company stops to ask "You have an interview in progress at ...", and unattended mode can never pass it. Nothing is sent and the student can tick past it, so the cost is a repeated question, not a wrong application.
+- **Suggested fix:** Count an interview only while its `updated_at` is recent (for example 60 days), and say "an interview last updated on {date}" so the student can see why it was asked; or offer "this ended" beside the tick, which moves the old application out of the interview stage.
+- **Regression suite:** tests/test_apply_active_interview.py (an interview last updated 90 days ago does not ask, or asks with its date)
 
 ## Mail, Gmail and inboxes
 
