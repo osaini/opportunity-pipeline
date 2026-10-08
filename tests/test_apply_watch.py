@@ -593,6 +593,19 @@ class HonestClockTests(WatchCase):
         self.assertEqual([title for title in self.notices() if title.startswith("No confirmation email yet")], [])
         self.assertEqual(apply_watch.ats_statistics(self.conn, USER)["no_email_24h"], 0)
 
+    def test_an_email_set_aside_from_a_sender_that_is_not_greenhouse_does_not_stall_the_watch(self):
+        # The reader knew who sent it (it parsed; deciding failed), and it is not an address a confirmation comes from.
+        token = self.expired()
+        self.mail("", kind="", state="error", subject="", domain="newsletter.example.test", matched_by="", verified=0, received=self.at(hours=-20), linked=False)
+        self.assertEqual(self.watch(), self.zero(no_email_24h=1))
+        self.assertEqual(self.claim_row(token)["verification"], "no_email_24h")
+
+    def test_an_email_set_aside_from_greenhouse_still_stalls_the_watch(self):
+        token = self.expired()
+        self.mail("", kind="", state="error", subject="", domain="greenhouse-mail.io", matched_by="", verified=0, received=self.at(hours=-20), linked=False)
+        self.assertEqual(self.watch(), self.zero(paused=1))
+        self.assertEqual(self.detail(token)["watch_paused"], apply_watch.READER_SET_ASIDE)
+
     def test_an_email_the_reader_reads_again_and_no_longer_sets_aside_clears_the_pause(self):
         token = self.expired()
         gmail_id = self.aside(self.at(hours=-20))
@@ -632,7 +645,9 @@ class HonestClockTests(WatchCase):
         token = self.expired(detail={"mailbox_hash": apply_runs.address_hash("first.address@example.test")})
         # The profile says EMAIL and the account is EMAIL, but the application went out under another address.
         self.assertEqual(self.watch(), self.zero(paused=1))
-        self.assertEqual(self.detail(token)["watch_paused"], apply_watch.READER_OTHER_ADDRESS)
+        self.assertEqual(apply_watch.watch_available(self.conn, USER), "", "the profile and the account agree, so the settings have nothing to say")
+        self.assertEqual(self.detail(token)["watch_paused"], apply_watch.READER_APPLIED_OTHER, "the card does not blame the profile email")
+        self.assertNotEqual(apply_watch.READER_APPLIED_OTHER, apply_watch.READER_OTHER_ADDRESS)
         self.reader(account="first.address@example.test")
         self.assertEqual(self.watch()["extended"], 1, "back on the account the application used")
 

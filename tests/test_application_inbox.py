@@ -1542,6 +1542,7 @@ class ReviewFixMailTests(MailCase):
             self.pass_once()
         self.assertEqual(len(calls), tries, "after 14 days it is no longer tried")
         self.assertEqual(self.message_row("m-112")["state"], "error")
+        self.assertTrue(self.message_row("m-112")["sender_domain"], "the sender was read before the decision failed, so the row says who it was from")
 
     def test_the_first_look_back_reaches_past_when_the_live_cursor_was_taken(self):
         self.switch("on", since=now_utc() - timedelta(hours=1))

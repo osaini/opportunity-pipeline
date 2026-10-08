@@ -79,6 +79,7 @@ READER_BEHIND = "the job-email check is still reading new mail"
 READER_IDLE = "the job-email check hasn't run recently"
 READER_SET_ASIDE = "the job-email check couldn't read some emails"
 READER_OTHER_ADDRESS = "the email in your profile isn't the Gmail account the app reads"
+READER_APPLIED_OTHER = "the Gmail account the app reads isn't the address this application went out under"
 READER_UNKNOWN_ADDRESS = "Gmail needs reconnecting once so the app knows which address it reads"
 
 # D12 (5.6): what the student is told when the watch cannot run. The two requirements of the setting, and the address.
@@ -86,6 +87,7 @@ WATCH_NEEDS_SWITCH = "Turn on Update applications from job emails, in shadow is 
 WATCH_NEEDS_ADDRESS = "Reconnect Gmail once so the app knows which address it reads"
 WATCH_NEEDS_GMAIL = "Connect Gmail so the app can look for each confirmation"
 WATCH_OTHER_ADDRESS = "The email in your profile isn't the Gmail account the app reads, so it can't look for each confirmation"
+WATCH_APPLIED_OTHER = "The Gmail account the app reads isn't the address this application went out under, so it can't look for its confirmation"
 
 NO_EMAIL_BODY = "Some employers don't send one. If you want to be sure, check the employer's portal or your spam folder."
 
@@ -121,7 +123,7 @@ def mailbox_reason(conn: sqlite3.Connection, user_id: str, applied_with: str = "
     if not account:
         return WATCH_NEEDS_ADDRESS
     if applied_with:
-        return "" if apply_runs.address_hash(account) == applied_with else WATCH_OTHER_ADDRESS
+        return "" if apply_runs.address_hash(account) == applied_with else WATCH_APPLIED_OTHER
     contact = preparation.confirmed_facts(conn, user_id).get("contact")
     email = contact.get("email") if isinstance(contact, dict) else None
     if not isinstance(email, str) or not email.strip() or account.casefold() != email.strip().casefold():
@@ -172,7 +174,9 @@ def reader_health(
         return READER_RECONNECT, last_ok
     problem = mailbox_reason(conn, user_id, applied_with)
     if problem:
-        return (READER_UNKNOWN_ADDRESS if problem == WATCH_NEEDS_ADDRESS else READER_OTHER_ADDRESS), last_ok
+        if problem == WATCH_NEEDS_ADDRESS:
+            return READER_UNKNOWN_ADDRESS, last_ok
+        return (READER_APPLIED_OTHER if problem == WATCH_APPLIED_OTHER else READER_OTHER_ADDRESS), last_ok
     if sync is None or not sync["history_id"]:
         return READER_NOT_STARTED, last_ok
     if sync["recovery_state"]:
@@ -186,7 +190,14 @@ def reader_health(
     if json_as(sync["pending_ids_json"], []):
         return READER_BEHIND, last_ok
     if since is not None:
-        for aside in conn.execute("SELECT received_at FROM application_mail_messages WHERE user_id=? AND state='error'", (user_id,)).fetchall():
+        for aside in conn.execute(
+            "SELECT received_at, sender_domain FROM application_mail_messages WHERE user_id=? AND state='error'", (user_id,),
+        ).fetchall():
+            # An email the reader parsed before deciding failed carries its sender: one from anyone but Greenhouse cannot be the
+            # confirmation, so it does not hold the watch. One that could not even be parsed has no sender and might be.
+            domain = str(aside["sender_domain"] or "")
+            if domain and not is_greenhouse_sender(domain):
+                continue
             received = parse_app_instant(aside["received_at"])
             if received is None or received >= since:
                 return READER_SET_ASIDE, last_ok
