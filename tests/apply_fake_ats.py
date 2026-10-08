@@ -42,6 +42,8 @@ import sys
 import time
 import zlib
 from dataclasses import dataclass, field
+from email import policy as email_policy
+from email.parser import BytesParser
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -991,3 +993,464 @@ def kill_if_same_process(pid: int, started: str | None) -> bool:
         return False
     apply_runner._kill_pid(pid)
     return True
+
+
+# --- FakeLever: a local Lever board for the browser tests and the sandbox (docs/phase5-lever-handoff-spec.md 10.3) ---------------------
+#
+# Like FakeGreenhouse, the browser sees the REAL hostnames and a route hook answers them, so the adapter's host checks run as in
+# production with no network:
+#
+#     jobs.lever.co / jobs.eu.lever.co   /{site}/{id}/apply (the form), /{site}/{id}/thanks, POST /{site}/{id}/apply (the submit),
+#                                        POST /parseResume, GET /searchLocations, /js/parseResume.js, /js/application.js,
+#                                        /cdn-cgi/challenge-platform/scripts/jsd/main.js
+#     js.hcaptcha.com                    /1/api.js (a stand-in hCaptcha script, tests/fixtures/apply/lever/hcaptcha_api.js)
+#     api.hcaptcha.com                   GET /checksiteconfig and POST /getcaptcha/{sitekey} (whether the next execute() shows a challenge: the
+#                                        switch ``challenge``), POST /checkcaptcha/{sitekey}/... (a pressed challenge); the POSTs are the widget's
+#     newassets.hcaptcha.com             /captcha/v1/fake/hcaptcha.html (the challenge frame and the invisible checkbox frame)
+#     www.googletagmanager.com           GET /gtm.js and notify.bugsnag.com POST (a fictional error report): the noise every live page makes,
+#                                        on by default (``third_party_noise``); answered, and recorded like any request
+#
+# The fixture pages carry no scripts (their inline scripts were removed), so the fake adds what a Lever page does by script, written
+# from the OBSERVED behaviour in spec section 3 and not copied from Lever: the résumé reader (parseResume.js), the page's own wiring
+# (application.js: the location typeahead, Submit through hCaptcha, the page-wide required-checkbox rule, the disability rule), the
+# stand-in hCaptcha script, a cookie banner that nothing may click, and Cloudflare's detection script. The reply to /parseResume, the
+# shape of /searchLocations, how a refused form marks its invalid field and the challenge frame's markup are INVENTED where the spec
+# says they were not seen.
+#
+# What a test reads: ``requests`` (every request that reached the fake, with the parts of a multipart body), ``parse_posts()``,
+# ``apply_posts()``, ``search_gets()``, ``clicks(page)`` (clicks on the controls an agent must never press), ``challenge_frames(page)``.
+#
+# A fulfilled 302 cannot be used for "the submit answers a redirect to /thanks": Playwright does not route the hop that follows a
+# fulfilled redirect, so it leaves the fake and reaches the real jobs.lever.co (seen: it loaded the real thanks page, its fonts and a real
+# __cf_bm cookie). The "to_thanks" scenario answers the POST 200 with a page that sends the browser on to /thanks by a meta refresh and a
+# script; the main frame then really is at /thanks, and the POST's status is 200. Outcome rows that depend on the status class are
+# covered by the pure tests (test_apply_checks).
+#
+# There is no "the submit never answers" scenario, and none can be built on a route hook: a document POST that a route handler holds open
+# freezes the page for Playwright (page.evaluate stalls for minutes and then reports "Target crashed", seen with 1.62), so nothing could
+# read the page while it waited. A fetch that never answers is fine (``parse_mode`` "timeout" and "held"), and a test of the outcome row for
+# a POST that never answered has to build it without a held route.
+
+FAKE_LEVER_HOSTS = ("jobs.lever.co", "jobs.eu.lever.co")
+LEVER_HCAPTCHA_SCRIPT_HOST = "js.hcaptcha.com"
+LEVER_HCAPTCHA_API_HOST = "api.hcaptcha.com"
+LEVER_HCAPTCHA_FRAME_HOST = "newassets.hcaptcha.com"
+LEVER_HCAPTCHA_HOSTS = (LEVER_HCAPTCHA_SCRIPT_HOST, LEVER_HCAPTCHA_API_HOST, LEVER_HCAPTCHA_FRAME_HOST)
+LEVER_NOISE_HOSTS = ("www.googletagmanager.com", "notify.bugsnag.com")   # the analytics and error-report hosts every Lever page calls (spec 3 item 14)
+LEVER_APPLY_PATH = f"/{LEVER_SITE}/{LEVER_JOB_ID}/apply"
+LEVER_THANKS_PATH = f"/{LEVER_SITE}/{LEVER_JOB_ID}/thanks"
+LEVER_APPLY_URL = f"{LEVER_URL}/apply"
+LEVER_THANKS_URL = f"{LEVER_URL}/thanks"
+LEVER_EU_URL = f"https://jobs.eu.lever.co/{LEVER_SITE}/{LEVER_JOB_ID}"
+LEVER_EU_APPLY_URL = f"{LEVER_EU_URL}/apply"
+LEVER_PARSE_PATH = "/parseResume"
+LEVER_SEARCH_PATH = "/searchLocations"
+LEVER_CLOUDFLARE_SCRIPT_PATH = "/cdn-cgi/challenge-platform/scripts/jsd/main.js"
+LEVER_CLOUDFLARE_BEACON_PATH = "/cdn-cgi/challenge-platform/h/b/jsd/fake"
+LEVER_PAGE_SCRIPTS = ("/js/parseResume.js", "/js/application.js")
+_LEVER_ASSET_FILES = {"/js/parseResume.js": "parseResume.js", "/js/application.js": "application.js"}
+
+# What the submit answers (the page's own URL, multipart):
+LEVER_SCENARIOS = (
+    "to_thanks",          # 200 with a page that sends the browser on to /thanks (see the note above on why not a 302)
+    "thanks_in_place",    # 200 with the "Application submitted!" page at the apply URL (no navigation to /thanks)
+    "form_again",         # 200 with the form drawn again
+    "refused_4xx",        # ``refused_status`` (422) with the form drawn again and ``invalid_field`` marked aria-invalid
+    "server_5xx",         # ``server_status`` (500), a short page with no form
+)
+# What POST /parseResume does:
+LEVER_PARSE_MODES = (
+    "success",            # the canned profile (the page applies it after ``parse_delay_s``, so "working" shows while the agent keeps acting)
+    "failure",            # 422 and a short JSON error (the page shows it after ``parse_delay_s``)
+    "timeout",            # never answers
+    "held",               # answers only when ``release_held()`` is called (a reply that arrives late)
+)
+
+
+@dataclass
+class LeverPart:
+    """One part of a multipart body, as the fake read it. A file's bytes are not kept, only their size and SHA-256."""
+
+    name: str
+    filename: str | None = None
+    content_type: str = ""
+    size: int = 0
+    sha256: str = ""
+    text: str = ""
+
+
+def parse_multipart(content_type: str, body: bytes) -> list[LeverPart]:
+    """The parts of a multipart/form-data body ([] for anything else)."""
+    if not body or not (content_type or "").lower().startswith("multipart/form-data"):
+        return []
+    message = BytesParser(policy=email_policy.default).parsebytes(b"Content-Type: " + content_type.encode("latin-1", "replace") + b"\r\n\r\n" + body)
+    if not message.is_multipart():
+        return []
+    found: list[LeverPart] = []
+    for part in message.iter_parts():
+        payload = part.get_payload(decode=True) or b""
+        filename = part.get_filename()
+        found.append(LeverPart(
+            name=str(part.get_param("name", header="content-disposition") or ""),
+            filename=filename,
+            content_type=part.get_content_type() if filename is not None else "",
+            size=len(payload),
+            sha256=hashlib.sha256(payload).hexdigest(),
+            text="" if filename is not None else payload.decode("utf-8", errors="replace"),
+        ))
+    return found
+
+
+@dataclass
+class LeverSeen(Seen):
+    """A request that reached FakeLever: ``Seen`` plus the content type, the headers, the parts of a multipart body and what the fake answered."""
+
+    content_type: str = ""
+    headers: dict[str, str] = field(default_factory=dict)
+    parts: list[LeverPart] = field(default_factory=list)
+    status: int = 0          # 0: not answered (a hang, a held reply, or an abort)
+
+    def part(self, name: str) -> LeverPart | None:
+        return next((part for part in self.parts if part.name == name), None)
+
+    def text_values(self) -> dict[str, list[str]]:
+        """{name: [values]} of the non-file parts."""
+        found: dict[str, list[str]] = {}
+        for part in self.parts:
+            if part.filename is None:
+                found.setdefault(part.name, []).append(part.text)
+        return found
+
+
+@dataclass
+class LeverReply(Reply):
+    abort: bool = False      # the request fails as a refused connection would (the hCaptcha script that cannot load)
+
+
+_HELD = object()
+
+
+class FakeLever:
+    """A Lever board: ``route`` is the Playwright route handler (``install(context)`` serves a whole context).
+
+    ``scenario`` is what the submit answers (``LEVER_SCENARIOS``) and ``parse_mode`` what /parseResume does (``LEVER_PARSE_MODES``).
+    Every other attribute below is a switch that a test may change while a page is open unless its comment says the page reads it at load.
+    """
+
+    def __init__(self, scenario: str = "to_thanks", *, parse_mode: str = "success", page: str = "demo_eeo_survey.html") -> None:
+        if scenario not in LEVER_SCENARIOS:
+            raise ValueError(f"unknown scenario {scenario!r}")
+        if parse_mode not in LEVER_PARSE_MODES:
+            raise ValueError(f"unknown parse mode {parse_mode!r}")
+        self.scenario = scenario
+        self.parse_mode = parse_mode
+        self.page = page                              # the fixture served for the one fictional posting
+        self.pages: dict[tuple[str, str], str] = {}   # (site, id) -> fixture, for other postings
+        self.any_posting = False                      # every site and id gets ``page`` (the sandbox)
+        self.closed = False                           # the posting is gone: 404
+        self.search_status = 200                      # what /searchLocations answers (a 403 for a lookup that is refused)
+        self.refused_status = 422                     # the status of "refused_4xx"
+        self.server_status = 500                      # the status of "server_5xx"
+        self.invalid_field = "email"                  # the control "refused_4xx" marks aria-invalid
+        self.challenge = False                        # the next hcaptcha.execute() shows a challenge frame instead of a token
+        self.hcaptcha_loads = True                    # False: js.hcaptcha.com cannot be reached (Submit then does nothing)
+        self.hcaptcha_posts_refused = False           # True: every non-GET to api.hcaptcha.com (getcaptcha, checkcaptcha) is aborted (Submit then does nothing)
+        self.interstitial_s = 0.0                     # the first GET of the form starts this many seconds of the Cloudflare interstitial
+        self.cloudflare_beacon = False                # Cloudflare's script posts a beacon under /cdn-cgi/ when it runs
+        self.cookie_banner = True
+        self.third_party_noise = True                 # the page loads Google Tag Manager's script and posts an error report to Bugsnag, as a live one does
+        self.inject: list[str] = []                   # extra page scripts (JS source) added to every form page: a telemetry beacon, a WebSocket
+        # Read by the page at load:
+        self.parse_delay_s = 0.15                     # how long the page shows "working" before it applies a /parseResume reply (the reply itself comes at once)
+        self.max_upload_bytes = 100 * 1024 * 1024
+        self.search_debounce_ms = 500
+        self.challenge_during_fill: tuple[float, float] | None = None   # (start, end) seconds after the widget renders: a challenge with nothing pressed
+        self.requests: list[LeverSeen] = []
+        self.websockets: list[str] = []
+        self.held: list[Any] = []                     # /parseResume requests waiting for release_held()
+        self._held_seen: dict[int, LeverSeen] = {}    # id(route) -> the request it holds, so a release marks only what a page really got
+        self.unanswered: list[Any] = []               # requests that never get an answer ("timeout")
+        self.interstitials_served = 0                 # how many GETs of the form the Cloudflare interstitial answered
+        self._interstitial_started: float | None = None
+        self._cors = {"access-control-allow-origin": "*", "access-control-allow-headers": "*"}
+
+    # --- what the tests ask --------------------------------------------------------------
+
+    def requests_to(self, host: str | None = None, path: str | None = None, method: str | None = None) -> list[LeverSeen]:
+        return [seen for seen in self.requests
+                if (host is None or seen.host == host) and (path is None or seen.path == path) and (method is None or seen.method == method)]
+
+    def parse_posts(self) -> list[LeverSeen]:
+        return [seen for seen in self.requests if seen.method == "POST" and seen.host in FAKE_LEVER_HOSTS and seen.path == LEVER_PARSE_PATH]
+
+    def apply_posts(self) -> list[LeverSeen]:
+        """The POSTs to a posting's own /apply URL: the submit."""
+        return [seen for seen in self.requests if seen.method == "POST" and seen.host in FAKE_LEVER_HOSTS and re.fullmatch(r"/[^/]+/[^/]+/apply", seen.path)]
+
+    def search_gets(self) -> list[LeverSeen]:
+        return [seen for seen in self.requests if seen.method == "GET" and seen.host in FAKE_LEVER_HOSTS and seen.path == LEVER_SEARCH_PATH]
+
+    def non_get_requests(self, *, noise: bool = True) -> list[LeverSeen]:
+        """Every request that is not a GET, HEAD or OPTIONS. ``noise=False`` leaves out the Bugsnag error report (``LEVER_NOISE_HOSTS``) that a page makes by itself."""
+        return [seen for seen in self.requests
+                if seen.method not in ("GET", "HEAD", "OPTIONS") and (noise or seen.host not in LEVER_NOISE_HOSTS)]
+
+    @staticmethod
+    def clicks(page: Any) -> dict[str, int]:
+        """How many times the page counted a click on each control an agent must never press, not counting the page's own click on the
+        hidden submit: submit (#btn-submit), hiddenSubmit (#hcaptchaSubmitBtn), cookie (the banner's buttons) and challenge (inside the
+        hCaptcha challenge frame). A student's own press of Submit is in the count."""
+        return dict(page.evaluate("() => Object.assign({submit: 0, hiddenSubmit: 0, cookie: 0, challenge: 0}, window.__leverClicks || {})"))
+
+    @staticmethod
+    def challenge_frames(page: Any) -> int:
+        """How many visible hCaptcha challenge frames the page holds."""
+        return int(page.evaluate("""() => Array.from(document.querySelectorAll('iframe[title="Main content of the hCaptcha challenge"]'))
+            .filter((frame) => { const box = frame.getBoundingClientRect(); return box.width > 0 && box.height > 0; }).length"""))
+
+    @staticmethod
+    def show_challenge(page: Any) -> None:
+        """Draw a challenge frame now with nothing pressed (as if hCaptcha had decided to show one during a fill)."""
+        page.evaluate("() => window.hcaptcha.__fakeShow()")
+
+    @staticmethod
+    def hide_challenge(page: Any) -> None:
+        page.evaluate("() => window.hcaptcha.__fakeHide()")
+
+    def release_held(self, status: int = 200) -> int:
+        """Answer every held /parseResume now (the canned profile, or ``status`` with an error). Returns how many were held."""
+        held, self.held = self.held, []
+        for route in held:
+            body = json.dumps(lever_parse_reply()) if status == 200 else json.dumps({"error": "could not read the file"})
+            seen = self._held_seen.pop(id(route), None)
+            try:
+                if route.request.frame.page.is_closed():
+                    continue   # Playwright accepts a fulfill for a closed page without a word: the reply reached nothing, its record stays 0
+                route.fulfill(status=status, content_type="application/json", body=body)
+            except Exception:  # noqa: BLE001 - the page was closed while it waited: the reply reached nothing, so its record stays unanswered (0)
+                continue
+            if seen is not None:
+                seen.status = status
+        return len(held)
+
+    def drop_unanswered(self) -> None:
+        """Fail every request that was held or never answered, so a context can close without Playwright logging a route left open.
+        Call it before the context closes (a test's cleanup)."""
+        pending, self.held, self.unanswered = self.held + self.unanswered, [], []
+        self._held_seen.clear()
+        for route in pending:
+            try:
+                route.abort()
+            except Exception:  # noqa: BLE001 - the page is already gone
+                pass
+
+    # --- Playwright wiring ---------------------------------------------------------------
+
+    def install(self, context: Any) -> None:
+        """Serve a whole browser context from the fake (for tests that drive Chromium directly)."""
+        context.route("**/*", self.route)
+        if hasattr(context, "route_web_socket"):
+            def refuse(ws: Any) -> None:
+                self.websockets.append(ws.url)   # refused by never connecting; see FakeGreenhouse.install
+            context.route_web_socket("**/*", refuse)
+
+    def route(self, route: Any) -> None:
+        request = route.request
+        try:
+            body = request.post_data_buffer or b""
+        except Exception:  # noqa: BLE001 - no body
+            body = b""
+        try:
+            headers = dict(request.headers)
+        except Exception:  # noqa: BLE001
+            headers = {}
+        reply = self.answer(request.method, request.url, body, content_type=headers.get("content-type", ""), headers=headers,
+                            resource_type=getattr(request, "resource_type", ""))
+        if reply is None:
+            self.unanswered.append(route)   # never answers (drop_unanswered() ends it)
+            return
+        if reply is _HELD:
+            self.held.append(route)
+            self._held_seen[id(route)] = self.requests[-1]   # the request answer() just recorded (route callbacks run one at a time)
+            return
+        if getattr(reply, "abort", False):
+            route.abort("connectionrefused")
+            return
+        route.fulfill(status=reply.status, headers=reply.headers, content_type=reply.content_type, body=reply.body)
+
+    # --- the fake itself (no Playwright) ---------------------------------------------------
+
+    def answer(self, method: str, url: str, body: bytes = b"", *, content_type: str = "", headers: dict[str, str] | None = None,
+               resource_type: str = "") -> Any:
+        """The reply to one request: a ``Reply``, ``None`` (it never answers) or the held marker. Records the request first."""
+        parts = urlsplit(url)
+        host, path = (parts.hostname or "").lower(), parts.path
+        seen = LeverSeen(method, host, path, parts.query, resource_type, body.decode("utf-8", errors="replace"), content_type=content_type,
+                         headers=dict(headers or {}), parts=parse_multipart(content_type, body))
+        self.requests.append(seen)
+        reply = self._dispatch(seen, host, path, parts.query)
+        if isinstance(reply, Reply):
+            seen.status = reply.status
+        return reply
+
+    def _dispatch(self, seen: LeverSeen, host: str, path: str, query: str) -> Any:
+        method = seen.method
+        if method == "OPTIONS":
+            return Reply(204, headers=self._cors)
+        if host == LEVER_HCAPTCHA_SCRIPT_HOST:
+            if method == "GET" and path == "/1/api.js":
+                if not self.hcaptcha_loads:
+                    return LeverReply(0, abort=True)
+                return Reply(200, lever_fixture_text("hcaptcha_api.js"), "application/javascript", self._cors)
+            return Reply(404, "")
+        if host == LEVER_HCAPTCHA_API_HOST:
+            if method not in ("GET", "HEAD") and self.hcaptcha_posts_refused:
+                return LeverReply(0, abort=True)
+            if path == "/checksiteconfig" or (method == "POST" and path.startswith("/getcaptcha/")):
+                return Reply(200, json.dumps({"pass": True, "challenge": bool(self.challenge)}), "application/json", self._cors)
+            if method == "POST" and path.startswith("/checkcaptcha/"):
+                return Reply(200, json.dumps({"pass": True}), "application/json", self._cors)
+            return Reply(200, "{}", "application/json", self._cors)
+        if host == LEVER_HCAPTCHA_FRAME_HOST:
+            if method == "GET" and path == "/captcha/v1/fake/hcaptcha.html":
+                return Reply(200, lever_fixture_text("hcaptcha_frame.html"))
+            return Reply(404, "")
+        if host == "www.googletagmanager.com" and method == "GET":
+            return Reply(200, "/* a stand-in for Google Tag Manager */", "application/javascript", self._cors)
+        if host not in FAKE_LEVER_HOSTS:
+            return Reply(200, "{}" if method != "GET" else "", "application/json" if method != "GET" else "text/plain", self._cors)
+        if method == "GET":
+            return self._lever_get(path, query)
+        if method == "POST":
+            if path == LEVER_PARSE_PATH:
+                return self._parse()
+            if path.startswith("/cdn-cgi/"):
+                return Reply(204, "")
+            match = re.fullmatch(r"/([^/]+)/([^/]+)/apply", path)
+            if match and self._fixture_for(match.group(1), match.group(2)):
+                return self._apply(match.group(1), match.group(2))
+        return Reply(404, "")
+
+    def _fixture_for(self, site: str, job_id: str) -> str | None:
+        if self.closed:
+            return None
+        if (site, job_id) in self.pages:
+            return self.pages[(site, job_id)]
+        if self.any_posting or (site, job_id) == (LEVER_SITE, LEVER_JOB_ID):
+            return self.page
+        return None
+
+    def _lever_get(self, path: str, query: str) -> Reply:
+        if path in _LEVER_ASSET_FILES:
+            return Reply(200, lever_fixture_text(_LEVER_ASSET_FILES[path]), "application/javascript")
+        if path == LEVER_CLOUDFLARE_SCRIPT_PATH:
+            beacon = f'fetch("{LEVER_CLOUDFLARE_BEACON_PATH}", {{method: "POST", body: "fake"}}).catch(function () {{}});' if self.cloudflare_beacon else ""
+            return Reply(200, f"/* a stand-in for Cloudflare's detection script */ {beacon}", "application/javascript")
+        if path == LEVER_SEARCH_PATH:
+            if self.search_status != 200:
+                return Reply(self.search_status, "{}", "application/json")
+            typed = (parse_qs(query).get("text") or [""])[0].casefold()
+            found = [option for option in lever_search_options() if typed and typed in option["name"].casefold()]
+            return Reply(200, json.dumps(found), "application/json")
+        match = re.fullmatch(r"/([^/]+)/([^/]+)/(apply|thanks)", path)
+        if match:
+            site, job_id, which = match.groups()
+            fixture = self._fixture_for(site, job_id)
+            if fixture is None:
+                return Reply(404, lever_fixture_text("closed.html"))
+            if which == "thanks":
+                return Reply(200, lever_fixture_text("thanks.html"))
+            return self._apply_page(fixture)
+        match = re.fullmatch(r"/([^/]+)/([^/]+)", path)
+        if match and self._fixture_for(match.group(1), match.group(2)):
+            return Reply(200, f'<!DOCTYPE html><title>{LEVER_COMPANY} - {LEVER_TITLE}</title><a href="{path}/apply">Apply for this job</a>')
+        if path.startswith(("/js/", "/cdn-cgi/")):
+            return Reply(200, "", "application/javascript")
+        return Reply(404, "")
+
+    # --- the form page ---------------------------------------------------------------------
+
+    def _apply_page(self, fixture: str, *, marked_invalid: str = "") -> Reply:
+        cookie = {"set-cookie": "__cf_bm=fake-cloudflare-cookie; Path=/; Secure; HttpOnly; SameSite=None"}
+        if self.interstitial_s > 0:
+            if self._interstitial_started is None:
+                self._interstitial_started = time.monotonic()
+            if time.monotonic() - self._interstitial_started < self.interstitial_s:
+                page = lever_fixture_text("cloudflare_interstitial.html").replace('<meta http-equiv="refresh" content="390">', "")
+                page = page.replace("</body>", "<script>setTimeout(function () { location.reload(); }, 200);</script></body>")
+                self.interstitials_served += 1
+                return Reply(200, page, headers=cookie)
+        html = lever_fixture_text(fixture)
+        if marked_invalid:
+            html = re.sub(r'(<(?:input|select|textarea)\b[^>]*\bname="%s")' % re.escape(marked_invalid), r'\1 aria-invalid="true"', html, count=1)
+            html = html.replace('<form id="application-form"', '<div class="error-message" data-qa="form-error">Please check the field marked below.</div><form id="application-form"', 1)
+        if "</body>" not in html:
+            return Reply(200, html, headers=cookie)
+        return Reply(200, html.replace("</body>", self._page_additions() + "</body>", 1), headers=cookie)
+
+    def _page_additions(self) -> str:
+        config = {
+            "maxUploadBytes": self.max_upload_bytes,
+            "parseDelayMs": int(round(self.parse_delay_s * 1000)),
+            "searchDebounceMs": self.search_debounce_ms,
+            "challengeDuringFill": list(self.challenge_during_fill) if self.challenge_during_fill else None,
+        }
+        extra = "".join(f"<script>{source}</script>" for source in self.inject)
+        noise = (
+            '<script src="https://www.googletagmanager.com/gtm.js?id=GTM-FAKE" async></script>'
+            '<script>try { fetch("https://notify.bugsnag.com/", {method: "POST", body: JSON.stringify({apiKey: "fake", events: [{exceptions: [{message: "a fictional error report"}]}]})})'
+            '.catch(function () {}); } catch (error) {}</script>'
+        ) if self.third_party_noise else ""
+        banner = (
+            '<div class="cc-window cc-banner cc-type-opt-out" role="dialog" aria-label="cookieconsent" style="position:fixed;top:8px;right:8px;width:260px;'
+            'z-index:1000;background:#222;color:#fff;padding:8px"><span class="cc-message">This site uses cookies (a fictional notice).</span>'
+            '<div class="cc-compliance"><a role="button" tabindex="0" class="cc-btn cc-deny">Deny</a> <a role="button" tabindex="0" class="cc-btn cc-allow">Accept</a></div></div>'
+        ) if self.cookie_banner else ""
+        style = (
+            "<style>.resume-upload-working,.resume-upload-success,.resume-upload-failure,.resume-upload-oversize{display:none}"
+            ".hidden{display:none}.dropdown-container{display:none;position:absolute;background:#333;color:#fff;z-index:50}"
+            ".dropdown-container.open{display:block;min-width:120px;min-height:1.5em}.dropdown-no-results,.dropdown-loading-results{display:none}"
+            ".dropdown-container.empty .dropdown-no-results{display:block}.dropdown-container.loading .dropdown-loading-results{display:block}"
+            ".dropdown-option{padding:4px 8px;cursor:pointer}.dropdown-option.active{background:#555}</style>"
+        )
+        return (
+            f"{style}{banner}<script>window.__fakeLever = {json.dumps(config)};</script>"
+            + "".join(f'<script src="{path}" defer></script>' for path in LEVER_PAGE_SCRIPTS)
+            + f'<script src="https://{LEVER_HCAPTCHA_SCRIPT_HOST}/1/api.js?onload=hcaptchaOnLoad&render=explicit" async defer></script>'
+            + f'<script src="{LEVER_CLOUDFLARE_SCRIPT_PATH}" defer></script>{noise}{extra}'
+        )
+
+    # --- the reader and the submit -----------------------------------------------------------
+
+    def _parse(self) -> Any:
+        if self.parse_mode == "timeout":
+            return None
+        if self.parse_mode == "held":
+            return _HELD
+        if self.parse_mode == "failure":
+            return Reply(422, json.dumps({"error": "could not read the file"}), "application/json")
+        return Reply(200, json.dumps(lever_parse_reply()), "application/json")
+
+    def _apply(self, site: str, job_id: str) -> Reply | None:
+        fixture = self._fixture_for(site, job_id) or self.page
+        if self.scenario == "to_thanks":
+            target = f"/{site}/{job_id}/thanks"
+            return Reply(200, f'<!DOCTYPE html><meta http-equiv="refresh" content="0;url={target}"><script>location.replace("{target}");</script>')
+        if self.scenario == "thanks_in_place":
+            return Reply(200, lever_fixture_text("thanks.html"))
+        if self.scenario == "form_again":
+            return self._apply_page(fixture)
+        if self.scenario == "refused_4xx":
+            again = self._apply_page(fixture, marked_invalid=self.invalid_field)
+            return Reply(self.refused_status, again.body, again.content_type, again.headers)
+        return Reply(self.server_status, "<!DOCTYPE html><title>Something went wrong</title><h1>Something went wrong</h1>")
+
+
+def lever_parse_reply() -> dict[str, Any]:
+    """The canned profile /parseResume answers (tests/fixtures/apply/lever/parse_resume_reply.json). Every value in it is wrong on purpose."""
+    return json.loads(lever_fixture_text("parse_resume_reply.json"))
+
+
+def lever_search_options() -> list[dict[str, Any]]:
+    """The places FakeLever's /searchLocations draws its answers from (tests/fixtures/apply/lever/search_places.json; search_locations_reply.json is the recording's shape)."""
+    return json.loads(lever_fixture_text("search_places.json"))
