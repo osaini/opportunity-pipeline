@@ -674,8 +674,11 @@ class MalformedMarkupTests(unittest.TestCase):
         words = "a long sentence of words " * 6000
         expected = " ".join(words.split())
         form = self.timed(f'<label for="shared">{words}</label>', *(f'<input id="shared" name="extra{i}">' for i in range(6000)), bound=0.5)
-        self.assertEqual(len(form.unknown), 6000)
-        self.assertTrue(all(expected.startswith(item.label.rstrip("…")) and len(item.label) <= lever_form.MAX_SHOWN_LABEL_CHARS + 1 for item in form.unknown))
+        self.assertEqual(len(form.unreadable), 1)  # 6,000 controls is over the form's budget of text, however short each label is cut
+        # A few of them are inside the budget, and each then carries the label cut short.
+        few = self.timed(f'<label for="shared">{words}</label>', *(f'<input id="shared" name="extra{i}">' for i in range(50)), bound=0.5)
+        self.assertEqual(len(few.unknown), 50)
+        self.assertTrue(all(expected.startswith(item.label.rstrip("…")) and len(item.label) <= lever_form.MAX_SHOWN_LABEL_CHARS + 1 for item in few.unknown))
 
     def test_a_label_longer_than_the_app_reads_is_cut_and_the_control_is_left_to_the_student(self):
         words = "a long sentence of words " * 400
@@ -716,6 +719,47 @@ class MalformedMarkupTests(unittest.TestCase):
                 self.assertGreater(len(plan.fields), 0)
                 self.assertLess(elapsed, 3.0, "the check of a page of %d bytes took %.1f seconds (0.3 is usual, 25 or more is the quadratic cost)" % (len(text), elapsed))
                 self.assertLess(len(json.dumps([item.question for item in plan.fields])), 150_000)
+
+    def test_the_whole_check_of_a_page_whose_controls_share_a_label_at_the_limit_is_cheap(self):
+        # The label cap bounds one label, not how many controls carry it: the form as a whole has a budget of text too.
+        from opportunity_app.apply import ats as apply_ats
+        from opportunity_app.apply.policy import build_plan
+        from helpers_apply import sources
+        label = ("word " * 200)[:lever_form.MAX_LABEL_CHARS]
+        self.assertEqual(len(label), lever_form.MAX_LABEL_CHARS)
+        radios = "".join(f'<input type="radio" name="eeo[race]" value="v{i}">' for i in range(4000))
+        pages = {
+            "controls": page(f'<label for="shared">{label}</label>', *(f'<input id="shared" name="extra{i}" required>' for i in range(4000))),
+            "options": page(f"<label>{label}{radios}</label>"),
+        }
+        for kind, text in pages.items():
+            with self.subTest(page=kind):
+                started = time.monotonic()
+                form = parse_lever_form(text)
+                schema = apply_ats.lever_parse_schema({"lever_form": form})
+                plan = build_plan(schema, None, sources(), "Fixture Co", "handoff", ats_name="Lever", ats="lever")
+                elapsed = time.monotonic() - started
+                self.assertLess(elapsed, 3.0, "the check of a page of %d bytes took %.1f seconds" % (len(text), elapsed))
+                self.assertLess(len(json.dumps([item.question for item in plan.fields])), 150_000)
+                # The page is too big to read: one question the student answers, and the reason in words.
+                self.assertEqual((form.fields, form.unknown), ((), ()))
+                self.assertEqual(len(form.unreadable), 1)
+                self.assertTrue(form.unreadable[0].required)
+                self.assertIn("too much", form.unreadable[0].reason)
+
+    def test_a_form_with_a_great_many_short_controls_is_over_the_budget_too(self):
+        form = parse_lever_form(page(*(f'<input name="extra{i}">' for i in range(5000))))
+        self.assertEqual(len(form.unreadable), 1)
+        self.assertEqual((form.fields, form.unknown), ((), ()))
+
+    def test_a_form_of_ordinary_size_is_inside_the_budget(self):
+        label = "w" * lever_form.MAX_LABEL_CHARS
+        form = parse_lever_form(page(f'<label for="shared">{label}</label>', *(f'<input id="shared" name="extra{i}">' for i in range(100))))
+        self.assertEqual((len(form.unknown), form.unreadable), (100, ()))
+        for path in sorted(FIXTURES.glob("*.html")):
+            form = parse_lever_form(fixture(path.name))
+            if form is not None:
+                self.assertFalse([item for item in form.unreadable if "too much" in item.reason], path.name)
 
     def test_deeply_nested_label_and_answer_markup_is_cheap(self):
         form = self.timed('<div class="application-label">' + "<i>" * 20000 + "</u>" * 20000, '<span class="application-answer-alternative">' + "<i>" * 20000 + "</u>" * 20000)

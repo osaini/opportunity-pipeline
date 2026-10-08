@@ -42,6 +42,7 @@ MAX_FIELD_OPTIONS = 20_000
 MAX_NESTED_FIELDSETS = 100  # disabled fieldsets open inside one another
 MAX_OPEN_LABELS = 50  # <label> elements open inside one another (real pages have none, HTML allows none)
 MAX_LABEL_CHARS = 500  # the label the page gives a control, or one of its options: longer is left to the student (one label can be shared by thousands of controls)
+MAX_FORM_TEXT_CHARS = 100_000  # all the label and option text the page's own questions carry, each counted once per control that carries it
 MAX_SHOWN_LABEL_CHARS = 200  # how much of a label too long to read is kept to name the question
 CARD_TYPES = ("text", "textarea", "dropdown", "multiple-choice", "multiple-select", "file-upload")
 
@@ -664,6 +665,18 @@ def _unknown(name: str, controls: list[_Control]) -> UnknownControl:
     )
 
 
+_ENTRY_COST = 50  # what one question or control costs before its words, so a page of thousands of bare controls is over the budget too
+
+
+def _text_spent(item: SchemaField | UnreadableField | UnknownControl) -> int:
+    """What ``item`` adds to the form's budget of text. A card or survey question is exempt: its words are its own and the template's size limits them."""
+    if isinstance(item, SchemaField):
+        if item.section == "custom":
+            return 0
+        return _ENTRY_COST + len(item.label) + sum(len(option) for option in item.options)
+    return _ENTRY_COST + len(item.label)
+
+
 def _shown(label: str) -> str:
     return label if len(label) <= MAX_SHOWN_LABEL_CHARS else label[:MAX_SHOWN_LABEL_CHARS].rstrip() + "…"
 
@@ -763,6 +776,12 @@ def parse_lever_form(html: str) -> LeverForm | None:
                 name, _first_label(controls) or name, any(c.required for c in controls), "the page has a control that its description does not list",
             )))
 
+    # The cap on a label bounds one label, not how many controls carry it, and the plan pays for the label once per control and per option.
+    # A form whose questions carry more words than the budget is not read at all: one question the student answers in the window.
+    if sum(_text_spent(item) for _, _, item in entries) > MAX_FORM_TEXT_CHARS:
+        return LeverForm((), LeverPosting(_collapse("".join(scanner.title))), (UnreadableField(
+            "form", "", True, "the page has too much text in its questions and answers for the app to read, so every question is left for you",
+        ),), ())
     entries = [(seq, sub, _left_to_the_student(item)) for seq, sub, item in entries]
     entries.sort(key=lambda entry: (entry[0], entry[1]))
     fields = tuple(item for _, _, item in entries if isinstance(item, SchemaField))
