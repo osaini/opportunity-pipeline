@@ -632,6 +632,13 @@ class MalformedMarkupTests(unittest.TestCase):
         form = self.timed("<label>x</label>" * 20000, "<input name=\"favourite\">")
         self.assertEqual(len(form.unknown), 1)
 
+    def test_one_very_long_label_shared_by_thousands_of_controls_is_read_in_one_pass(self):
+        # One label[for] names an id that many controls repeat, and the label's text is long: the words are worked out once, not once per control.
+        words = "a long sentence of words " * 6000
+        form = self.timed(f'<label for="shared">{words}</label>', *(f'<input id="shared" name="extra{i}">' for i in range(6000)))
+        self.assertEqual(len(form.unknown), 6000)
+        self.assertTrue(all(item.label == " ".join(words.split()) for item in form.unknown))
+
     def test_deeply_nested_label_and_answer_markup_is_cheap(self):
         form = self.timed('<div class="application-label">' + "<i>" * 20000 + "</u>" * 20000, '<span class="application-answer-alternative">' + "<i>" * 20000 + "</u>" * 20000)
         self.assertEqual(form.fields, ())

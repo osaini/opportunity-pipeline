@@ -187,16 +187,26 @@ class _Open:
 class _LabelEl:
     """One ``<label>`` element: where its text starts and ends in the page's shared run of text chunks, and its ``for``."""
 
-    __slots__ = ("chunks", "start", "end", "target")
+    __slots__ = ("chunks", "start", "end", "target", "__collapsed")
 
     def __init__(self, chunks: list[str], target: str) -> None:
         self.chunks = chunks
         self.start = len(chunks)
         self.end: int | None = None  # None while it is open: its text runs to the end of the page
         self.target = target
+        self.__collapsed: str | None = None
 
     def text(self) -> str:
-        return "".join(self.chunks[self.start:self.end])
+        """The label's words with their spaces collapsed, worked out once.
+
+        Many controls can share one label (a group inside one ``<label>``, or many controls with the same ``id`` that one
+        ``label[for]`` names), and the label's text can be as long as the page. Joining and collapsing it for each control would
+        take time in proportion to the controls times the text. This is read only after the page has been walked, when the
+        shared run of chunks no longer grows.
+        """
+        if self.__collapsed is None:
+            self.__collapsed = _collapse("".join(self.chunks[self.start:self.end]))
+        return self.__collapsed
 
 
 class _Control:
@@ -224,7 +234,7 @@ class _Control:
     def option_label(self) -> str:
         found = _collapse("".join(self.span)) if self.span is not None else ""
         if not found and self.label_el is not None:
-            found = _collapse(self.label_el.text())
+            found = self.label_el.text()
         return found or _collapse(self.value or "")
 
     def option_value(self) -> str:
@@ -659,7 +669,7 @@ def parse_lever_form(html: str) -> LeverForm | None:
         return None
     for control in scanner.controls:
         if not control.label and control.dom_id in scanner.for_labels:
-            control.label = _collapse(scanner.for_labels[control.dom_id].text())
+            control.label = scanner.for_labels[control.dom_id].text()
     groups: dict[str, list[_Control]] = {}
     for control in scanner.controls:
         if control.name:  # a control with no name is not submitted: never filled, never listed (5.4 item 3)
