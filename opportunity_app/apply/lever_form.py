@@ -238,26 +238,26 @@ class _Scanner(HTMLParser):
         self.title_open = False
         self.title_done = False
         self.svg_depth = 0
-        self._raw = False  # inside a script or a style, whose text is never the page's
+        self.__raw = False  # inside a script or a style, whose text is never the page's
         self.form_seen = False
         self.in_form = False
-        self._forms_open = 0  # other forms that are open: a form inside one is not a form the browser builds
-        self._fieldsets: list[list[int | None]] = []  # open ``fieldset[disabled]``: [stack index, index of its first legend, -1 once that closed]
+        self.__forms_open = 0  # other forms that are open: a form inside one is not a form the browser builds
+        self.__fieldsets: list[list[int | None]] = []  # open ``fieldset[disabled]``: [stack index, index of its first legend, -1 once that closed]
         self.controls: list[_Control] = []
         self.for_labels: dict[str, _LabelEl] = {}
-        self._stack = _Open()  # flagged: starts a scope that owns the current label
-        self._label_div: _Open | None = None  # the tags open inside the current div.application-label; flagged: their text is not the label's
-        self._label_buf: list[str] = []
-        self._label_text = ""
-        self._label_starred = False
-        self._starred_now = False
-        self._chunks: list[str] = []  # the text seen while any <label> was open, once, shared by every label
-        self._label_els: list[_LabelEl] = []  # open <label> elements
-        self._select: _Control | None = None
-        self._option: tuple[str | None, str | None, list[str]] | None = None
-        self._pending: _Control | None = None  # the radio or checkbox waiting for its option span
-        self._span: _Open | None = None
-        self._seq = 0
+        self.__stack = _Open()  # flagged: starts a scope that owns the current label
+        self.__label_div: _Open | None = None  # the tags open inside the current div.application-label; flagged: their text is not the label's
+        self.__label_buf: list[str] = []
+        self.__label_text = ""
+        self.__label_starred = False
+        self.__starred_now = False
+        self.__chunks: list[str] = []  # the text seen while any <label> was open, once, shared by every label
+        self.__label_els: list[_LabelEl] = []  # open <label> elements
+        self.__select: _Control | None = None
+        self.__option: tuple[str | None, str | None, list[str]] | None = None
+        self.__pending: _Control | None = None  # the radio or checkbox waiting for its option span
+        self.__span: _Open | None = None
+        self.__seq = 0
 
     # --- tags
 
@@ -267,67 +267,67 @@ class _Scanner(HTMLParser):
             a.setdefault(key, value)
         classes = set((a.get("class") or "").split())
         if tag in ("script", "style"):
-            self._raw = True
+            self.__raw = True
         if tag == "svg":
             self.svg_depth += 1
         if tag == "title" and self.svg_depth == 0 and not self.title_done:
             self.title_open = True
         if tag == "form":
             if not self.form_seen and a.get("id") == "application-form":
-                if not self._forms_open:  # inside another form the browser drops this tag, so the page has no application form
+                if not self.__forms_open:  # inside another form the browser drops this tag, so the page has no application form
                     self.form_seen = self.in_form = True
             elif not self.in_form:
-                self._forms_open += 1
+                self.__forms_open += 1
         if not self.in_form:
             if tag in ("input", "select", "textarea") and a.get("form") == "application-form":
-                self._outside(tag, a)
+                self.__outside(tag, a)
             if tag not in _VOID:
-                self._stack.push(tag)
+                self.__stack.push(tag)
             return
         scope = "application-question" in classes or "section" in classes
         if scope:
-            self._label_text, self._label_starred = "", False
+            self.__label_text, self.__label_starred = "", False
         if tag == "legend":
-            for fieldset in self._fieldsets:
-                if fieldset[1] is None and len(self._stack) == fieldset[0] + 1:  # the fieldset's first legend, directly inside it
-                    fieldset[1] = len(self._stack)
+            for fieldset in self.__fieldsets:
+                if fieldset[1] is None and len(self.__stack) == fieldset[0] + 1:  # the fieldset's first legend, directly inside it
+                    fieldset[1] = len(self.__stack)
         if tag not in _VOID:
-            self._stack.push(tag, scope)
+            self.__stack.push(tag, scope)
         if tag == "fieldset" and "disabled" in a:
-            if len(self._fieldsets) >= MAX_NESTED_FIELDSETS:
+            if len(self.__fieldsets) >= MAX_NESTED_FIELDSETS:
                 raise ValueError("too many disabled fieldsets inside one another")
-            self._fieldsets.append([len(self._stack) - 1, None])
-        if self._label_div is not None:
+            self.__fieldsets.append([len(self.__stack) - 1, None])
+        if self.__label_div is not None:
             if tag not in _VOID:
                 skip = tag in ("svg", "script", "style") or (tag == "span" and "required" in classes) or (tag == "p" and "description" in classes)
-                self._starred_now = self._starred_now or (tag == "span" and "required" in classes)
-                self._label_div.push(tag, skip)
+                self.__starred_now = self.__starred_now or (tag == "span" and "required" in classes)
+                self.__label_div.push(tag, skip)
         elif tag == "div" and "application-label" in classes:
-            self._label_div = _Open()
-            self._label_div.push("div")
-            self._label_buf = []
-            self._starred_now = False
-        if self._span is not None and tag not in _VOID:
-            self._span.push(tag)
-        elif tag == "span" and "application-answer-alternative" in classes and self._pending is not None:
-            self._span = _Open()
-            self._span.push("span")
-            self._pending.span = []
+            self.__label_div = _Open()
+            self.__label_div.push("div")
+            self.__label_buf = []
+            self.__starred_now = False
+        if self.__span is not None and tag not in _VOID:
+            self.__span.push(tag)
+        elif tag == "span" and "application-answer-alternative" in classes and self.__pending is not None:
+            self.__span = _Open()
+            self.__span.push("span")
+            self.__pending.span = []
         if tag == "label":
-            if len(self._label_els) >= MAX_OPEN_LABELS:
+            if len(self.__label_els) >= MAX_OPEN_LABELS:
                 raise ValueError("too many labels inside one another")
-            self._label_els.append(_LabelEl(self._chunks, a.get("for") or ""))
+            self.__label_els.append(_LabelEl(self.__chunks, a.get("for") or ""))
         elif tag == "input":
-            self._input(a)
+            self.__input(a)
         elif tag == "select":
-            self._select = self._control(a, "select", "select-multiple" if "multiple" in a else "select")
-            self._pending = None
-        elif tag == "option" and self._select is not None:
-            self._end_option()
-            self._option = (a.get("value"), a.get("label"), [])
+            self.__select = self.__control(a, "select", "select-multiple" if "multiple" in a else "select")
+            self.__pending = None
+        elif tag == "option" and self.__select is not None:
+            self.__end_option()
+            self.__option = (a.get("value"), a.get("label"), [])
         elif tag == "textarea":
-            self._control(a, "textarea", "textarea")
-            self._pending = None
+            self.__control(a, "textarea", "textarea")
+            self.__pending = None
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.handle_starttag(tag, attrs)
@@ -336,7 +336,7 @@ class _Scanner(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         if tag in ("script", "style"):
-            self._raw = False
+            self.__raw = False
         if tag == "svg" and self.svg_depth:
             self.svg_depth -= 1
         if tag == "title" and self.title_open:
@@ -344,114 +344,114 @@ class _Scanner(HTMLParser):
             self.title_done = True
         if not self.in_form:
             if tag == "form":
-                self._forms_open = max(0, self._forms_open - 1)
-            self._pop(tag)
+                self.__forms_open = max(0, self.__forms_open - 1)
+            self.__pop(tag)
             return
         if tag == "option":
-            self._end_option()
+            self.__end_option()
         elif tag == "select":
-            self._end_option()
-            self._select = None
-        elif tag == "label" and self._label_els:
-            label = self._label_els.pop()
-            label.end = len(self._chunks)
+            self.__end_option()
+            self.__select = None
+        elif tag == "label" and self.__label_els:
+            label = self.__label_els.pop()
+            label.end = len(self.__chunks)
             if label.target:
                 self.for_labels.setdefault(label.target, label)
-        if self._label_div is not None:
-            self._label_div.close(tag)
-            if not self._label_div:
-                self._label_div = None
-                self._label_text, self._label_starred = _collapse("".join(self._label_buf)), self._starred_now
-        if self._span is not None:
-            self._span.close(tag)
-            if not self._span:
-                self._span = None
-                self._pending = None
-        scoped = self._pop(tag)
+        if self.__label_div is not None:
+            self.__label_div.close(tag)
+            if not self.__label_div:
+                self.__label_div = None
+                self.__label_text, self.__label_starred = _collapse("".join(self.__label_buf)), self.__starred_now
+        if self.__span is not None:
+            self.__span.close(tag)
+            if not self.__span:
+                self.__span = None
+                self.__pending = None
+        scoped = self.__pop(tag)
         if scoped:
-            self._label_text, self._label_starred = "", False
+            self.__label_text, self.__label_starred = "", False
         if tag == "form":
             self.in_form = False
 
-    def _pop(self, tag: str) -> bool:
+    def __pop(self, tag: str) -> bool:
         """Close ``tag`` and what was left open inside it. True when that closed a scope that owns the current label."""
-        scoped = self._stack.close(tag)
+        scoped = self.__stack.close(tag)
         if scoped is None:
             return False
-        self._close_fieldsets()
+        self.__close_fieldsets()
         return bool(scoped)
 
-    def _close_fieldsets(self) -> None:
-        size = len(self._stack)
-        self._fieldsets = [fieldset for fieldset in self._fieldsets if fieldset[0] < size]
-        for fieldset in self._fieldsets:
+    def __close_fieldsets(self) -> None:
+        size = len(self.__stack)
+        self.__fieldsets = [fieldset for fieldset in self.__fieldsets if fieldset[0] < size]
+        for fieldset in self.__fieldsets:
             if fieldset[1] is not None and fieldset[1] >= size:
                 fieldset[1] = -1  # its legend has closed
 
-    def _in_disabled_fieldset(self) -> bool:
+    def __in_disabled_fieldset(self) -> bool:
         """True inside a ``fieldset[disabled]``, unless the control is within that fieldset's first legend (HTML)."""
-        return any(fieldset[1] is None or fieldset[1] < 0 for fieldset in self._fieldsets)
+        return any(fieldset[1] is None or fieldset[1] < 0 for fieldset in self.__fieldsets)
 
     # --- text
 
     def handle_data(self, data: str) -> None:
         if self.title_open:
             self.title.append(data)
-        if not self.in_form or self._raw:
+        if not self.in_form or self.__raw:
             return
-        if self._label_els:
-            self._chunks.append(data)
-        if self._label_div is not None and not self._label_div.flagged:
-            self._label_buf.append(data)
-        if self._span is not None and self._pending is not None and self._pending.span is not None:
-            self._pending.span.append(data)
-        if self._option is not None:
-            self._option[2].append(data)
+        if self.__label_els:
+            self.__chunks.append(data)
+        if self.__label_div is not None and not self.__label_div.flagged:
+            self.__label_buf.append(data)
+        if self.__span is not None and self.__pending is not None and self.__pending.span is not None:
+            self.__pending.span.append(data)
+        if self.__option is not None:
+            self.__option[2].append(data)
 
     # --- controls
 
-    def _outside(self, tag: str, a: Mapping[str, str | None]) -> None:
+    def __outside(self, tag: str, a: Mapping[str, str | None]) -> None:
         """A control written outside the form that names it in its ``form`` attribute is submitted with it. It is only ever listed as unknown."""
         kind = (a.get("type") or "text").strip().lower() if tag == "input" else ("select-multiple" if tag == "select" and "multiple" in a else tag)
         if kind in _NOT_DATA_INPUTS:
             return
-        self._seq += 1
-        control = _Control(self._seq, tag, kind, a.get("name") or "", "required" in a, "disabled" in a, a.get("value"), "", False, a.get("id") or "", None)
+        self.__seq += 1
+        control = _Control(self.__seq, tag, kind, a.get("name") or "", "required" in a, "disabled" in a, a.get("value"), "", False, a.get("id") or "", None)
         control.outside = True
         self.controls.append(control)
 
-    def _control(self, a: Mapping[str, str | None], tag: str, kind: str) -> _Control | None:
+    def __control(self, a: Mapping[str, str | None], tag: str, kind: str) -> _Control | None:
         """The control, or None when its ``form`` attribute puts it in another form (or in none): it is not submitted with this one."""
         if "form" in a and a["form"] != "application-form":
             return None
-        self._seq += 1
+        self.__seq += 1
         control = _Control(
-            self._seq, tag, kind, a.get("name") or "", "required" in a, "disabled" in a or self._in_disabled_fieldset(), a.get("value"), self._label_text,
-            self._label_starred, a.get("id") or "", self._label_els[-1] if self._label_els else None,
+            self.__seq, tag, kind, a.get("name") or "", "required" in a, "disabled" in a or self.__in_disabled_fieldset(), a.get("value"), self.__label_text,
+            self.__label_starred, a.get("id") or "", self.__label_els[-1] if self.__label_els else None,
         )
         self.controls.append(control)
         return control
 
-    def _input(self, a: Mapping[str, str | None]) -> None:
+    def __input(self, a: Mapping[str, str | None]) -> None:
         kind = (a.get("type") or "text").strip().lower()
-        self._pending = None
+        self.__pending = None
         if kind in _NOT_DATA_INPUTS:
             return
-        control = self._control(a, "input", kind)
+        control = self.__control(a, "input", kind)
         if control is None:
             return
         if kind in ("checkbox", "radio") and control.name:
-            self._pending = control
+            self.__pending = control
         else:
             control.label_el = None
 
-    def _end_option(self) -> None:
-        if self._option is not None and self._select is not None:
-            value, label_attribute, chunks = self._option
+    def __end_option(self) -> None:
+        if self.__option is not None and self.__select is not None:
+            value, label_attribute, chunks = self.__option
             text = _collapse("".join(chunks))
             # HTML: the label is the ``label`` attribute when it is not empty, else the text; the value is the ``value`` attribute, else the text.
-            self._select.options.append((text if value is None else value, _collapse(label_attribute) or text))
-        self._option = None
+            self.__select.options.append((text if value is None else value, _collapse(label_attribute) or text))
+        self.__option = None
 
 
 # --- Reading the controls --------------------------------------------------------------------------------------------
