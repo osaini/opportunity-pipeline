@@ -1081,6 +1081,13 @@ class ThePagesNameTheAtsFromThePayloadTests(unittest.TestCase):
                 code = line.split("//", 1)[0]
                 self.assertNotIn("Greenhouse", code, f"{name}:{number} says Greenhouse in a sentence instead of the payload's name")
 
+    def test_the_loading_line_says_what_it_said_for_greenhouse(self):
+        """The one page sentence the payload cannot fill yet (the page asks before the check answers): the fallback name gives the old words."""
+        text = next(text for name, text in helpers_source.static_scripts().items() if name.rsplit("/", 1)[-1] == "app-apply.js")
+        self.assertIn('element("p", "apply-summary", `Checking the ${atsName(null)} form…`)', text)
+        ui = next(text for name, text in helpers_source.static_scripts().items() if name.rsplit("/", 1)[-1] == "app-ui.js")
+        self.assertIn('|| "Greenhouse";', ui[ui.index("function atsName"):], "atsName(null) is the old word")
+
 
 # --- Correction 1: the company limit matches a board within its ATS ---------------------------------------------------
 

@@ -1173,7 +1173,7 @@
     // Shown once there is something to say. A role that is not on Greenhouse says so; the switch turned off meanwhile says nothing.
     section.hidden = true;
     section.appendChild(element("p", "eyebrow", "Apply for me"));
-    const summary = element("p", "apply-summary", "Checking the form…");
+    const summary = element("p", "apply-summary", `Checking the ${atsName(null)} form…`);
     summary.setAttribute("role", "status");
     // The rehearsal (a run in a window, never sent) sits above the questions and keeps its state while they are rebuilt.
     const rehearse = element("div", "apply-rehearse");
