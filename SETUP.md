@@ -693,9 +693,11 @@ fields too.
 
 6. **Finish in browser.** On a saved role a **Finish in browser** button sits next to
    the rehearsal. It opens a Chromium window and fills the form; what the app
-   cannot fill (cover letters, any CAPTCHA box, a field it could not read back)
+   cannot fill (a cover letter with none approved, any CAPTCHA box, a field it could not read back)
    is listed as **Left for you**, and every consent box it ticked is listed with
-   the addresses the statement links to. The student finishes the form in the
+   the addresses the statement links to. If the student has approved a cover letter
+   for the role, the app attaches that one to the form's cover letter field after a
+   last check that it is still the latest approved version. The student finishes the form in the
    window and presses **Submit application** there themselves. Tell them: the
    application is not sent until they press it (to find the options for typeahead
    fields such as location and school, the app sends the text typed there to
