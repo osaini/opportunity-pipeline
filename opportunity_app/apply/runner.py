@@ -1113,6 +1113,7 @@ class ApplyRunner:
         """
         if kind not in ("lookup", "rehearsal", "handoff"):
             raise ValueError(f"Unsupported run kind: {kind}")
+        apply_preflight.require_opportunity(conn, user_id, opportunity_id)  # before the ATS is named: a role the student cannot see is not found
         found = apply_ats.identify(conn, opportunity_id)
         if found is not None:
             refusal = apply_ats.mode_refusal(found[0], MODE_FOR_KIND[kind])

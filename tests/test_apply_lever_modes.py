@@ -17,6 +17,7 @@ realdata_guard.install()
 import test_apply_runner as runner_tests
 from opportunity_app.apply import runner as apply_runner, runs as apply_runs
 from opportunity_app.apply.runs import ClaimRefused
+from opportunity_app.applications.actions import OpportunityNotFoundError
 
 from apply_fake_ats import FakeLeverPageClient, LEVER_JOB_ID, LEVER_ROLE_ID, LEVER_SITE, seed_lever_role
 from helpers_apply import USER, ApplyCase, setUpModule, tearDownModule  # noqa: F401
@@ -66,6 +67,7 @@ class LeverRunnerTests(runner_tests.RunnerCase):
         return caught.exception
 
     def test_a_rehearsal_a_lookup_and_a_finish_in_browser_are_each_refused_before_anything_is_read(self):
+        applications_before = self.counts("applications")["applications"]
         refused = {kind: self.refuse(kind) for kind in ("rehearsal", "lookup", "handoff")}
         self.assertEqual(
             {kind: (item.status_code, item.code, item.message) for kind, item in refused.items()},
@@ -75,14 +77,24 @@ class LeverRunnerTests(runner_tests.RunnerCase):
         )
         self.assertEqual(self.pages.calls, [], "the page was not even asked for")
         self.assertEqual(self.counts("apply_runs", "application_submit_claims", "applications"),
-                         {"apply_runs": 0, "application_submit_claims": 0, "applications": self.counts("applications")["applications"]})
+                         {"apply_runs": 0, "application_submit_claims": 0, "applications": applications_before})
+
+    def test_a_lever_role_the_student_cannot_see_is_not_found_before_any_mode_is_refused(self):
+        # A capture nobody owns is visible to no one. The refusal for its ATS would say the role exists and is on Lever.
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO opportunity_sources(opportunity_id, source_key, source_name, external_id, source_url, first_seen_at, last_seen_at) "
+                "VALUES(?, 'manual:capture', 'Capture', 'capture-nobody-owns', 'https://example.test/x', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                (LEVER_ROLE_ID,),
+            )
+        for kind in ("rehearsal", "lookup", "handoff"):
+            with self.subTest(kind=kind):
+                with self.assertRaises(OpportunityNotFoundError):
+                    self.start(kind=kind, opportunity_id=LEVER_ROLE_ID, page_client=self.pages)
+        self.assertEqual(self.pages.calls, [])
 
     def test_the_greenhouse_start_is_unchanged(self):
         self.assertEqual(self.finish(self.start())["outcome"], "rehearsed")
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 if __name__ == "__main__":
