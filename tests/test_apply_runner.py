@@ -1194,7 +1194,7 @@ class ViewTests(RunnerCase):
 
     def make(self, kind="rehearsal", **documents):
         run_id = apply_runs.create_run(
-            self.conn, user_id=USER, opportunity_id=ACME, kind=kind, started_by="student", ats="greenhouse", board_token="examplerobotics",
+            self.conn, user_id=USER, opportunity_id=ACME, kind=kind, started_by="student", ats="greenhouse", adapter_version="greenhouse-1", board_token="examplerobotics",
             page_url=JOB_URL, company="acme", deadline_seconds=300,
         )
         outcome = documents.pop("outcome", "")

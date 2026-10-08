@@ -1792,7 +1792,7 @@ class DataCase(ApplyCase):
         claim.setdefault("acknowledged", ("company_limit",))
         taken = self.start(opportunity_id, "handoff", run_id=run_id, now=now, **claim)
         apply_runs.create_run(
-            self.conn, user_id=USER, opportunity_id=opportunity_id, kind="handoff", started_by="student", ats="greenhouse", board_token="bluefin",
+            self.conn, user_id=USER, opportunity_id=opportunity_id, kind="handoff", started_by="student", ats="greenhouse", adapter_version="greenhouse-1", board_token="bluefin",
             page_url="https://boards.example.test/bluefin/1", company="bluefin", deadline_seconds=2910, run_id=run_id,
             application_id=taken["application_id"], claim_token=taken["token"], now=now,
         )
@@ -1819,11 +1819,11 @@ class RunRowTests(DataCase):
         for bad in ("run-xyz", "x" * 36, "run-" + "G" * 32, "run-" + "a" * 31):
             with self.assertRaises(ValueError):
                 apply_runs.create_run(
-                    self.conn, user_id=USER, opportunity_id="op-data", kind="handoff", started_by="student", ats="greenhouse", board_token="bluefin",
+                    self.conn, user_id=USER, opportunity_id="op-data", kind="handoff", started_by="student", ats="greenhouse", adapter_version="greenhouse-1", board_token="bluefin",
                     page_url="https://boards.example.test/b", company="bluefin", deadline_seconds=10, run_id=bad,
                 )
         minted = apply_runs.create_run(
-            self.conn, user_id=USER, opportunity_id="op-data", kind="rehearsal", started_by="student", ats="greenhouse", board_token="bluefin",
+            self.conn, user_id=USER, opportunity_id="op-data", kind="rehearsal", started_by="student", ats="greenhouse", adapter_version="greenhouse-1", board_token="bluefin",
             page_url="https://boards.example.test/b", company="bluefin", deadline_seconds=10,
         )
         self.assertRegex(minted, r"^run-[0-9a-f]{32}$")
@@ -1959,7 +1959,7 @@ class RecordResultTests(DataCase):
         self.settle(token, run_id, state="unconfirmed", outcome="unconfirmed", after_click=True)
         self.assertEqual(self.claim_row(token)["state"], "unconfirmed")
         other = apply_runs.create_run(
-            self.conn, user_id=USER, opportunity_id="op-data", kind="handoff", started_by="student", ats="greenhouse", board_token="bluefin",
+            self.conn, user_id=USER, opportunity_id="op-data", kind="handoff", started_by="student", ats="greenhouse", adapter_version="greenhouse-1", board_token="bluefin",
             page_url="https://boards.example.test/b", company="bluefin", deadline_seconds=10,
         )
         got = self.settle(token, other, state="submitted", outcome="submitted", confirmation_seen=True, expected_states=("unconfirmed",))
@@ -2636,7 +2636,7 @@ class HandoffReadTests(HandoffApiCase):
         app = create_app(db_path=self.path, access_token=api_tests.TOKEN, static_dir=api_tests.STATIC_DIR, resume_storage=self.root / "resumes",
                          apply_schema_client_factory=lambda: self.schema, apply_agent_factory=FakeApplyAgentFactory())
         run_id = apply_runs.create_run(
-            self.conn, user_id=USER, opportunity_id=ACME, kind="rehearsal", started_by="student", ats="greenhouse", board_token="b",
+            self.conn, user_id=USER, opportunity_id=ACME, kind="rehearsal", started_by="student", ats="greenhouse", adapter_version="greenhouse-1", board_token="b",
             page_url=JOB_URL, company="acme", deadline_seconds=300,
         )
         with TestClient(app) as client:
@@ -2721,7 +2721,7 @@ class HandoffFrontTests(HandoffApiCase):
         self.assertEqual((done.status_code, done.json()["detail"]), (409, apply_runner.NOT_RUNNING))
         self.assertEqual(self.send("POST", f"{self.BASE}/runs/run-{'0' * 32}/front").status_code, 404)
         elsewhere = apply_runs.create_run(
-            self.conn, user_id=USER, opportunity_id=ACME, kind="handoff", started_by="student", ats="greenhouse", board_token="b",
+            self.conn, user_id=USER, opportunity_id=ACME, kind="handoff", started_by="student", ats="greenhouse", adapter_version="greenhouse-1", board_token="b",
             page_url=JOB_URL, company="acme", deadline_seconds=300,
         )
         response = self.send("POST", f"{self.BASE}/runs/{elsewhere}/front")

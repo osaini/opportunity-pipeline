@@ -160,7 +160,7 @@ class ApplyCase(unittest.TestCase):
         return apply_runs.create_run(
             self.conn, user_id=USER, opportunity_id=opportunity_id, kind=kind, started_by="student", ats="greenhouse", board_token="bluefin",
             page_url="https://boards.example.test/bluefin/1", company=employer_key(company), deadline_seconds=300,
-            now=started or self.at(), **kwargs,
+            now=started or self.at(), **{"adapter_version": "greenhouse-1", **kwargs},
         )
 
     def reviewed_rehearsal(self, company, minutes, *, verdict="right", clean=True, outcome="rehearsed"):

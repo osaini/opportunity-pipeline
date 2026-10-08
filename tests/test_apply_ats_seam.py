@@ -30,7 +30,10 @@ import frozen_pre_ats_seam as old
 import frozen_pre_route_policy as old_route
 import helpers_source
 import test_apply_runner as runner_tests
-from opportunity_app.apply import agent as apply_agent, agent_types, ats as apply_ats, checks as apply_checks, greenhouse as apply_greenhouse, preflight as apply_preflight, runs as apply_runs
+from opportunity_app.apply import (
+    agent as apply_agent, agent_types, ats as apply_ats, checks as apply_checks, greenhouse as apply_greenhouse, policy as apply_policy,
+    preflight as apply_preflight, runs as apply_runs,
+)
 from opportunity_app.apply.agent_types import AgentJob, ApplyTimeouts
 from opportunity_app.apply.policy import SchemaField
 from opportunity_app.apply.runs import ClaimRefused
@@ -920,6 +923,39 @@ class SchemaCacheIsPerAtsTests(runner_tests.RunnerCase):
         with mock.patch.object(apply_ats, "REGISTRY", (renamed,)):
             self.assertFalse(check()["from_cache"], "the same token and job id on another ATS is a different listing")
             self.assertTrue(check()["from_cache"])
+
+
+# --- Correction 3: a run is stamped with its own ATS's adapter version -------------------------------------------------
+
+class Replanning(FakeApplyAgentFactory):
+    """A factory whose agent asks the runner for a new plan before it does anything else, as the real agent does once it has read the page."""
+
+    def __call__(self, **kwargs):
+        agent = super().__call__(**kwargs)
+        inner = agent.run
+
+        def run(plan, **more):
+            if more.get("replan") is not None:
+                more["replan"]([], False)
+            return inner(plan, **more)
+
+        agent.run = run
+        return agent
+
+
+class RunnerStampsTheRunsOwnVersionTests(runner_tests.RunnerCase):
+    def test_a_runs_row_and_every_plan_it_makes_carry_the_specs_adapter_version(self):
+        newer = dataclasses.replace(GREENHOUSE, key="greenhouse-renamed", adapter_version="greenhouse-9")
+        with mock.patch.object(apply_ats, "REGISTRY", (newer,)), mock.patch.object(apply_policy, "build_plan", wraps=apply_policy.build_plan) as spy:
+            row = self.finish(self.start(Replanning()))
+        self.assertEqual((row["ats"], row["adapter_version"]), ("greenhouse-renamed", "greenhouse-9"))
+        versions = [call.kwargs["adapter_version"] for call in spy.call_args_list]
+        self.assertGreaterEqual(len(versions), 2, "the check's plan and the one the agent asked for")
+        self.assertEqual(set(versions), {"greenhouse-9"}, "the page's plan is fingerprinted with the same version the student approved")
+
+    def test_greenhouse_runs_are_still_stamped_greenhouse_1(self):
+        row = self.finish(self.start(Replanning()))
+        self.assertEqual((row["ats"], row["adapter_version"]), ("greenhouse", old.ADAPTER_VERSION))
 
 
 if __name__ == "__main__":

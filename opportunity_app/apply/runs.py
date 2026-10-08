@@ -992,7 +992,7 @@ def create_run(
     page_url: str,
     company: str,
     deadline_seconds: int,
-    adapter_version: str = ADAPTER_VERSION,
+    adapter_version: str,
     application_id: str | None = None,
     claim_token: str = "",
     run_id: str | None = None,

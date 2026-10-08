@@ -59,7 +59,7 @@ from uuid import uuid4
 from pipeline_core.identity import employer_key
 
 from . import (
-    checks as apply_checks, claims as apply_claims, greenhouse as apply_greenhouse, policy as apply_policy, preflight as apply_preflight,
+    ats as apply_ats, checks as apply_checks, claims as apply_claims, policy as apply_policy, preflight as apply_preflight,
     runs as apply_runs, security_code as apply_security_code, watch as apply_watch,
 )
 from .agent_types import (
@@ -1163,7 +1163,7 @@ class ApplyRunner:
             files = {} if kind == "lookup" else self._files(conn, user_id, inputs.plan, resume_root)
             run_id = apply_runs.create_run(
                 conn, user_id=user_id, opportunity_id=opportunity_id, kind=kind, started_by="student", ats=ats,
-                board_token=str(result["board_token"]), page_url=page_url, company=employer_key(str(result["company"])),
+                adapter_version=apply_ats.spec_for(ats).adapter_version, board_token=str(result["board_token"]), page_url=page_url, company=employer_key(str(result["company"])),
                 deadline_seconds=int(deadline), run_id=run_id or None, application_id=taken["application_id"] if handoff else None,
                 claim_token=token, now=now,
             )
@@ -1301,7 +1301,7 @@ class ApplyRunner:
             def planner(scan: list[dict[str, Any]], uploads_on_attach: bool) -> Any:
                 return apply_policy.build_plan(
                     apply_policy.with_page_labels(work.schema, scan), scan, sources, work.company, "handoff" if handoff else "rehearse",
-                    canonical_url=work.page_url, adapter_version=apply_greenhouse.ADAPTER_VERSION, uploads_on_attach=uploads_on_attach,
+                    canonical_url=work.page_url, adapter_version=apply_ats.spec_for(work.job.ats).adapter_version, uploads_on_attach=uploads_on_attach,
                 )
 
             def check_file(_key: str, ref: str, sha256: str) -> bool:
