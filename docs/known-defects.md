@@ -18,24 +18,15 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-<<<<<<< HEAD
-| Apply for me | 0 | 3 | 5 | 8 |
+| Apply for me | 0 | 3 | 6 | 9 |
 | Mail, Gmail and inboxes | 0 | 4 | 8 | 12 |
-=======
-| Apply for me | 0 | 4 | 5 | 9 |
-| Mail, Gmail and inboxes | 0 | 4 | 9 | 13 |
->>>>>>> osaini/phase5-apply-handoff-hardening
 | Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
 | Web API, auth and storage | 0 | 4 | 1 | 5 |
 | Scoring, scheduling and configuration | 1 | 2 | 8 | 11 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-<<<<<<< HEAD
-| **Total** | **1** | **28** | **30** | **59** |
-=======
-| **Total** | **1** | **29** | **33** | **63** |
->>>>>>> osaini/phase5-apply-handoff-hardening
+| **Total** | **1** | **28** | **33** | **62** |
 
 ## Start here: the high-severity entries
 
@@ -121,11 +112,7 @@ The entry flagged for an owner decision is
 
 ## Apply for me
 
-<<<<<<< HEAD
-The first three were left open by PR #54 (the fail-closed net) and recorded here on 2026-10-03; each was narrowed on 2026-10-08 (the lists were widened, a page's headings now count, and the chain follows every follow-up-shaped child). Apply for me never carries an answer across companies, so it can at worst affect one company's own saved answer, and the student still presses Submit (D1 B). The next six were found while building the rehearsal engine (M5a), and the last four while building Finish in browser (M5b part 2); none was fixed there.
-=======
-The first three were left open by PR #54 (the fail-closed net) and recorded here on 2026-10-03. Apply for me never carries an answer across companies, so each of those can at worst affect one company's own saved answer, and the student still presses Submit (D1 B). The next six were found while building the rehearsal engine (M5a), and the next four while building Finish in browser (M5b part 2); none was fixed there. The last two were found on 2026-10-04 and 2026-10-08.
->>>>>>> osaini/phase5-apply-handoff-hardening
+The first three were left open by PR #54 (the fail-closed net) and recorded here on 2026-10-03; each was narrowed on 2026-10-08 (the lists were widened, a page's headings now count, and the chain follows every follow-up-shaped child). Apply for me never carries an answer across companies, so each can at worst affect one company's own saved answer, and the student still presses Submit (D1 B). The next three were found while building the rehearsal engine (M5a), and the next one while building Finish in browser (M5b part 2); none was fixed there. The last two were found on 2026-10-04 and 2026-10-08.
 
 ### Agreement-shaped choices and signatures in wordings no list has still fill from a same-company saved answer
 - **Severity:** medium (PR #54 review; narrowed on 2026-10-08)
