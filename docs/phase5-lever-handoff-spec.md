@@ -379,7 +379,11 @@ reason a Lever role can get the read-only check with no browser.
    the JSON `required` equals the DOM `required` **as scanned at load** (the page relaxes it after a tick, 3.11; a card's
    required checkbox group is one question), and every option label in the DOM appears in the JSON options and the
    reverse, **ignoring options with an empty `value`** (the `Select...` placeholder every dropdown starts with, which
-   the JSON does not list). Any mismatch marks the field unreadable.
+   the JSON does not list). An option's label is its `label` attribute when it has one, else its text. For a card or
+   survey choice, every option with a non-empty `value` must also submit the answer it shows: its value, with
+   whitespace collapsed, equals its label (a radio with no `value` submits "on", so it fails). A page that shows one
+   answer and submits another is a page the parser does not understand. The EEO selects and the office select keep a
+   label that is not their value (3.6). Any mismatch marks the field unreadable.
 6. **Unknown controls.** A named control outside the families above is recorded with its name and type. If it is
    required the plan lists it as a problem ("Lever's form has a question the app doesn't read: {label}"); if it is
    optional it is left empty and listed as "left for you".

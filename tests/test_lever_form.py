@@ -618,7 +618,7 @@ class CrossCheckTests(unittest.TestCase):
 
     def test_option_whitespace_and_character_references_are_compared_as_the_reader_sees_them(self):
         fields = [question("dropdown", "Q?", options=["Arts & Sciences", "Two  spaces"])]
-        control = '<select name="' + name_of(0) + '"><option value="">Select...</option><option value="a">Arts &amp; Sciences</option><option value="b">Two spaces</option></select>'
+        control = '<select name="' + name_of(0) + '"><option value="">Select...</option><option value="Arts &amp; Sciences">Arts &amp; Sciences</option><option value="Two spaces">Two spaces</option></select>'
         form = parse_lever_form(card_page(fields, [control]))
         self.assertEqual((len(form.fields), form.fields[0].options), (1, ("Arts & Sciences", "Two spaces")))
 
@@ -639,11 +639,56 @@ class CrossCheckTests(unittest.TestCase):
         control = '<select name="' + name_of(0) + '"><option value="">Select<option value="A">A<option value="B">B</select>'
         self.assertEqual(len(parse_lever_form(card_page(fields, [control])).fields), 1)
 
+    def test_a_card_choice_whose_submitted_value_is_not_the_label_it_shows_is_unreadable(self):
+        # The page shows one answer and would submit another: the parser does not understand it, so the student answers (5.4 item 2).
+        name = name_of(0)
+        yes_no = ["Yes", "No"]
+        swapped_select = f'<select name="{name}"><option value="">Select...</option><option value="No">Yes</option><option value="Yes">No</option></select>'
+        swapped_radio = (f'<label><input type="radio" name="{name}" value="No"><span class="application-answer-alternative">Yes</span></label>'
+                         f'<label><input type="radio" name="{name}" value="Yes"><span class="application-answer-alternative">No</span></label>')
+        swapped_box = swapped_radio.replace("radio", "checkbox")
+        for kind, control in (("dropdown", swapped_select), ("multiple-choice", swapped_radio), ("multiple-select", swapped_box)):
+            with self.subTest(kind=kind):
+                form = parse_lever_form(one_card(kind, options=yes_no, control=control))
+                self.assertEqual((form.fields, len(form.unreadable)), ((), 1))
+                self.assertIn("answers", form.unreadable[0].reason)
+
+    def test_an_option_label_attribute_is_what_the_page_shows_and_must_match_the_json_and_the_value(self):
+        name = name_of(0)
+        yes_no = ["Yes", "No"]
+
+        def select(*options):
+            return f'<select name="{name}"><option value="">Select...</option>{"".join(options)}</select>'
+
+        shown_differs = select('<option value="No" label="Yes">No</option>', '<option value="Yes" label="No">Yes</option>')
+        same = select('<option value="Yes" label="Yes">Elsewhere</option>', '<option value="No" label="No">Elsewhere</option>')
+        value_only = select('<option label="Yes">Yes</option>', '<option label="No">No</option>')
+        self.assertEqual(len(parse_lever_form(one_card("dropdown", options=yes_no, control=shown_differs)).unreadable), 1)
+        self.assertEqual(len(parse_lever_form(one_card("dropdown", options=yes_no, control=same)).fields), 1)
+        self.assertEqual(len(parse_lever_form(one_card("dropdown", options=yes_no, control=value_only)).fields), 1)
+        # No value attribute: the value is the option's text, so a label attribute that says something else is a different answer.
+        text_is_the_value = select('<option label="Yes">No</option>', '<option label="No">Yes</option>')
+        self.assertEqual(len(parse_lever_form(one_card("dropdown", options=yes_no, control=text_is_the_value)).unreadable), 1)
+
+    def test_a_choice_value_that_differs_from_its_label_only_in_spacing_still_reads_and_a_radio_with_no_value_does_not(self):
+        name = name_of(0)
+        spaced = f'<select name="{name}"><option value=" Yes ">Yes</option><option value="No  ">No</option></select>'
+        self.assertEqual(len(parse_lever_form(one_card("dropdown", options=["Yes", "No"], control=spaced)).fields), 1)
+        no_value = (f'<label><input type="radio" name="{name}"><span class="application-answer-alternative">Yes</span></label>'
+                    f'<label><input type="radio" name="{name}"><span class="application-answer-alternative">No</span></label>')
+        self.assertEqual(len(parse_lever_form(one_card("multiple-choice", options=["Yes", "No"], control=no_value)).unreadable), 1)
+
+    def test_the_eeo_and_office_selects_keep_a_label_that_is_not_their_value(self):
+        for name in ("demo_eeo_survey.html", "variants.html"):
+            with self.subTest(page=name):
+                self.assertEqual(read(name).unreadable, ())
+        self.assertTrue(any(item.name == "veteran_status" for item in read("demo_eeo_survey.html").fields))
+
     def test_a_radio_option_is_named_by_its_own_span_not_the_text_around_it(self):
         fields = [question("multiple-choice", "Q?", options=["Yes", "No"])]
-        control = ('<label><input type="radio" name="' + name_of(0) + '" value="y"><span class="eeo-option-text application-answer-alternative">Yes</span>'
+        control = ('<label><input type="radio" name="' + name_of(0) + '" value="Yes"><span class="eeo-option-text application-answer-alternative">Yes</span>'
                    '<div class="eeo-option-description">A long note.</div></label>'
-                   '<label><input type="radio" name="' + name_of(0) + '" value="n"><span class="application-answer-alternative">No</span></label>')
+                   '<label><input type="radio" name="' + name_of(0) + '" value="No"><span class="application-answer-alternative">No</span></label>')
         self.assertEqual(len(parse_lever_form(card_page(fields, [control])).fields), 1)
 
     def test_a_json_field_the_page_has_no_control_for_is_unreadable_and_a_page_control_the_json_does_not_list_is_too(self):

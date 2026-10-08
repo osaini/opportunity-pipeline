@@ -159,7 +159,7 @@ class _Control:
         self.label = label
         self.starred = starred  # the question's label shows the required marker (the page's own attribute may be missing, see _standard_field)
         self.dom_id = dom_id
-        self.options: list[tuple[str, str]] = []  # a select's (value, text)
+        self.options: list[tuple[str, str]] = []  # a select's (value, label as the page shows it)
         self.span: list[str] | None = None  # the text of the option's own ``application-answer-alternative`` span
         self.label_el = label_el  # the text of the ``<label>`` around a radio or checkbox, when no span names the option
 
@@ -193,7 +193,7 @@ class _Scanner(HTMLParser):
         self._starred_now = False
         self._label_els: list[tuple[list[str], str]] = []  # open <label> elements: their text so far, and their ``for``
         self._select: _Control | None = None
-        self._option: tuple[str | None, list[str]] | None = None
+        self._option: tuple[str | None, str | None, list[str]] | None = None
         self._pending: _Control | None = None  # the radio or checkbox waiting for its option span
         self._span: list[tuple[str, bool]] | None = None
         self._seq = 0
@@ -245,7 +245,7 @@ class _Scanner(HTMLParser):
             self._pending = None
         elif tag == "option" and self._select is not None:
             self._end_option()
-            self._option = (a.get("value"), [])
+            self._option = (a.get("value"), a.get("label"), [])
         elif tag == "textarea":
             self._control(a, "textarea", "textarea")
             self._pending = None
@@ -321,7 +321,7 @@ class _Scanner(HTMLParser):
         if self._span is not None and self._pending is not None and self._pending.span is not None:
             self._pending.span.append(data)
         if self._option is not None:
-            self._option[1].append(data)
+            self._option[2].append(data)
 
     # --- controls
 
@@ -347,9 +347,10 @@ class _Scanner(HTMLParser):
 
     def _end_option(self) -> None:
         if self._option is not None and self._select is not None:
-            value, text = self._option
-            label = _collapse("".join(text))
-            self._select.options.append((label if value is None else value, label))
+            value, label_attribute, chunks = self._option
+            text = _collapse("".join(chunks))
+            # HTML: the label is the ``label`` attribute when it is not empty, else the text; the value is the ``value`` attribute, else the text.
+            self._select.options.append((text if value is None else value, _collapse(label_attribute) or text))
         self._option = None
 
 
@@ -368,6 +369,14 @@ def _group_options(controls: list[_Control]) -> list[str]:
     if len(controls) == 1 and controls[0].tag == "select":
         return [label for value, label in controls[0].options if value != ""]
     return [control.option_label() for control in controls if control.kind in ("checkbox", "radio") and control.option_value() != ""]
+
+
+def _answers_match_labels(controls: list[_Control]) -> bool:
+    """Whether every real option submits the answer it shows: its value, once tidied, is its label. EEO and fixed fields do not use this."""
+    if len(controls) == 1 and controls[0].tag == "select":
+        return all(_collapse(value) == label for value, label in controls[0].options if value != "")
+    return all(_collapse(control.option_value()) == control.option_label() for control in controls
+               if control.kind in ("checkbox", "radio") and control.option_value() != "")
 
 
 def _required(controls: list[_Control]) -> bool | None:
@@ -457,6 +466,8 @@ def _card_field(json_field: Any, controls: list[_Control] | None, name: str, pre
         return unreadable("the page and its description disagree about whether this question is required", label, json_required)
     if kind in ("dropdown", "multiple-choice", "multiple-select") and Counter(_group_options(controls)) != Counter(listed):
         return unreadable("the page's options for this question are not the ones its description lists", label, json_required)
+    if kind in ("dropdown", "multiple-choice", "multiple-select") and not _answers_match_labels(controls):
+        return unreadable("the page shows answers for this question that are not the ones it submits", label, json_required)
     raw = description or ""
     return SchemaField(
         name=name, label=label, required=json_required, type=_SCHEMA_TYPE[kind], options=tuple(listed), section="custom",
