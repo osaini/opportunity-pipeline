@@ -239,6 +239,7 @@ class AdapterBase:
     waits_for_challenge = False           # a visible CAPTCHA challenge while the app fills makes it stop, touch nothing and wait for the student
     required_from_load = False            # which controls are required is read from the page as it loaded (its script drops ``required`` from every box once one is ticked)
     page_sentences: dict[str, str] = {}   # a kind of page ``detect_page`` answers -> the sentence a run ends with (needs_you) when it finds it
+    press_selector = ""                   # the CSS selector of the form's Submit control: the press listener reports a trusted click inside it ("" reports none)
 
     def scan(self, frame: Any) -> list[dict[str, Any]]:
         raise NotImplementedError("this adapter reads its form with the shared engine")

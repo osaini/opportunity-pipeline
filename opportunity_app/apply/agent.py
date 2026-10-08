@@ -33,7 +33,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import parse_qs, urlsplit
 
 from .. import ROOT
@@ -301,16 +301,29 @@ NO_SIDE_CHANNELS = """(() => {
 # Only a board's own page counts, so a frame the page makes up (about:blank, srcdoc) with a form of that name in it does not.
 PRESS_WORLD = "apply-student-press"
 PRESS_BINDING = "applyStudentPress"
-PRESS_LISTENER = """(() => {
+# The page script is a template: ``press_listener`` fills in the run's ATS's board hosts (``RoutePolicy.navigation_hosts``) and the selector of its
+# Submit control (the adapter's ``press_selector``: Greenhouse's form submit, Lever's visible Submit button), so each ATS's student press is seen on its own page.
+PRESS_LISTENER_TEMPLATE = """(() => {
   const hosts = __HOSTS__;
-  if (hosts.indexOf(location.hostname) < 0) return;
-  const submit = "form#application-form button[type='submit'], form#application-form input[type='submit'], #application_form #submit_app";
+  const submit = __SUBMIT__;
+  if (!submit || hosts.indexOf(location.hostname) < 0) return;
   window.addEventListener('click', (event) => {
     if (!event.isTrusted) return;
     const target = event.target;
     if (target && typeof target.closest === 'function' && target.closest(submit)) window.__BINDING__('1');
   }, true);
-})();""".replace("__HOSTS__", json.dumps(sorted(BOARD_HOSTS))).replace("__BINDING__", PRESS_BINDING)
+})();"""
+
+
+def press_listener(hosts: Iterable[str], submit_selector: str) -> str:
+    """The press listener's source for one ATS: only its board hosts count, and only a trusted click inside ``submit_selector`` is reported.
+
+    ``json.dumps`` writes both values as JavaScript literals. An empty selector reports nothing (an adapter that names no Submit control).
+    """
+    return (PRESS_LISTENER_TEMPLATE.replace("__HOSTS__", json.dumps(sorted(hosts))).replace("__SUBMIT__", json.dumps(submit_selector))
+            .replace("__BINDING__", PRESS_BINDING))
+
+
 # The only DevTools calls the agent makes, and nothing else (tests/test_apply_agent_static.py reads the syntax tree for it).
 PRESS_CDP_CALLS = ("Page.enable", "Runtime.enable", "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument")
 
@@ -622,6 +635,8 @@ class GreenhouseAdapter(AdapterBase):
 
     ats = ATS_GREENHOUSE
     form_page_kind = "application_form_new"   # what ``detect_page`` answers for a form the app fills
+    # The student's Submit, for the press listener: a trusted click on the form's submit control (Enter in the form makes one too).
+    press_selector = "form#application-form button[type='submit'], form#application-form input[type='submit'], #application_form #submit_app"
 
     # --- the posting's address ----------------------------------------------------------------------------------
 
@@ -1061,7 +1076,7 @@ class ApplyAgent:
             pass
 
     def _watch_presses(self) -> None:
-        """Have the browser report the student's own presses of Submit, from a world the page's scripts cannot reach (``PRESS_LISTENER``).
+        """Have the browser report the student's own presses of Submit, from a world the page's scripts cannot reach (``press_listener``).
 
         A failure leaves ``_press_channel`` False: the app then does not type the emailed code, since it could not tell the student's press
         from the widget's own send. This is the one DevTools session the agent opens, and it makes the four calls in ``PRESS_CDP_CALLS``.
@@ -1072,7 +1087,8 @@ class ApplyAgent:
             cdp.send("Page.enable")
             cdp.send("Runtime.enable")
             cdp.send("Runtime.addBinding", {"name": PRESS_BINDING, "executionContextName": PRESS_WORLD})
-            cdp.send("Page.addScriptToEvaluateOnNewDocument", {"source": PRESS_LISTENER, "worldName": PRESS_WORLD, "runImmediately": True})
+            listener = press_listener(self._policy.navigation_hosts, self.adapter.press_selector)
+            cdp.send("Page.addScriptToEvaluateOnNewDocument", {"source": listener, "worldName": PRESS_WORLD, "runImmediately": True})
         except Exception:  # noqa: BLE001 - a browser without DevTools sessions: no press can be seen
             return
         self._cdp = cdp

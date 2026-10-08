@@ -19,6 +19,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlparse
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -682,6 +683,65 @@ class ChallengeTests(LeverCase):
         self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [HANDOFF_NOT_SUBMITTED + " Lever received your résumé."]))
         self.assertEqual(run.result.evidence["handoff_end"], "timeout", "the turn was the student's to the end")
         self.assertEqual(fake.apply_posts(), [])
+
+
+class StudentPressTests(LeverCase):
+    """Lever's Submit is a button of type ``button``, and hCaptcha writes after it in bodies a form does not use (a binary one, a script's). Until the app has
+    seen the student's own press, a file-shaped write to an hCaptcha address ends the turn; from the press on only the planned file's bytes do, since a wrong
+    reading would close the window in the middle of the check. So the press must be seen on Lever's page: the listener names Lever's hosts and ``#btn-submit``."""
+    BINARY = bytes([0x81, 0xA1, 0x6B, 0x01])   # a few bytes of a binary (msgpack) body, which is not the planned file
+    CAPTCHA_URL = "https://api.hcaptcha.com/getcaptcha/00000000-0000-0000-0000-000000000000"
+    WRITE = "(args) => fetch(args.url, {method: 'POST', headers: {'Content-Type': args.type}, body: new Uint8Array(args.body)}).catch(() => 0)"
+
+    @staticmethod
+    def written(run, content_type):
+        """The writes of the test's own (the page's hCaptcha posts text and forms) that reached hCaptcha."""
+        return [seen for seen in run.fake.requests if seen.method == "POST" and seen.host == "api.hcaptcha.com" and seen.content_type.startswith(content_type)]
+
+    def play(self, *, press, body, content_type="application/octet-stream"):
+        """A student who presses Submit (``press``: "trusted", "script" or None) and then has hCaptcha write ``body``. Returns the run."""
+        fake = FakeLever()
+        fake.challenge = True
+        done = []
+
+        def student(page, step, seen):
+            if step == "handoff" and not done:
+                done.append(1)
+                if press == "trusted":
+                    page.click("#btn-submit")
+                elif press == "script":
+                    page.evaluate("() => document.getElementById('btn-submit').click()")
+                page.wait_for_timeout(500)
+                page.evaluate(self.WRITE, {"url": self.CAPTCHA_URL, "type": content_type, "body": list(body)})
+                page.wait_for_timeout(300)
+
+        return self.go(fake, student=student, presses=0 if press is None else 1, timeouts=dataclasses.replace(TIMEOUTS, handoff_s=4.0))
+
+    def test_the_students_click_on_submit_is_seen_and_an_hcaptcha_write_after_it_that_is_not_the_file_passes(self):
+        for content_type in ("application/octet-stream", "application/x-msgpack"):
+            with self.subTest(content_type=content_type):
+                run = self.play(press="trusted", body=self.BINARY, content_type=content_type)
+                self.assertGreater(run.agent._state.last_press_at, 0, "the app never saw the student press Submit")
+                self.assertEqual(self.refused(run, rule="upload_elsewhere"), [], run.result.refused)
+                self.assertEqual([seen.path for seen in self.written(run, content_type)], [urlparse(self.CAPTCHA_URL).path], "the write did not reach hCaptcha")
+                self.assertEqual(run.result.evidence["handoff_end"], "timeout", "the student's turn was closed by something other than the clock")
+
+    def test_the_planned_file_is_still_refused_after_the_press_and_closes_the_window(self):
+        run = self.play(press="trusted", body=RESUME_BYTES)
+        self.assertGreater(run.agent._state.last_press_at, 0)
+        self.assertEqual(len(self.refused(run, rule="upload_elsewhere", host="api.hcaptcha.com")), 1, run.result.refused)
+        self.assertEqual(run.result.evidence["handoff_end"], "upload")
+        self.assertEqual(self.written(run, "application/octet-stream"), [], "the file reached hCaptcha")
+
+    def test_a_click_the_page_makes_itself_is_not_the_press_and_the_strict_reading_stays(self):
+        run = self.play(press="script", body=self.BINARY)
+        self.assertEqual(run.agent._state.last_press_at, 0.0, "a script's click was counted as the student's press")
+        self.assertEqual(len(self.refused(run, rule="upload_elsewhere", host="api.hcaptcha.com")), 1, run.result.refused)
+        self.assertEqual(run.result.evidence["handoff_end"], "upload")
+
+    def test_with_no_press_a_binary_write_to_hcaptcha_is_refused_in_the_students_turn(self):
+        run = self.play(press=None, body=self.BINARY)
+        self.assertEqual(len(self.refused(run, rule="upload_elsewhere", host="api.hcaptcha.com")), 1, run.result.refused)
 
 
 # --- Item 9: the banner and the interstitial --------------------------------------------------------------------------------------------

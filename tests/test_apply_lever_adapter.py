@@ -6,6 +6,7 @@ is in tests/test_apply_lever_browser.py. Every company, person and address is fi
 import ast
 import fnmatch
 import inspect
+import json
 import re
 import sys
 import time
@@ -29,7 +30,8 @@ from opportunity_app.apply import agent_types
 from opportunity_app.apply import ats as apply_ats
 from opportunity_app.apply import lever, lever_adapter
 from opportunity_app.apply.agent import ApplyAgent, GreenhouseAdapter
-from opportunity_app.apply.checks import Endpoint
+from opportunity_app.apply.checks import GREENHOUSE_ROUTE_POLICY, LEVER_ROUTE_POLICY, Endpoint
+from opportunity_app.apply.greenhouse import BOARD_HOSTS
 from opportunity_app.apply.lever_adapter import DENYLIST, PARSER_FIELDS, PARSER_PREFIX, LeverAdapter
 
 ADAPTER_PATH = "apply/lever_adapter.py"
@@ -170,6 +172,42 @@ class ConstantsTests(unittest.TestCase):
 
     def test_the_page_sets_resume_storage_id_itself_and_nothing_else_after_a_read(self):
         self.assertEqual(lever_adapter.PAGE_SETS, frozenset({"resumeStorageId"}))
+
+
+# --- The student's press, seen on each ATS's own page ------------------------------------------------------------------------------------
+
+class PressListenerTests(unittest.TestCase):
+    """``PRESS_LISTENER`` was Greenhouse's alone: on Lever the student's press was never seen, so the strict file reading stayed on through hCaptcha's check."""
+
+    def test_lever_s_listener_names_lever_s_hosts_and_the_visible_submit_button_only(self):
+        source = apply_agent.press_listener(LEVER_ROUTE_POLICY.navigation_hosts, LeverAdapter.press_selector)
+        self.assertEqual(LeverAdapter.press_selector, "#btn-submit, #hcaptchaSubmitBtn")
+        for host in lever.LEVER_HOSTS:
+            self.assertIn(f'"{host}"', source)
+        self.assertNotIn("greenhouse", source)
+        self.assertIn("event.isTrusted", source, "a click the page makes itself would count as the student's")
+
+    def test_greenhouse_s_listener_is_still_its_boards_and_its_form_s_submit_control(self):
+        source = apply_agent.press_listener(GREENHOUSE_ROUTE_POLICY.navigation_hosts, GreenhouseAdapter.press_selector)
+        for host in BOARD_HOSTS:
+            self.assertIn(f'"{host}"', source)
+        self.assertNotIn("lever", source)
+        self.assertIn("form#application-form button[type='submit']", GreenhouseAdapter.press_selector)
+        self.assertIn("#application_form #submit_app", GreenhouseAdapter.press_selector)
+
+    def test_an_adapter_that_names_no_submit_control_reports_no_press(self):
+        self.assertEqual(agent_types.AdapterBase.press_selector, "")
+        self.assertIn('const submit = "";', apply_agent.press_listener(["jobs.lever.co"], ""))
+        self.assertIn("if (!submit ||", apply_agent.press_listener(["jobs.lever.co"], ""))
+
+    def test_the_selector_and_hosts_are_written_as_literals_whatever_they_hold(self):
+        source = apply_agent.press_listener(['a".b', "c"], 'x"); alert(1); ("')
+        self.assertIn(json.dumps(['a".b', "c"]), source)
+        self.assertIn(json.dumps('x"); alert(1); ("'), source)
+
+    def test_the_agent_builds_the_listener_from_its_policy_s_hosts_and_its_adapter_s_selector(self):
+        text = helpers_source.apply_modules()["apply/agent.py"]
+        self.assertIn("press_listener(self._policy.navigation_hosts, self.adapter.press_selector)", text)
 
 
 # --- 10.5: static scans, through tests/helpers_source.py (a directory, never one file) ---------------------------------------------------

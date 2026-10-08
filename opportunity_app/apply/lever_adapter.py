@@ -175,6 +175,8 @@ class LeverAdapter(AdapterBase):
 
     ats = lever.ATS_LEVER
     form_page_kind = "application_form"   # what ``detect_page`` answers for a form the app fills
+    # The student's Submit, for the press listener: a trusted click on the page's own button (the hidden one is only ever clicked by the page's script, which is not trusted).
+    press_selector = ", ".join(f"#{name}" for name in DENYLIST)
     uses_engine = False
     closed_on_404 = True
     waits_for_challenge = True

@@ -2038,7 +2038,7 @@ spec left a choice open:
   at once is not held up, and a widget that sends at 2.5 s is refused like one that sends at 0.3 s. A refusal for either reason is
   recorded as the widget sending by itself (`auto_submit_blocked`) and the student has been told to press Submit. The press is
   heard through the one DevTools session the agent opens (`_watch_presses`): a listener in an isolated world
-  (`PRESS_LISTENER`, `PRESS_WORLD`) registered on the window in the capture phase before any page script runs, which reports a
+  (`PRESS_LISTENER_TEMPLATE`, `PRESS_WORLD`) registered on the window in the capture phase before any page script runs, which reports a
   click only when `event.isTrusted` is true, the target is inside the application form's submit control (Enter in a box becomes
   such a click in the browser) and the page is a board's own. It reports through a binding that exists in that world only, so a
   page script cannot call it, find its name, or reach the listener's built-ins; a script click, a made-up event or a submit by
