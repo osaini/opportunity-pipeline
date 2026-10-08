@@ -116,29 +116,55 @@ LEFT_UNPLANNED = "The page put something in \"{question}\" that the app didn't. 
 # Submit: from then on, a run that ends without a submission does not say "Nothing was sent". ``resume_with_ats`` is whether the run's evidence
 # says the file got there, by the app's attach ("resume_sent_to_lever": true) or by the student's own in the window ("student_attached_resume").
 RESUME_RECEIVED = "{ats} received your résumé."
+RESUME_MAYBE = "{ats} may have received your résumé."
 RESUME_EVIDENCE_KEYS = ("resume_sent_to_lever", "student_attached_resume")
-_NOT_SENT_CLAUSE = re.compile(r"(?:Your application was not sent|Nothing was sent|No application was sent)\.?", re.IGNORECASE)
-_RESUME_SAID = re.compile(r"received your résumé", re.IGNORECASE)
+# Written to the run row when it starts, if the app will attach the résumé: a run that dies before its window is ready cannot say whether the file got there.
+RESUME_PLANNED_KEY = "resume_attach_planned"
+_NOT_SENT_CLAUSE = re.compile(r"(?:your application was not sent|nothing was sent|no application was sent)(\.?)", re.IGNORECASE)
+_RESUME_SAID = re.compile(r"(?:received|holds|has|have) (?:your résumé|the file)", re.IGNORECASE)
+
+
+def _student_attached(record: Any) -> bool:
+    """The student's own attach, as the window recorded it: a count above zero or a file's hash. A record set up empty is not a file."""
+    if not isinstance(record, dict):
+        return False
+    count = record.get("count")
+    sha = record.get("sha256")
+    return (isinstance(count, int) and not isinstance(count, bool) and count > 0) or (isinstance(sha, str) and bool(sha))
 
 
 def resume_with_ats(evidence: Any) -> bool:
     """Whether a run's evidence says the student's résumé reached the ATS before any Submit (Lever: when it was attached)."""
-    return isinstance(evidence, dict) and any(bool(evidence.get(key)) for key in RESUME_EVIDENCE_KEYS)
+    return isinstance(evidence, dict) and (evidence.get("resume_sent_to_lever") is True or _student_attached(evidence.get("student_attached_resume")))
 
 
-def with_resume_note(sentence: str, ats_name: str) -> str:
-    """A "not sent" sentence of a run that never handed over, said the way it is true once the ATS holds the résumé.
+def resume_may_be_with_ats(evidence: Any) -> bool:
+    """Whether the run was going to have the app attach the résumé and nothing yet says whether the file got there."""
+    return isinstance(evidence, dict) and evidence.get(RESUME_PLANNED_KEY) is True and not resume_with_ats(evidence)
 
-    "Nothing was sent", "No application was sent" and "Your application was not sent" become "Your application was not sent. Lever received
-    your résumé."; a sentence with none of them gets the second sentence added. A sentence that already says it is left as it is. Only for a
-    run that never handed over: after a hand-over the sentences say "may have been sent", which this never touches.
+
+def with_resume_note(sentence: str, ats_name: str, *, sure: bool = True) -> str:
+    """A "not sent" sentence of a run that never handed over, said the way it is true once the ATS holds (or may hold) the résumé.
+
+    "Nothing was sent", "No application was sent" and "Your application was not sent" at the start of a sentence become "Your application was
+    not sent. Lever received your résumé."; inside a sentence ("..., so nothing was sent") the clause is rewritten in place, in lower case, and the
+    second sentence follows. A sentence with none of them gets the second sentence added. ``sure=False`` is for a run that only planned the
+    attach: "Lever may have received your résumé." A sentence that already speaks of the file ("Lever may still have the file") is left as it
+    is. Only for a run that never handed over: after a hand-over the sentences say "may have been sent", which this never touches.
     """
     if not sentence or _RESUME_SAID.search(sentence):
         return sentence
-    said = f"Your application was not sent. {RESUME_RECEIVED.format(ats=ats_name)}"
-    if _NOT_SENT_CLAUSE.search(sentence):
-        return _NOT_SENT_CLAUSE.sub(said, sentence, count=1)
-    return f"{sentence.rstrip()} {RESUME_RECEIVED.format(ats=ats_name)}"
+    note = (RESUME_RECEIVED if sure else RESUME_MAYBE).format(ats=ats_name)
+    found = _NOT_SENT_CLAUSE.search(sentence)
+    if found is None:
+        return f"{sentence.rstrip()} {note}"
+    before = sentence[:found.start()]
+    if not before or before.endswith((". ", "! ", "? ")):
+        return f"{before}Your application was not sent. {note}{sentence[found.end():]}"
+    rewritten = f"{before}your application was not sent{found.group(1)}{sentence[found.end():]}".rstrip()
+    if not rewritten.endswith((".", "!", "?")):
+        rewritten += "."
+    return f"{rewritten} {note}"
 
 
 @dataclass(frozen=True)

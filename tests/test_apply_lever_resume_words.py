@@ -19,7 +19,7 @@ realdata_guard.install()
 
 from opportunity_app.apply import agent_types, runner as apply_runner, runs as apply_runs
 from opportunity_app.apply.agent_types import (
-    HANDOFF_NOT_SUBMITTED, HANDOFF_UNRECORDED, WINDOW_CLOSED, RunResult, resume_with_ats, with_resume_note,
+    HANDOFF_NOT_SUBMITTED, HANDOFF_UNRECORDED, RESUME_PLANNED_KEY, WINDOW_CLOSED, RunResult, resume_may_be_with_ats, resume_with_ats, with_resume_note,
 )
 from opportunity_app.apply.runner import handoff_settlement
 
@@ -28,6 +28,9 @@ from helpers_apply import USER, ApplyCase, setUpModule, tearDownModule  # noqa: 
 FOREIGN = "another-process"
 RECEIVED = "Lever received your résumé."
 NOT_SENT = f"Your application was not sent. {RECEIVED}"
+MAYBE = "Lever may have received your résumé."
+MAYBE_NOT_SENT = f"Your application was not sent. {MAYBE}"
+PARSE_TIMEOUT = "Lever did not finish reading your résumé. Nothing was filled. Lever may still have the file."
 
 
 class WordsTests(unittest.TestCase):
@@ -53,18 +56,47 @@ class WordsTests(unittest.TestCase):
     def test_the_evidence_says_it_by_the_apps_attach_or_the_students_own(self):
         self.assertTrue(resume_with_ats({"resume_sent_to_lever": True}))
         self.assertTrue(resume_with_ats({"student_attached_resume": {"count": 1}}))
-        for evidence in ({}, {"resume_sent_to_lever": False}, {"student_attached_resume": 0}, None, "resume_sent_to_lever", []):
+        self.assertTrue(resume_with_ats({"student_attached_resume": {"count": 0, "sha256": "ab12"}}), "a file's hash is a file")
+        empty = {"count": 0, "sha256": ""}
+        for evidence in ({}, {"resume_sent_to_lever": False}, {"student_attached_resume": 0}, None, "resume_sent_to_lever", [],
+                         {"resume_sent_to_lever": 1}, {"resume_sent_to_lever": "yes"},
+                         {"student_attached_resume": empty}, {"student_attached_resume": {"count": 0}}, {"student_attached_resume": {}},
+                         {"student_attached_resume": True}):
             with self.subTest(evidence=evidence):
-                self.assertFalse(resume_with_ats(evidence))
+                self.assertFalse(resume_with_ats(evidence), "a record set up empty is not a file that reached Lever")
+
+    def test_a_planned_attach_is_a_maybe_until_something_confirms_it(self):
+        self.assertTrue(resume_may_be_with_ats({RESUME_PLANNED_KEY: True}))
+        self.assertFalse(resume_may_be_with_ats({RESUME_PLANNED_KEY: True, "resume_sent_to_lever": True}), "confirmed is not a maybe")
+        for evidence in ({}, {RESUME_PLANNED_KEY: False}, None, "x"):
+            with self.subTest(evidence=evidence):
+                self.assertFalse(resume_may_be_with_ats(evidence))
+
+    def test_a_sentence_that_already_speaks_of_the_file_is_left_alone(self):
+        # Spec 6.5 step 3: the parse-timeout sentence is fixed, and it already says Lever may still have the file.
+        self.assertEqual(with_resume_note(PARSE_TIMEOUT, "Lever"), PARSE_TIMEOUT)
+        self.assertEqual(with_resume_note(PARSE_TIMEOUT, "Lever", sure=False), PARSE_TIMEOUT)
+
+    def test_a_not_sent_clause_inside_a_sentence_is_rewritten_in_place_and_the_resume_follows(self):
+        got = with_resume_note("The form did not send, so nothing was sent", "Lever")
+        self.assertEqual(got, f"The form did not send, so your application was not sent. {RECEIVED}")
+        self.assertEqual(with_resume_note("The form did not send, so nothing was sent.", "Lever"), f"The form did not send, so your application was not sent. {RECEIVED}")
+        self.assertEqual(with_resume_note("The form did not send, so nothing was sent", "Lever", sure=False),
+                         f"The form did not send, so your application was not sent. {MAYBE}")
+
+    def test_the_maybe_wording_is_used_when_the_app_only_planned_the_attach(self):
+        self.assertEqual(with_resume_note(HANDOFF_NOT_SUBMITTED, "Lever", sure=False), f"You didn't submit it in the window. {MAYBE_NOT_SENT}")
+        self.assertEqual(with_resume_note("The app stopped during this run. No application was sent.", "Lever", sure=False),
+                         f"The app stopped during this run. {MAYBE_NOT_SENT}")
 
 
 class SettlementTests(unittest.TestCase):
     """The rows that end a run before the hand-over (5.3 rows 9 to 15) say the résumé is with Lever; the rows that may have sent do not change."""
 
-    def settle(self, result=None, *, ats_name="Lever", resume_sent=False, **kwargs):
+    def settle(self, result=None, *, ats_name="Lever", resume_sent=False, resume_planned=False, **kwargs):
         facts = dict(stop="", shutting_down=False, claim_state="claimed", cancel_requested=False, handed_over=False, closed_confirmed=True, minutes=48)
         facts.update(kwargs)
-        return handoff_settlement(result, ats_name=ats_name, resume_sent=resume_sent, **facts)
+        return handoff_settlement(result, ats_name=ats_name, resume_sent=resume_sent, resume_planned=resume_planned, **facts)
 
     def stopped(self, **evidence):
         return RunResult("needs_you", [HANDOFF_NOT_SUBMITTED], handed_over=False, after_click=False, evidence=dict(evidence))
@@ -90,6 +122,32 @@ class SettlementTests(unittest.TestCase):
         late = self.settle(None, resume_sent=True, stop=apply_runner.STOP_DEADLINE)
         self.assertEqual(late.row, 14)
         self.assertTrue(late.note.endswith(NOT_SENT), late.note)
+
+    def test_the_parse_timeout_sentence_is_not_followed_by_a_claim_that_lever_got_the_file(self):
+        result = RunResult("needs_you", [PARSE_TIMEOUT], handed_over=False, after_click=False, evidence={"resume_sent_to_lever": True, "handoff_end": ""})
+        got = self.settle(result)
+        self.assertEqual(got.note, PARSE_TIMEOUT)
+        self.assertEqual(got.reasons, [PARSE_TIMEOUT])
+
+    def test_an_ending_with_no_result_after_a_planned_attach_says_lever_may_have_the_file(self):
+        for label, kwargs, row in (
+            ("a server stop", dict(shutting_down=True), 10), ("the deadline", dict(stop=apply_runner.STOP_DEADLINE), 14), ("a dead child", dict(stop="child_died"), 15),
+        ):
+            with self.subTest(label):
+                got = self.settle(None, resume_planned=True, **kwargs)
+                self.assertEqual(got.row, row)
+                self.assertTrue(got.note.endswith(MAYBE_NOT_SENT), got.note)
+                self.assertNotIn("Nothing was sent", got.note)
+                self.assertNotIn("No application was sent", got.note)
+
+    def test_a_planned_attach_the_window_confirmed_says_it_received_it(self):
+        got = self.settle(None, resume_planned=True, resume_sent=True, shutting_down=True)
+        self.assertEqual(got.note, f"The app stopped during this run. {NOT_SENT}")
+
+    def test_a_result_that_says_it_either_way_is_believed_over_the_plan(self):
+        said_no = RunResult("needs_you", [HANDOFF_NOT_SUBMITTED], handed_over=False, after_click=False, evidence={"resume_sent_to_lever": False})
+        got = self.settle(said_no, cancel_requested=True, resume_planned=True)
+        self.assertEqual(got.note, HANDOFF_NOT_SUBMITTED, "the window reported that no file was attached")
 
     def test_without_a_resume_the_sentences_are_exactly_the_old_ones(self):
         for kwargs, row in (
@@ -147,6 +205,12 @@ class ViewTests(ApplyCase):
         view = self.handoff_run(evidence={"resume_sent_to_lever": True}, outcome="failed", reasons=["The form changed under the app"])
         self.assertEqual(view["summary"], f"The form changed under the app. {NOT_SENT}", "the view's own 'No application was sent' becomes the one sentence")
 
+    def test_a_run_that_only_planned_the_attach_says_lever_may_have_it_and_does_not_claim_it_did(self):
+        view = self.handoff_run(evidence={RESUME_PLANNED_KEY: True}, outcome="failed", reasons=["The app stopped during this run"])
+        self.assertIs(view["resume_sent_to_lever"], False, "nothing confirmed it")
+        self.assertIn(MAYBE, view["summary"])
+        self.assertNotIn("No application was sent", view["summary"])
+
     def test_a_rehearsal_never_carries_it(self):
         run_id = self.make_run()
         apply_runs.finish_run(self.conn, run_id, outcome="rehearsed", clean=True, evidence={"resume_sent_to_lever": True}, now=self.at(1))
@@ -170,6 +234,19 @@ class RecoveryTests(ApplyCase):
         apply_runs.recover_stale(self.conn, self.at(), user_id=USER)
         self.assertEqual(self.claim_row(token)["state"], "failed")
         self.assertEqual(self.claim_row(token)["note"], f"The app stopped before handing your application to Lever. {NOT_SENT}")
+
+    def test_a_claim_whose_run_only_planned_the_attach_says_lever_may_have_the_file(self):
+        token = self.raw_claim(state="claimed", mode="handoff", ats="lever", board="harbor-demo", instance=FOREIGN, heartbeat_at=self.at(-10).isoformat(timespec="microseconds"))
+        run_id = apply_runs.create_run(
+            self.conn, user_id=USER, opportunity_id=self.claim_row(token)["opportunity_id"], kind="handoff", started_by="student", ats="lever",
+            board_token="harbor-demo", page_url="https://jobs.lever.co/harbor-demo/6f1d2c3b-4a59-4687-8c7d-9e0f1a2b3c4d/apply",
+            company="harbor demo labs", deadline_seconds=300, adapter_version="lever-1", claim_token=token, now=self.at(-30),
+            evidence={RESUME_PLANNED_KEY: True},
+        )
+        with self.conn:
+            self.conn.execute("UPDATE application_submit_claims SET run_id=? WHERE token=?", (run_id, token))
+        apply_runs.recover_stale(self.conn, self.at(), user_id=USER)
+        self.assertEqual(self.claim_row(token)["note"], f"The app stopped before handing your application to Lever. {MAYBE_NOT_SENT}")
 
     def test_a_greenhouse_claim_is_settled_with_the_old_words(self):
         token = self.raw_claim(state="claimed", mode="handoff", instance=FOREIGN, heartbeat_at=self.at(-10).isoformat(timespec="microseconds"))

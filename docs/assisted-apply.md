@@ -242,7 +242,9 @@ applied?**. What differs:
    no other upload is. The student's turn and the result then say "Your résumé was sent to Lever when it was attached."
 2. **A run that ends before Submit says Lever has the file.** After a résumé is sent, "Nothing was sent" would be only half true: a run the
    student stops, or closes the window of, reads "Your application was not sent. Lever received your résumé." The application itself is
-   still not sent; the file is.
+   still not sent; the file is. A run that stops before its window is ready, when the app was to attach the file, says "Lever may have
+   received your résumé." because nothing recorded whether the attach happened. If the setting changed in another tab since the page
+   was loaded, pressing Finish in browser shows the new words and starts nothing.
 3. **Lever's guesses are cleared.** Once the file is attached, Lever fills your name, company, location and links from it, and some of
    those are wrong. The app overwrites each with a confirmed fact; where it has none, it clears the field and lists it under **Left for
    you**.
