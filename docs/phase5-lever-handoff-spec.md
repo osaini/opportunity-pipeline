@@ -335,6 +335,26 @@ behavior pinned (section 12, LV1). It does these things and nothing else:
 6. New modules are placed in `tests/test_layers.py` at the lowest layer that holds their top-of-file imports, and
    `tests/test_leaf_modules.py` is updated if a leaf is added.
 
+**As built in LV1b** (what differs from the list above, and what was left for later):
+
+- `RoutePolicy` and `GREENHOUSE_ROUTE_POLICY` are in `apply/checks.py`, next to the Greenhouse constants they are built from;
+  `AtsSpec.route_policy` holds it. `route_decision`, `looks_like_a_send`, `student_submit_elsewhere`, `decide_outcome` and
+  `new_code_prompt` take the policy as an argument; `confirmation_reached` is a field of it, and no module-level copy is left.
+  A `RouteState` with no lookup or CAPTCHA list uses the policy's. `RESOLVABLE_HOSTS` is the union of each spec's
+  `route_policy.resolvable_hosts` and the two font hosts.
+- The `_run` branches are answered by the policy (navigation hosts, submit hosts, lookup endpoints) and by four more adapter
+  methods and one attribute (`posting_ids`, `lookup_token`, `confirmation_ids`, `reads_on_attach`, `form_page_kind`), so
+  `ApplyAgent` still takes only an adapter and reads the spec through its `ats`. `reads_on_attach` is noted in the run's evidence
+  when it is true and refuses nothing; what L1 decides is decided where Lever's file is planned (LV3).
+- `CLICK_PURPOSES` did not gain `option_pick`: nothing in today's code presses an option the adapter picked itself, so the entry
+  would be a click the allowlist permits and nothing makes. It goes in with `LeverAdapter` (LV3), with the test that uses it.
+- `PRESS_LISTENER` (the page script that reports the student's own press of Submit) still names Greenhouse's board hosts and
+  its submit control; LV3 and LV4 give it a per-ATS form with the Lever adapter.
+- Sentences that name the ATS take its display name from the spec (`apply.ats.name_of`, `AtsSpec.display_name`); the pages read the
+  payload's `ats_name` (the check, the claim and watch card, an attempt's first event, the automation lists). A record from before
+  the name was kept is Greenhouse's, which the pages say. The sentences of `security_code.py` and `schema_client.py` are
+  Greenhouse's own (its emailed code, its API) and are not generalised.
+
 ### 5.3 The Lever modules
 
 | Module | Holds | Imports |
