@@ -59,9 +59,9 @@ def canned_agent(lever_window, lever_ready, live_server, base_url):
     pytest.fail("a run was still going after the test ended")
 
 
-def handoff(canned, *, wait=6.0, outcome="submitted"):
+def handoff(canned, *, wait=6.0, outcome="submitted", **more):
     # A new dict each time: the fixture restores the old one by reference.
-    canned["handoff"] = {"wait": wait, "outcome": outcome}
+    canned["handoff"] = {"wait": wait, "outcome": outcome, **more}
 
 
 def resume_upload(base_url, mode):
@@ -132,6 +132,26 @@ def test_a_run_with_the_resume_choice_on_shows_the_resume_was_sent_and_a_stop_sa
     result = section.locator(".apply-result")
     expect(result.locator(".apply-result-title")).to_have_text(NOT_SENT_LEVER_HAS_IT, timeout=30_000)
     expect(result.locator(".apply-resume-sent")).to_have_count(0)    # said once, in the title
+def test_a_file_the_student_attaches_in_the_window_is_said_to_be_with_lever_and_the_fields_it_filled_stay_in_the_turn(canned_agent, owner_page, live_server):
+    handoff(canned_agent, wait=60.0, student_attaches={"changed": ["Current company", "Current location"]})
+    section = open_lever(owner_page)
+    finish_button(section).click()
+    turn = section.locator(".apply-turn")
+    expect(turn).to_be_visible(timeout=30_000)
+    # The choice is off, so the app attached nothing; the page still says Lever holds the file, because the student's own went at once.
+    expect(turn.locator(".apply-resume-sent")).to_have_text(SENT)
+    expect(turn.locator(".apply-run-step")).to_have_text(
+        "Lever filled Current company and Current location from the résumé you attached. Check them before you press Submit application")
+    # It is still the student's turn: the closing time and the Stop button are there.
+    expect(turn.locator(".apply-turn-until")).to_contain_text("if you haven't pressed Submit application.")
+    expect(turn.get_by_role("button", name="Stop")).to_be_visible()
+    expect(turn.locator(".apply-stop-help")).to_have_text("Closes the window. Your application is not sent.")
+    turn.get_by_role("button", name="Stop").click()
+    expect(section.locator(".apply-result .apply-result-title")).to_have_text(NOT_SENT_LEVER_HAS_IT, timeout=30_000)
+    violations = Axe().run(owner_page, context=".apply-for-me", options=AXE_OPTIONS).get("violations", [])
+    assert not violations, [(item["id"], item["help"]) for item in violations]
+
+
     assert "Nothing was sent" not in result.inner_text()
     # The result offers Finish in browser again, and it still says what happens to the résumé.
     expect(result.get_by_role("button", name="Finish in browser")).to_be_visible()

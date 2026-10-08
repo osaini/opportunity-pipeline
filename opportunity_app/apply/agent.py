@@ -60,7 +60,9 @@ from .agent_types import (
     LEFT_UNPLANNED,
     MAX_LOOKUP_OPTIONS,
     OP_HANDOFF_READY,
+    RESUME_CHANGED_STEP,
     STOPPED,
+    STUDENT_RESUME_STEP,
     WINDOW_CLOSED,
     ApplyTimeouts,
     FilePayload,
@@ -103,6 +105,7 @@ from .checks import (
 )
 from .ats import REGISTRY, AtsAdapter, AtsSpec, spec_for
 from .greenhouse import ATS_GREENHOUSE, BOARD_HOSTS, SUBMIT_HOST
+from .lever import LEVER_HOSTS
 from .runs import INSTALL_PLAYWRIGHT, PlaywrightProbe
 
 # --- What the agent says (WP2 and WP3 never parse these) ------------------------------------------------------------
@@ -135,6 +138,7 @@ PARSE_TIMEOUT = "{ats} did not finish reading your résumé. Nothing was filled.
 CHALLENGE_UNFINISHED = "{ats} showed a check that was not finished in time, so the app stopped before it filled the form. Nothing was sent."
 CLEARED_GUESS = "{ats} filled this from your résumé and the app did not have a confirmed value, so it cleared it"
 RESUME_SENT = "Your résumé was sent to {ats} when the app attached it."
+STUDENT_READ_FIELD = "{ats} filled this from the résumé you attached. Check it before you press Submit application."
 PAGE_CHANGED = 'The page changed "{question}" itself, which the app never writes. Check it before you press Submit application.'
 # After a file went to the ATS (a page that reads it as it is attached), "Nothing was sent" is no longer true of the file. Each tail below is a sentence's end.
 SENT_TAILS = ("Nothing was sent.", "No application was sent.", "Your application was not sent.")
@@ -312,7 +316,23 @@ PRESS_LISTENER = """(() => {
     const target = event.target;
     if (target && typeof target.closest === 'function' && target.closest(submit)) window.__BINDING__('1');
   }, true);
-})();""".replace("__HOSTS__", json.dumps(sorted(BOARD_HOSTS))).replace("__BINDING__", PRESS_BINDING)
+  // The student choosing a file in the form's file box (a page that reads a file the moment it is attached, Lever's, sends it then). Only a trusted
+  // 'change' counts, so a script that sets a file box's files and fires its own event does not.
+  // The choice is reported at once (the page's read of the file follows it by moments); the file's SHA-256 follows when it is worked out. The bytes
+  // of a file the student picks from their disk do not pass through the request rules (the browser sends them itself), so this is the only way to
+  // know which file it was.
+  window.addEventListener('change', (event) => {
+    if (!event.isTrusted) return;
+    const box = event.target;
+    if (!(box && box.tagName === 'INPUT' && box.type === 'file' && box.files && box.files.length && typeof box.closest === 'function' && box.closest('form#application-form'))) return;
+    window.__BINDING__('file');
+    try {
+      box.files[0].arrayBuffer().then((data) => crypto.subtle.digest('SHA-256', data)).then((hash) => {
+        window.__BINDING__('sha:' + Array.from(new Uint8Array(hash)).map((byte) => byte.toString(16).padStart(2, '0')).join(''));
+      }).catch(() => window.__BINDING__('sha:'));
+    } catch (error) { window.__BINDING__('sha:'); }
+  }, true);
+})();""".replace("__HOSTS__", json.dumps(sorted({*BOARD_HOSTS, *LEVER_HOSTS}))).replace("__BINDING__", PRESS_BINDING)
 # The only DevTools calls the agent makes, and nothing else (tests/test_apply_agent_static.py reads the syntax tree for it).
 PRESS_CDP_CALLS = ("Page.enable", "Runtime.enable", "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument")
 
@@ -996,6 +1016,14 @@ class ApplyAgent:
         self._resume_requests: list[Any] = []      # the requests the route let through to the page's file read
         self._resume_status: dict[int, int] = {}   # id(request) -> the status the page got
         self._resume_digest = ""                   # the SHA-256 of the file in the one that passed (never the file)
+        # The student's own: files they chose in the window during their turn, and the reads of them the route let through (spec 6.12 step 7).
+        self._student_reads: list[Any] = []        # the requests (the page's read of each file the student chose)
+        self._chosen_digests: list[str | None] = []   # the SHA-256 of each file the student chose, as the page's own file box reported it (None until worked out)
+        self._student_changed: list[str] = []      # the keys of the fields the page's reader changed after those reads (names, never values)
+        self._student_noticed = 0                  # how many of the reads above the turn's loop has looked at
+        self._student_baseline: dict[str, str] | None = None   # what the reader's fields held before the read being waited for
+        self._student_waiting = False              # a read has passed and the page has not yet finished applying its answer
+        self._parser_last: dict[str, str] | None = None        # what they held at the last look in which no read was pending
         self._parse_result = ""                    # success, failure, oversize or timeout
         self._resume_stored = False                # the page holds a storage id for the file after a read (it is the page's own, and only read)
         self._guesses_cleared: list[str] = []      # the keys of fields the page's reader filled and the app cleared
@@ -1045,7 +1073,7 @@ class ApplyAgent:
     def _note_response(self, response: Any) -> None:
         """The status the page got for a file read the route let through (the request is the one the route kept, so no other response counts)."""
         try:
-            if any(response.request is sent for sent in self._resume_requests):
+            if any(response.request is sent for sent in (*self._resume_requests, *self._student_reads)):
                 self._resume_status[id(response.request)] = int(response.status)
         except Exception:  # noqa: BLE001 - a response of a page that is going away
             pass
@@ -1069,9 +1097,22 @@ class ApplyAgent:
         self._press_channel = True
 
     def _on_binding(self, event: Mapping[str, Any]) -> None:
-        """The press listener called its binding. The binding exists only in the listener's world, and the listener calls it with "1" only."""
-        if event.get("name") == PRESS_BINDING and event.get("payload") == "1":
+        """The press listener called its binding. The binding exists only in the listener's world, and the listener calls it with "1" (a trusted press of
+        Submit), "file" (a trusted choice of a file) and "sha:" and a file's SHA-256 only."""
+        if event.get("name") != PRESS_BINDING:
+            return
+        if event.get("payload") == "1":
             self._state.note_student_press()
+        elif event.get("payload") == "file" and self._policy.resume_post_path and self._phase == PHASE_STUDENT and not self._handed_over:
+            # The student chose a file in the form's file box: the page's read of it may pass, once (``RouteState.student_files_chosen``).
+            self._state.student_files_chosen += 1
+            self._chosen_digests.append(None)
+        elif isinstance(event.get("payload"), str) and re.fullmatch(r"sha:(?:[0-9a-f]{64})?", event["payload"]):
+            # That file's SHA-256 (or nothing, when the page could not work it out), for the oldest choice that has none yet.
+            for index, known in enumerate(self._chosen_digests):
+                if known is None:
+                    self._chosen_digests[index] = event["payload"][4:]
+                    break
 
     # --- the request policy -----------------------------------------------------------------------------------
 
@@ -1103,6 +1144,8 @@ class ApplyAgent:
             decision = route_decision(self.mode, self._phase, facts, self._state, self._policy)
             if isinstance(decision, Abort) and decision.rule == "code_post_before_press" and self._press_arrives():
                 decision = route_decision(self.mode, self._phase, facts, self._state, self._policy)   # the press was reported a moment after the request
+            if isinstance(decision, Abort) and decision.rule == "resume_post_unasked" and self._file_choice_arrives():
+                decision = route_decision(self.mode, self._phase, facts, self._state, self._policy)   # the choice was reported a moment after the request
             # Resolved last, and only for a request the policy would let through: the name of a request that is refused anyway
             # (after the first input, anything but Greenhouse's own hosts) is never sent to a resolver, since a hostname can carry a value.
             # A name the browser itself could not look up is not looked up here either: the resolver below runs in this process, outside the
@@ -1122,8 +1165,11 @@ class ApplyAgent:
                 return
             self._state.record(decision)
             if getattr(decision, "resume_post", False):
-                self._resume_requests.append(request)
-                self._resume_digest = str(getattr(decision, "digest", "") or "")
+                if getattr(decision, "student_file", False):
+                    self._student_reads.append(request)
+                else:
+                    self._resume_requests.append(request)
+                    self._resume_digest = str(getattr(decision, "digest", "") or "")
             if self._phase == PHASE_AFTER_HAND_OVER and method not in SAFE_METHODS and self._observer is not None:
                 self._observer.track(request, passed=True)
             if decision.rule == "lookup" and self._state.typing_key:
@@ -1155,6 +1201,21 @@ class ApplyAgent:
             except Exception:  # noqa: BLE001 - the page is going away: the request is refused
                 break
         return self._state.code_pressed if after is None else self._state.last_press_at > after
+
+    def _file_choice_arrives(self) -> bool:
+        """Wait up to ``PRESS_GRACE_S`` for the student's choice of a file to be reported: it is reported before the page's read of it, but the two
+        reach this process by different routes. True when a choice that no read has used is in."""
+        if not self._policy.resume_post_path or self._phase != PHASE_STUDENT:
+            return False
+        deadline = time.monotonic() + PRESS_GRACE_S
+        while time.monotonic() < deadline:
+            if self._state.student_files_chosen > self._state.student_file_reads_passed:
+                return True
+            try:
+                self._page.wait_for_timeout(20)
+            except Exception:  # noqa: BLE001 - the page is going away: the request is refused
+                break
+        return self._state.student_files_chosen > self._state.student_file_reads_passed
 
     def _send_after_a_late_press(self, facts: RouteRequest) -> bool:
         """``looks_like_a_send`` for a request whose press has not been reported yet: wait a moment for it, and ask again."""
@@ -2588,7 +2649,7 @@ class ApplyAgent:
     def _left_items(self) -> list[dict[str, str]]:
         """What the student has to do in the window: plan entries left for them, anything else the check found, the CAPTCHA last."""
         items: list[dict[str, str]] = []
-        if self._reads and self._state.resume_posts_passed:
+        if self._reads and self._resume_requests:
             items.append({"key": "resume_sent", "question": "Your résumé", "reason": self._say(RESUME_SENT)})
         for entry in self._plan_entries()[0]:
             if entry["disposition"] != "left_for_you":
@@ -2623,6 +2684,8 @@ class ApplyAgent:
                 self._link.ready({
                     "op": OP_HANDOFF_READY, "plan": entries, "plan_hash": plan_hash, "left": self._left_items(), "screenshot": shot,
                     "captcha_widget": bool(self._evidence_bits.get("captcha_widget")), "page_defaults": list(self._page_defaults),
+                    # Whether the app's own attach sent the file to the ATS: the parent keeps it, in case the run ends with no result.
+                    **({"resume_sent_to_lever": bool(self._resume_requests)} if self._reads else {}),
                     # How long the window stays the student's, as the agent will really keep it: the parent shows the closing time.
                     "handoff_in_s": max(0.0, until - time.monotonic()),
                 })
@@ -2634,6 +2697,7 @@ class ApplyAgent:
         while True:
             if self._handed_over:
                 return self._outcome()
+            self._watch_student_read()
             end = ""
             if self._closing:
                 end = self._why_closing
@@ -2659,6 +2723,42 @@ class ApplyAgent:
             "crashed": HANDOFF_CRASHED, "refused": HANDOFF_UNRECORDED, "elsewhere": HANDOFF_ELSEWHERE, "upload": HANDOFF_UPLOAD, "early": HANDOFF_EARLY,
         }.get(end, HANDOFF_NOT_SUBMITTED)
         return self._finish("needs_you", [sentence])
+
+    def _watch_student_read(self) -> None:
+        """The student's turn, on a page that reads a file as it is attached (Lever): when the student has chosen a file and the page sent it, say so, and when
+        the page has applied its answer, say which of the reader's fields it changed (spec 6.12 step 7).
+
+        The app does not undo anything: putting values back would mean typing in the window while the student works in it. It names the fields, never
+        their values, and the student checks them. The fields are compared with what they held at the last look before the read, so a field the
+        reader left alone is not named; a field the student typed into in the same moments is (the sentence says "check", not "fixed").
+        """
+        if not self._reads or self._frame is None:
+            return
+        try:
+            state = self.adapter.parse_state(self._frame)
+            now = self.adapter.parser_values(self._frame)
+        except Exception:  # noqa: BLE001 - a page in the middle of a change: the next look is soon
+            return
+        if len(self._student_reads) > self._student_noticed:
+            self._student_noticed = len(self._student_reads)
+            self._student_waiting = True
+            self._student_baseline = dict(self._parser_last if self._parser_last is not None else now)
+            self._progress(STUDENT_RESUME_STEP)
+        if self._student_waiting:
+            answered = id(self._student_reads[-1]) in self._resume_status
+            if not answered or state == "working":
+                return
+            self._student_waiting = False
+            before = self._student_baseline or {}
+            changed = sorted({"location" if name == "selectedLocation" else name for name, value in now.items() if before.get(name, value) != value})
+            if changed:
+                self._student_changed.extend(name for name in changed if name not in self._student_changed)
+                questions = [self._question(name) for name in changed]
+                for name, question in zip(changed, questions):
+                    self._add_left(f"read:{name}", question, self._say(STUDENT_READ_FIELD))
+                words = questions[0] if len(questions) == 1 else ", ".join(questions[:-1]) + " and " + questions[-1]
+                self._progress(RESUME_CHANGED_STEP, fields=words, them="it" if len(questions) == 1 else "them")
+        self._parser_last = now
 
     # --- after the press: the outcome, and the security code ----------------------------------------------------------
 
@@ -3021,7 +3121,7 @@ class ApplyAgent:
             # Never the file or anything the page read from it. The one request is kept here, not with the submit's (``RunResult.requests``).
             sent = self._resume_requests[0] if self._resume_requests else None
             evidence.update({
-                "resume_sent_to_lever": bool(self._state.resume_posts_passed),
+                "resume_sent_to_lever": bool(self._resume_requests),   # the app's own attach; the student's is below
                 "resume_parse": self._parse_result,
                 "resume_stored": self._resume_stored,
                 "resume_post": (
@@ -3032,6 +3132,14 @@ class ApplyAgent:
                 "guesses_cleared": sorted(self._guesses_cleared),
                 "page_changed": sorted(self._managed_changed),
             })
+            if self._student_reads:
+                # The student attached a file in the window and the page sent it at once: how many, the last one's SHA-256, and the names (never the
+                # values) of the fields the page's reader then changed.
+                evidence["student_attached_resume"] = {
+                    "count": len(self._student_reads),
+                    "sha256": (self._chosen_digests[len(self._student_reads) - 1] if len(self._chosen_digests) >= len(self._student_reads) else "") or "",
+                    "changed": sorted(set(self._student_changed)),
+                }
         return evidence
 
     def _plan_entries(self) -> tuple[list[dict[str, Any]], str]:

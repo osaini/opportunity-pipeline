@@ -750,6 +750,19 @@ class CannedAgent:
         if self.handoff.get("elsewhere"):
             # The student pressed Submit and the form tried to send somewhere the app does not recognize: refused, and the turn goes on.
             self.on_progress("form_elsewhere", PROGRESS_STEPS["form_elsewhere"].format(host=str(self.handoff["elsewhere"])))
+        attach = self.handoff.get("student_attaches")
+        if attach and self.ats == "lever":
+            # The student chose a file in the window and the page sent it at once (``student_attaches``: {"changed": [the questions the page's reader then filled]}).
+            from opportunity_app.apply.agent_types import RESUME_CHANGED_STEP, STUDENT_RESUME_STEP
+
+            self.on_progress(STUDENT_RESUME_STEP, progress_text(STUDENT_RESUME_STEP, ats_name))
+            changed = [str(name) for name in attach.get("changed") or []]
+            if changed:
+                words = changed[0] if len(changed) == 1 else ", ".join(changed[:-1]) + " and " + changed[-1]
+                self.on_progress(RESUME_CHANGED_STEP, progress_text(RESUME_CHANGED_STEP, ats_name, fields=words, them="it" if len(changed) == 1 else "them"))
+            evidence["student_attached_resume"] = {"count": 1, "sha256": hashlib.sha256(b"a fictional file the student chose").hexdigest(), "changed": changed}
+            stopped = RunResult("needs_you", [HANDOFF_NOT_SUBMITTED], plan=entries, plan_hash=plan_hash, handed_over=False, after_click=False,
+                                evidence={**evidence, "handoff_end": "stopped"})
         self._after_ready()
         waited, beat = 0.0, 0.0
         wait = float(self.handoff.get("wait", 1.5))

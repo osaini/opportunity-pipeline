@@ -1057,6 +1057,20 @@ def link_run(conn: sqlite3.Connection, *, user_id: str, run_id: str, token: str)
     return bool(run and claim)
 
 
+def add_run_evidence(conn: sqlite3.Connection, run_id: str, extra: dict[str, Any]) -> bool:
+    """Put these keys into the evidence of a run that is still running, keeping what is there. True when the run was found running.
+
+    For something the window learned after it was ready and that must survive the app stopping before the run has a result: a file the student
+    attached in the window (the ATS holds it from then on, and recovery must not say "Nothing was sent").
+    """
+    with conn:
+        row = conn.execute("SELECT evidence_json FROM apply_runs WHERE id=? AND status='running'", (run_id,)).fetchone()
+        if row is None:
+            return False
+        evidence = {**json_as(row["evidence_json"], {}), **extra}
+        return bool(conn.execute("UPDATE apply_runs SET evidence_json=? WHERE id=? AND status='running'", (_dumps(evidence), run_id)).rowcount)
+
+
 def heartbeat_run(conn: sqlite3.Connection, run_id: str, *, now: datetime | None = None) -> bool:
     with conn:
         return bool(conn.execute(

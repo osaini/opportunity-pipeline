@@ -279,7 +279,7 @@ class AdapterProtocolTests(unittest.TestCase):
             "form_frame", "detect_page", "loader_paths", "uploads_on_attach", "reads_on_attach", "posting_ids", "lookup_token", "confirmation_ids",
             "security_code_prompt", "security_code_inputs", "captcha_widget",
             "control", "control_kind", "is_react_select", "field_container", "choices", "fill_location", "read_options",
-            "scan", "page_facts", "page_managed", "owns", "is_typeahead", "parse_state", "guessed_fields", "cleared", "refuses",
+            "scan", "page_facts", "page_managed", "owns", "is_typeahead", "parse_state", "guessed_fields", "parser_values", "cleared", "refuses",
         })
 
     def test_the_agent_calls_nothing_on_its_adapter_that_the_protocol_does_not_name(self):
@@ -902,13 +902,14 @@ WORDS = dict(question="Why us?", n=7, host="apply.example-robotics.test")
 class SentenceParityTests(unittest.TestCase):
     """Every sentence that said "Greenhouse" now names the ATS it is told, and for Greenhouse says exactly what it said (frozen_pre_sentences)."""
 
-    def test_the_progress_steps_are_the_old_ones_and_only_five_name_the_ats(self):
-        self.assertEqual(set(agent_types.PROGRESS_STEPS), set(old_words.PROGRESS_STEPS))
+    def test_the_progress_steps_are_the_old_ones_and_the_two_lever_added_and_only_these_name_the_ats(self):
+        # Two steps are new, and a Greenhouse run never reports them: the student attached a file in a window whose page reads it at once, and the fields it filled.
+        self.assertEqual(set(agent_types.PROGRESS_STEPS), set(old_words.PROGRESS_STEPS) | {"resume_attached", "resume_changed"})
         for step, old_text in old_words.PROGRESS_STEPS.items():
             with self.subTest(step=step):
                 self.assertEqual(agent_types.progress_text(step, "Greenhouse", **WORDS), old_text.format(**WORDS))
         naming = {step for step, text in agent_types.PROGRESS_STEPS.items() if "{ats}" in text}
-        self.assertEqual(naming, {"open", "submitting", "security_code", "code_yours", "challenge"})
+        self.assertEqual(naming, {"open", "submitting", "security_code", "code_yours", "challenge", "resume_attached", "resume_changed"})
         self.assertEqual(agent_types.progress_text("open", "Second"), "Opening the Second form")
 
     def test_the_window_note_and_the_outcome_notes(self):

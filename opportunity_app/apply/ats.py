@@ -236,8 +236,8 @@ class AtsAdapter(Protocol):
 
     The rest is what ``AdapterBase`` (``agent_types``) answers for an ATS that needs nothing special, and Lever overrides: ``scan`` (the
     read of the form, when ``uses_engine`` is False), ``page_facts`` and ``page_managed`` (what the page carries for itself),
-    ``is_typeahead`` (a list chosen from by typing), ``parse_state``, ``guessed_fields`` and ``cleared`` (a file reader's guesses, and
-    whether one is gone), ``owns`` and ``refuses`` (what the app never writes or presses). ``closed_on_404``, ``waits_for_challenge``,
+    ``is_typeahead`` (a list chosen from by typing), ``parse_state``, ``guessed_fields``, ``parser_values`` and ``cleared`` (a file reader's guesses, what
+    they hold, and whether one is gone), ``owns`` and ``refuses`` (what the app never writes or presses). ``closed_on_404``, ``waits_for_challenge``,
     ``required_from_load`` and ``page_sentences`` are its attributes.
     """
 
@@ -275,4 +275,5 @@ class AtsAdapter(Protocol):
     def parse_state(self, frame: Any) -> str: ...
     def guessed_fields(self, frame: Any) -> list[str]: ...
     def cleared(self, frame: Any, key: str) -> bool: ...
+    def parser_values(self, frame: Any) -> dict[str, str]: ...
     def refuses(self, locator: Any) -> bool: ...

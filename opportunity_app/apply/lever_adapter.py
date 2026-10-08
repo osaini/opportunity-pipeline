@@ -131,6 +131,16 @@ LEVER_MANAGED = r"""() => {
     .map((el) => [el.name || "", el.value || ""]);
 }"""
 
+# Every named control of the form that holds a text value, as [name, value]; the parser's own fields are picked out of them in Python. Used only to tell which fields
+# the page's reader changed, so nothing is handed to the page: the script is constant and chooses nothing.
+LEVER_VALUES = r"""() => {
+  const form = document.querySelector("form#application-form");
+  if (!form) return [];
+  return Array.from(form.querySelectorAll("input[name], select[name], textarea[name]"))
+    .filter((el) => !["submit", "button", "image", "reset", "file", "checkbox", "radio"].includes((el.type || "").toLowerCase()))
+    .map((el) => [el.name, String(el.value || "")]);
+}"""
+
 # Which of the four indicators the page shows for a file it was given. At most one is shown at a time.
 LEVER_PARSE_STATE = r"""() => {
   const shown = (selector) => {
@@ -386,6 +396,14 @@ class LeverAdapter(AdapterBase):
         for name in frame.evaluate(LEVER_NAMES):
             if (name in PARSER_FIELDS or name.startswith(PARSER_PREFIX)) and name not in found:
                 found.append(name)
+        return found
+
+    def parser_values(self, frame: Any) -> dict[str, str]:
+        """What each field of ``guessed_fields`` holds now, with ``selectedLocation`` beside ``location`` (the page rewrites it on every read)."""
+        found: dict[str, str] = {}
+        for name, value in frame.evaluate(LEVER_VALUES):
+            if name in PARSER_FIELDS or name.startswith(PARSER_PREFIX) or name == "selectedLocation":
+                found[name] = value
         return found
 
     def cleared(self, frame: Any, key: str) -> bool:

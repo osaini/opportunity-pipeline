@@ -288,7 +288,80 @@ class ResolvableForARunTests(unittest.TestCase):
             self.assertIn(host, apply_agent.RESOLVABLE_HOSTS)
 
 
-# --- The words once the file has gone ---------------------------------------------------------------------------------------------------------
+class ParserValuesTests(unittest.TestCase):
+    def test_only_the_readers_fields_and_the_hidden_location_are_kept_and_the_script_takes_nothing_from_the_app(self):
+        frame = mock.Mock()
+        frame.evaluate.return_value = [
+            ["name", "Sam Rivera"], ["org", "A"], ["location", "B"], ["selectedLocation", "{}"], ["urls[GitHub]", "g"], ["residentialLocation[city]", "c"],
+            ["comments", "free text"], ["cards[x][field0]", "answer"],
+        ]
+        found = LeverAdapter().parser_values(frame)
+        self.assertEqual(sorted(found), ["location", "name", "org", "residentialLocation[city]", "selectedLocation", "urls[GitHub]"])
+        frame.evaluate.assert_called_once_with(lever_adapter.LEVER_VALUES)
+
+    def test_a_page_without_the_form_has_no_values(self):
+        frame = mock.Mock()
+        frame.evaluate.return_value = []
+        self.assertEqual(LeverAdapter().parser_values(frame), {})
+
+
+# --- The student's choice of a file, as the press listener reports it ---------------------------------------------------------------------------
+
+class StudentFileSignalTests(unittest.TestCase):
+    SHA = "ab" * 32
+
+    def agent(self, adapter=None, phase=None):
+        agent = ApplyAgent(mode="handoff", adapter=adapter or LeverAdapter())
+        if phase:
+            agent._phase = phase
+        return agent
+
+    @staticmethod
+    def call(agent, payload):
+        agent._on_binding({"name": apply_agent.PRESS_BINDING, "payload": payload})
+
+    def test_a_choice_in_the_students_turn_lets_one_read_pass_and_its_hash_follows(self):
+        agent = self.agent(phase=apply_agent.PHASE_STUDENT)
+        self.call(agent, "file")
+        self.assertEqual((agent._state.student_files_chosen, agent._chosen_digests), (1, [None]))
+        self.call(agent, f"sha:{self.SHA}")
+        self.assertEqual(agent._chosen_digests, [self.SHA])
+        self.call(agent, "file")
+        self.call(agent, "sha:")
+        self.assertEqual((agent._state.student_files_chosen, agent._chosen_digests), (2, [self.SHA, ""]))
+
+    def test_a_choice_before_the_turn_or_after_the_hand_over_or_on_another_ats_counts_for_nothing(self):
+        for label, agent in (
+            ("the app's fill", self.agent(phase=apply_agent.PHASE_FILL)),
+            ("after the hand-over", self.agent(phase=apply_agent.PHASE_AFTER_HAND_OVER)),
+            ("Greenhouse", self.agent(GreenhouseAdapter(), phase=apply_agent.PHASE_STUDENT)),
+        ):
+            with self.subTest(case=label):
+                self.call(agent, "file")
+                self.assertEqual((agent._state.student_files_chosen, agent._chosen_digests), (0, []))
+
+    def test_anything_but_the_listeners_three_words_is_ignored(self):
+        agent = self.agent(phase=apply_agent.PHASE_STUDENT)
+        for payload in ("", "File", "file ", "sha:xyz", f"sha:{self.SHA.upper()}", f"sha:{self.SHA}0", 1, None, {"file": 1}):
+            self.call(agent, payload)
+        self.assertEqual((agent._state.student_files_chosen, agent._chosen_digests), (0, []))
+        agent._on_binding({"name": "somebodyElse", "payload": "file"})
+        self.assertEqual(agent._state.student_files_chosen, 0)
+
+    def test_the_listener_runs_on_both_boards_and_counts_only_a_trusted_change_of_a_file_box_in_the_application_form(self):
+        source = apply_agent.PRESS_LISTENER
+        for host in (*lever.LEVER_HOSTS, "job-boards.greenhouse.io", "boards.greenhouse.io"):
+            self.assertIn(f'"{host}"', source)
+        self.assertEqual(source.count("isTrusted"), 2, "each of the two kinds of event is checked for the browser's own mark")
+        self.assertIn("box.type === 'file'", source)
+        self.assertIn("form#application-form", source)
+
+    def test_an_unasked_read_waits_no_grace_when_it_cannot_be_the_students(self):
+        for agent in (self.agent(phase=apply_agent.PHASE_FILL), self.agent(GreenhouseAdapter(), phase=apply_agent.PHASE_STUDENT)):
+            started = time.monotonic()
+            self.assertFalse(agent._file_choice_arrives())
+            self.assertLess(time.monotonic() - started, apply_agent.PRESS_GRACE_S / 2)
+
 
 # --- The field a refusal names ------------------------------------------------------------------------------------------------------------------
 
@@ -322,6 +395,8 @@ class FirstErrorTests(unittest.TestCase):
 
 class WordsOnceTheFileHasGoneTests(unittest.TestCase):
     def agent(self, sent):
+# --- The words once the file has gone ---------------------------------------------------------------------------------------------------------
+
         agent = ApplyAgent(mode="handoff", adapter=LeverAdapter())
         agent._reads = True
         agent._state.resume_posts_passed = 1 if sent else 0

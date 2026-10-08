@@ -66,7 +66,8 @@ from .agent_types import (
     HANDOFF_NOT_SUBMITTED, ISOLATIONS, MODE_FOR_KIND, OP_CANCEL, OP_ERROR, OP_FILE_CHECK, OP_FILE_CHECK_REPLY, OP_FRONT, OP_HAND_OVER, OP_HAND_OVER_REPLY, OP_HANDOFF_READY,
     OP_HEARTBEAT, OP_PROGRESS, OP_REPLAN, OP_REPLAN_REPLY, OP_RESULT, OP_SECURITY_CODE, OP_SECURITY_CODE_REPLY, OP_SECURITY_CODE_RESULT,
     OUTCOMES, STOPPED, WINDOW_CLOSED, WINDOW_UNCONFIRMED, YOUR_TURN, YOUR_TURN_NONE_LEFT, AgentJob, ApplyTimeouts,
-    FilePayload, LookupRequest, RESUME_PLANNED_KEY, RunResult, progress_text, resume_may_be_with_ats, resume_with_ats, with_resume_note,
+    FilePayload, LookupRequest, RESUME_CHANGED_STEP, RESUME_PLANNED_KEY, STUDENT_RESUME_STEP, RunResult, progress_text, resume_may_be_with_ats, resume_with_ats,
+    with_resume_note,
 )
 from .checks import UNCONFIRMED_NOTE
 from .claims import HELD_HEARTBEAT
@@ -922,6 +923,8 @@ class _Job:
     # Lever's L1 choice as the start read it (``apply_lever_resume_upload``): the plan the window is filled from is built again once the page has been
     # read, and it must be built from the same choice as the plan the claim was taken on, not from a second look at the setting.
     resume_upload: bool = False
+    # The student attached a file in the window and the page sent it to the ATS (the agent said so as it happened): kept like ``resume_sent_seen``, for a run that ends with no result.
+    student_resume_seen: bool = False
     timeouts: ApplyTimeouts = field(default_factory=ApplyTimeouts)
 
 
@@ -1333,8 +1336,15 @@ class ApplyRunner:
                 return bool(version.isdigit() and apply_policy.letter_is_current(
                     conn, user_id, work.opportunity_id, document_id=document_id, version=int(version), content_sha256=sha256))
 
+            def progress(step: str, text: str) -> None:
+                note(step, text)
+                if step == STUDENT_RESUME_STEP and not work.student_resume_seen:
+                    # The file the student attached went to the ATS: written at once, so a stop before the run has a result still says so.
+                    work.student_resume_seen = True
+                    apply_runs.add_run_evidence(conn, run_id, {"student_attached_resume": {"count": 1}})
+
             handlers = SupervisorHandlers(
-                progress=lambda step, text: note(step, text), heartbeat=beat, replan=planner, hand_over=lambda: False, tick=beat,
+                progress=progress, heartbeat=beat, replan=planner, hand_over=lambda: False, tick=beat,
                 check_file=check_file,
             )
             if handoff:
@@ -1500,7 +1510,7 @@ class ApplyRunner:
                         result, stop=outcome.stop, shutting_down=shutting_down, claim_state="claimed", cancel_requested=False,
                         handed_over=False, closed_confirmed=outcome.closed_confirmed,
                         minutes=round(work.deadline_s / 60), not_started=outcome.error == "NotStarted", ats_name=apply_ats.name_of(work.job.ats),
-                        resume_sent=work.resume_sent_seen, resume_planned=work.resume_planned,
+                        resume_sent=work.resume_sent_seen or work.student_resume_seen, resume_planned=work.resume_planned,
                     )
                 else:
                     unconfirmed = UNCONFIRMED_NOTE.format(ats=apply_ats.name_of(work.job.ats))
@@ -1515,7 +1525,7 @@ class ApplyRunner:
                 cancel_requested=bool(row["cancel_requested"]) if row is not None else False,
                 handed_over=bool(row is not None and row["handed_over_at"]), closed_confirmed=outcome.closed_confirmed,
                 minutes=round(work.deadline_s / 60), not_started=outcome.error == "NotStarted", ats_name=apply_ats.name_of(work.job.ats),
-                resume_sent=work.resume_sent_seen, resume_planned=work.resume_planned,
+                resume_sent=work.resume_sent_seen or work.student_resume_seen, resume_planned=work.resume_planned,
             )
             if settlement.integrity_error:
                 LOGGER.error("A Finish in browser run came back handed over while its claim was not (run %s)", work.run_id)
@@ -1523,6 +1533,8 @@ class ApplyRunner:
             # What the window said when it was ready is the parent's own record and outlives a result that does not repeat it.
             if work.resume_sent_seen:
                 evidence["resume_sent_to_lever"] = True
+            if work.student_resume_seen and not resume_with_ats({"student_attached_resume": evidence.get("student_attached_resume")}):
+                evidence["student_attached_resume"] = {"count": 1}
             elif not settlement.after_click and _resume_maybe_with_ats(work.resume_planned, result):
                 evidence[RESUME_PLANNED_KEY] = True
             reader = detail.get(apply_security_code.RECORD_KEY)   # the reader's own record; detail.security_code is 6.14's boolean
@@ -1820,6 +1832,9 @@ _SOURCE_TEXT = {
 }
 # The phases of a Finish in browser run that is still running (the last progress step names it), else "filling".
 _HANDOFF_PHASES = ("your_turn", "submitting", "security_code", "code_typed", "code_yours", "challenge")
+# Steps that are the student's turn with a sentence of their own to show: the form tried to send somewhere the app stopped, or the ATS's reader changed fields
+# when the student attached a file.
+_TURN_WITH_NOTICE = ("form_elsewhere", RESUME_CHANGED_STEP)
 # How a Finish in browser run ended (``evidence.handoff_end``) when trying again meets the same thing: "board" is a stop on a property of the
 # board itself (no submit address the app knows, a board that uploads on attach, a hidden field the app would have filled). Every other stop,
 # whatever its end (the student, the clock, a page that would not open, a Greenhouse error, a changed résumé file, none at all), is offered
@@ -1937,8 +1952,8 @@ def _summary(
             return "The app stopped during this run"
         if row["kind"] == "handoff" and phase == "your_turn":
             return YOUR_TURN_NONE_LEFT if nothing_left else YOUR_TURN
-        if row["kind"] == "handoff" and phase == "form_elsewhere":
-            return str(progress[-1].get("text") or "") if progress else progress_text("your_turn", name)   # it names the host the agent saw
+        if row["kind"] == "handoff" and phase in _TURN_WITH_NOTICE:
+            return str(progress[-1].get("text") or "") if progress else progress_text("your_turn", name)   # it names the host, or the fields, the agent saw
         if row["kind"] == "handoff" and phase in _HANDOFF_PHASES:
             return progress_text(phase, name)
         return str(progress[-1].get("text") or "") if progress else progress_text("start", name)
@@ -2043,8 +2058,8 @@ def _handoff_phase(progress: list[dict[str, Any]], card: Mapping[str, Any] | Non
     step = progress[-1]["step"] if progress else ""
     if claim_state == "clicking" and step not in _HANDOFF_PHASES[1:]:
         return "submitting"
-    if step == "form_elsewhere":
-        return step      # still the student's turn: the notice says the form tried to send somewhere the app stopped
+    if step in _TURN_WITH_NOTICE:
+        return step      # still the student's turn: the notice says the form tried to send somewhere the app stopped, or what Lever filled from the student's file
     if step in _HANDOFF_PHASES:
         return step if not (step == "your_turn" and claim_state == "clicking") else "submitting"
     return "your_turn" if card is not None and card.get("status") == "your_turn" else "filling"

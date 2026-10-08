@@ -41,7 +41,15 @@ PROGRESS_STEPS = {
     "code_typed": "The app typed the security code from your email. Press Submit application in the window",
     "code_yours": "Type the security code {ats} emailed you into the window, then press Submit application",
     "challenge": "{ats} showed a check in the window. Finish it there",
+    # Lever reads a file as it is attached, so a file the student attaches in the window goes to {ats} at once (docs/phase5-lever-handoff-spec.md 6.12 step 7).
+    # The first says the file went (the runner keeps that at once, in case the run ends with no result); the second names the fields the page's reader changed.
+    "resume_attached": "Your résumé was sent to {ats} when you attached it",
+    "resume_changed": "{ats} filled {fields} from the résumé you attached. Check {them} before you press Submit application",
 }
+
+
+STUDENT_RESUME_STEP = "resume_attached"   # the progress step that says the student's own file went to the ATS
+RESUME_CHANGED_STEP = "resume_changed"    # the step that names the fields the ATS's reader then changed (the student's turn goes on)
 
 
 def progress_text(step: str, ats_name: str, **words: Any) -> str:
@@ -328,6 +336,10 @@ class AdapterBase:
     def cleared(self, frame: Any, key: str) -> bool:
         """Whether the control and anything the page keeps beside it hold nothing."""
         return True
+
+    def parser_values(self, frame: Any) -> dict[str, str]:
+        """What the controls of ``guessed_fields`` hold now, by name (read only; the agent compares two reads and keeps only the names that differ)."""
+        return {}
 
     def refuses(self, locator: Any) -> bool:
         """Whether this element is one the app never presses (the ATS's own Submit controls), whatever else the click allowlist says."""
