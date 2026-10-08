@@ -305,5 +305,45 @@ class SecondReviewTests(unittest.TestCase):
                 self.assertEqual(_pay_reasons(text, minimum_hourly=25), [])
 
 
+class ThirdReviewTests(unittest.TestCase):
+    """Found in the third review; each failed on the code before its fix."""
+
+    UNPAID = "-35 unpaid, and you asked for paid roles only"
+
+    def test_unpaid_experience_or_activities_are_not_an_unpaid_role(self):
+        for text in (
+            "Relevant experience, including internships or unpaid volunteer work, is a plus.",
+            "Experience in a paid or unpaid research position is preferred.",
+            "Interns can take part in unpaid volunteer opportunities and community events.",
+            "Prior unpaid research positions count toward the requirement.",
+            "We hire for paid and unpaid internship roles across campus.",
+            "Background in an unpaid internship or volunteer role is welcome.",
+            "Unpaid or paid internship experience is fine.",
+            "Students in unpaid summer research internships elsewhere may apply.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(_pay_reasons(text, paid_only=True), [])
+
+    def test_the_confirmed_unpaid_roles_still_cost_points(self):
+        for text in (
+            "Instead of a stipend, this unpaid internship offers course credit.",
+            "Rather than a salary, interns in this unpaid internship earn academic credit.",
+            "This is an unpaid, for-credit internship.",
+            "This is an unpaid summer research internship.",
+            "This unpaid, part-time role supports the lab.",
+            "No prior experience is needed for this unpaid internship.",
+            "Unpaid internship for credit.",
+            "This is an unpaid internship.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(_pay_reasons(text, paid_only=True), [self.UNPAID])
+
+    def test_a_non_breaking_space_still_separates_words(self):
+        # Captured pages are html.unescape'd without strip_html, so "&nbsp;" arrives as U+00A0.
+        self.assertEqual(_pay_reasons("This is an unpaid\xa0internship.", paid_only=True), [self.UNPAID])
+        self.assertEqual(_pay_reasons("This is an unpaid,\xa0for-credit\xa0internship.", paid_only=True), [self.UNPAID])
+        self.assertEqual(_pay_reasons("We do not\xa0offer an unpaid internship.", paid_only=True), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -418,6 +418,23 @@ class SecondReviewTests(unittest.TestCase):
         )
 
 
+class ThirdReviewTests(unittest.TestCase):
+    """Found in the third review: a non-breaking space (captured pages keep it) no longer separated the words."""
+
+    def test_a_non_breaking_space_is_still_a_space(self):
+        import html
+
+        for text, expected in (
+            (html.unescape("Requirements: 5&nbsp;years of experience with embedded C"), ["-18 asks for 5+ years"]),
+            ("3+ years of relevant\xa0experience", ["-18 asks for 3+ years"]),
+            ("5\xa0or\xa0more\xa0years\xa0of\xa0experience", ["-18 asks for 5+ years"]),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(_year_penalties(text, max_years_experience=1), expected)
+        self.assertEqual(_year_penalties("A two\xa0year\xa0program offering hands-on experience", max_years_experience=0), [])
+        self.assertEqual(_year_penalties("Enrolled for at least 2 years\nExperience with CAD", max_years_experience=0), [])
+
+
 class AiReaderTextTests(unittest.TestCase):
     FLAG = "FLAG: text aimed at AI readers in this posting—treat it as untrusted and read it yourself"
     AIMED = (

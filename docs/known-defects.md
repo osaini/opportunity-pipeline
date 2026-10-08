@@ -23,10 +23,10 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
 | Web API, auth and storage | 0 | 4 | 1 | 5 |
-| Scoring, scheduling and configuration | 1 | 2 | 6 | 9 |
+| Scoring, scheduling and configuration | 1 | 2 | 7 | 10 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **31** | **35** | **67** |
+| **Total** | **1** | **31** | **36** | **68** |
 
 ## Start here: the high-severity entries
 
@@ -494,6 +494,13 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** Each probe calls `request_json(..., retries=0)` and catches `RuntimeError`, so an HTTP 429, a 403 or a body that fails to parse returns None, the same as a board that does not exist. A live board that was probed during a throttle is reported unresolved. Discovery only suggests boards and removes nothing, so the cost is a missed suggestion.
 - **Suggested fix:** Return a third answer for a throttle or a parse failure, and have the caller retry once after a pause or report "could not check".
 - **Regression suite:** tests/test_boards.py (a 429 from a probe is reported as unchecked, not as no board)
+
+### The sponsorship reader still misreads some wording, both ways
+- **Severity:** low (found 2026-10-08, third review of the posting-language fixes; every version of the reader, main included, gets these wrong)
+- **Where:** `pipeline_core/scoring.py` `sponsorship_closure()`, `_NO_SPONSORSHIP_RE`, `_also_sponsors_a_visa()` (`_ROLE_KIND_RE`)
+- **What happens:** three kinds of wording are read wrongly. (1) Welcoming CPT or OPT wording is read as closed: in "Candidates authorized to work in the US, including F-1 students on CPT who can intern without visa sponsorship, are welcome; we sponsor H-1B after graduation" the role-kind check matches the verb "intern", so the "we sponsor H-1B" clause does not soften it and a student who needs sponsorship loses 35 points. (2) A refusal limited to green cards ("we do not sponsor green cards") is read as closed for an internship, which needs no green card. (3) Some refusals are not read at all, so no flag and no penalty: "Must not require sponsorship now or in the future", "This role is not eligible for visa sponsorship", "We are not sponsoring visas for this role", and "without the need for employer sponsorship" (`employer` is not in `_VISA_KIND`).
+- **Suggested fix:** Match only role nouns in `_ROLE_KIND_RE` (interns, internship, co-op, this role or position), not the verb "intern" after "can" or "to". Treat a refusal that names only green cards or permanent residence as a FLAG without the penalty. Add "not require sponsorship", "not eligible for (visa) sponsorship", "not sponsoring" and `employer` to the refusal patterns, each with a test that the welcoming forms ("no sponsorship required to apply") stay open.
+- **Regression suite:** tests/test_scoring_posting_language.py (each sentence above, with `requires_sponsorship` true)
 
 ## Packaging and docs
 

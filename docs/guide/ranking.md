@@ -112,8 +112,9 @@ names it ("asks for 3+ years of full-time professional experience").
 that states pay in dollars per hour and tops out below `minimum_hourly` costs 15
 points ("pays up to $22/hour, below your $25/hour minimum"). With `paid_only` set to
 true, a posting that calls the role unpaid ("an unpaid internship", "a volunteer
-role") costs 35; "unpaid leave" in a benefits list, or "unlike an unpaid
-internship", is not that. Only a stated hourly wage is compared: a yearly salary is not
+role") costs 35; "unpaid leave" in a benefits list, "unlike an unpaid
+internship", "paid or unpaid research positions" and "unpaid volunteer work" in a
+list of experience that counts are not that. Only a stated hourly wage is compared: a yearly salary is not
 turned into an hourly rate, a posting that also states a salary by the year, month,
 week or day ("Base salary: $95,000 per year") is not compared at all, a stipend,
 allowance or tuition benefit beside the hourly wage does not stop the comparison,

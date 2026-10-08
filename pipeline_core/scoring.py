@@ -60,13 +60,13 @@ _YEARS_NUMBER = r"(?:\d{1,2}|" + "|".join(_NUMBER_WORDS) + r")"
 # Never part of an experience phrase, wherever it falls before "experience".
 _NOT_EXPERIENCE_WORDS = r"(?:age|old|degree|degrees|diploma)"
 # Not experience when it comes right after "years".
-_NOT_EXPERIENCE_AFTER_YEARS = r"(?:program|programs|ago|running|(?:or[ \t]+)?older|of[ \t]+age)"
+_NOT_EXPERIENCE_AFTER_YEARS = r"(?:program|programs|ago|running|(?:or[^\S\n]+)?older|of[^\S\n]+age)"
 _EXPERIENCE_YEARS_RE = re.compile(
     rf"(?<![\w.])(?:between\s+(?P<between>{_YEARS_NUMBER})\s+(?:years?\s+)?and\s+"
     rf"|(?P<low>{_YEARS_NUMBER})\s*(?:years?\s+)?(?:-|–|—|to|or|and\s+up\s+to)\s*)?(?P<high>{_YEARS_NUMBER})"
-    r"(?:\s*\(\d{1,2}\))?\+?(?:[ \t]+(?:or[ \t]+more|plus))?[ \t]+years?'?[ \t]+"
-    rf"(?!{_NOT_EXPERIENCE_AFTER_YEARS}\b)(?:of[ \t]+)?"
-    rf"(?:(?!{_NOT_EXPERIENCE_WORDS}\b)[\w/+-]+[ \t]+){{0,3}}?experience",
+    r"(?:\s*\(\d{1,2}\))?\+?(?:[^\S\n]+(?:or[^\S\n]+more|plus))?[^\S\n]+years?'?[^\S\n]+"
+    rf"(?!{_NOT_EXPERIENCE_AFTER_YEARS}\b)(?:of[^\S\n]+)?"
+    rf"(?:(?!{_NOT_EXPERIENCE_WORDS}\b)[\w/+-]+[^\S\n]+){{0,3}}?experience",
     re.IGNORECASE,
 )
 # "less than 1 year", "up to 3 years", "no more than 2 years": a cap on what is welcome, not a floor to meet.
@@ -217,15 +217,17 @@ AI_READER_FLAG = "FLAG: text aimed at AI readers in this posting—treat it as u
 # role carries no compensation" at the end of a clause), and "not an unpaid internship" is the opposite.
 _UNPAID_ROLE_RE = re.compile(
     # Up to two words may stand between ("an unpaid summer research internship", "an unpaid, for-credit internship"),
-    # but not leave or time off, and not "and"/"or" ("unpaid and paid internships" names both).
-    r"\bunpaid(?:,?[ \t]+(?!(?:leave|time|overtime|holidays?|vacation|sick|days?|breaks?|and|or|but)\b)[\w-]+){0,2}?"
-    r",?[ \t]+(?:internship|position|role|co-?op|opportunity|apprenticeship|volunteer)\b"
+    # but not leave or time off, and not "and"/"or" ("unpaid and paid internships" names both). "Unpaid volunteer" is
+    # not here: "unpaid volunteer work" and "unpaid volunteer opportunities" are activities, not this role.
+    r"\b(?P<noun>unpaid"
+    r"(?P<gap>(?:,?[^\S\n]+(?!(?:leave|time|overtime|holidays?|vacation|sick|days?|breaks?|and|or|but)\b)[\w-]+){0,2}?)"
+    r",?[^\S\n]+(?:internship|position|role|co-?op|opportunity|apprenticeship)\b)"
     r"|\b(?:this|the\s+(?:internship|position|role|opportunity))\s+(?:is\s+)?(?:an?\s+)?volunteer\s+"
     r"(?:position|role|internship|opportunity)\b"
     r"|\b(?:internship|position|role|opportunity|program|co-?op)\s+(?:is|will\s+be)\s+unpaid\b"
     r"(?!\s+(?:leave|time|overtime|holidays?|vacation|sick|days?|breaks?)\b)"
     r"|\b(?:internship|position|role|opportunity|program|co-?op)\s+(?:is|will\s+be|carries|offers|has)\s+"
-    r"no\s+(?:monetary\s+)?(?:compensation|pay)(?=[ \t]*(?:[.;!\n]|$))",
+    r"no\s+(?:monetary\s+)?(?:compensation|pay)(?=[^\S\n]*(?:[.;!\n]|$))",
     re.IGNORECASE,
 )
 # A negation right before the unpaid phrase, within three words and with no comma or other punctuation between ("this
@@ -233,9 +235,22 @@ _UNPAID_ROLE_RE = re.compile(
 # negates something else: "instead of a stipend, this unpaid internship ...", "if you have never worked in a lab, this
 # unpaid internship ...", "no prior experience is needed for this unpaid internship".
 _NEGATION_BEFORE_RE = re.compile(
-    r"\b(?:not|isn't|aren't|wasn't|no|never|nor|unlike|instead[ \t]+of|rather[ \t]+than)[ \t]+(?:[\w'-]+[ \t]+){0,3}$",
+    r"\b(?:not|isn't|aren't|wasn't|no|never|nor|unlike|instead[^\S\n]+of|rather[^\S\n]+than)[^\S\n]+(?:[\w'-]+[^\S\n]+){0,3}$",
     re.IGNORECASE,
 )
+# "Paid or unpaid", "paid and unpaid", "paid/unpaid": both kinds, not this role.
+_PAID_OR_BEFORE_RE = re.compile(r"\bpaid(?:[^\S\n]+(?:or|and)[^\S\n]+|[^\S\n]*/[^\S\n]*)$", re.IGNORECASE)
+# With words between "unpaid" and the role, the phrase must name one role: "this unpaid, for-credit internship",
+# "an unpaid summer research internship", not "in unpaid volunteer opportunities".
+_DETERMINER_BEFORE_RE = re.compile(r"\b(?:this|the|our|an?)[^\S\n]+$", re.IGNORECASE)
+# A clause about the candidate's background ("experience in an unpaid research position", "prior unpaid internships
+# count") speaks of past roles, unless the phrase points at this one ("no prior experience is needed for this unpaid
+# internship").
+_CANDIDATE_BACKGROUND_RE = re.compile(
+    r"\b(?:experience|including|counts?[^\S\n]+toward|prior|previous|background)\b", re.IGNORECASE
+)
+_THIS_ROLE_BEFORE_RE = re.compile(r"\b(?:this|the|our)[^\S\n]+$", re.IGNORECASE)
+_CLAUSE_START_RE = re.compile(r"[.;:!?\n]")
 # Pay stated per month, week or day, or a yearly salary written in thousands ("$80K per year"): pay with a period the
 # hourly reader does not compare, and a posting that states it is not unpaid.
 _OTHER_STATED_PAY_RE = re.compile(
@@ -273,10 +288,21 @@ _PAY_SENTENCE_BREAK_RE = re.compile(r"[;!?\n]|\.(?=\s)")
 
 
 def _calls_the_role_unpaid(text: str) -> bool:
-    return any(
-        not _NEGATION_BEFORE_RE.search(text[max(0, match.start() - 60):match.start()])
-        for match in _UNPAID_ROLE_RE.finditer(text)
-    )
+    for match in _UNPAID_ROLE_RE.finditer(text):
+        before = text[max(0, match.start() - 60):match.start()]
+        if _NEGATION_BEFORE_RE.search(before):
+            continue
+        if match.group("noun") is not None:
+            if _PAID_OR_BEFORE_RE.search(before):
+                continue
+            if match.group("gap") and not _DETERMINER_BEFORE_RE.search(before):
+                continue
+            starts = [found.end() for found in _CLAUSE_START_RE.finditer(text, 0, match.start())]
+            clause = text[starts[-1] if starts else 0:match.start()]
+            if _CANDIDATE_BACKGROUND_RE.search(clause) and not _THIS_ROLE_BEFORE_RE.search(before):
+                continue
+        return True
+    return False
 
 
 def _is_wage(text: str, match: re.Match[str]) -> bool:
