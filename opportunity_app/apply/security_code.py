@@ -114,6 +114,7 @@ TYPING_REASONS = {
     "already_typed": "the app had already typed a code into this window",
     "auto_submit_blocked": "the form tried to send the code by itself, which the app blocks",
     "typing_failed": "it could not be typed into the window",
+    "press_unseen": "the app could not watch for your press of Submit in the window",
 }
 
 _CODE_WORD = re.compile(r"code", re.IGNORECASE)

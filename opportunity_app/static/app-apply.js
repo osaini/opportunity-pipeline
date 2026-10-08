@@ -456,7 +456,7 @@
   const runIsOver = (view) => view.status === "finished" || Boolean(view.stalled);
 
   // The run phases in which a Finish in browser run is the student's (or past their Submit), not the app's filling.
-  const TURN_PHASES = ["your_turn", "submitting", "security_code", "code_typed", "code_yours", "challenge"];
+  const TURN_PHASES = ["your_turn", "form_elsewhere", "submitting", "security_code", "code_typed", "code_yours", "challenge"];
 
   // The result panels whose Answer column is on screen. Signing out takes the column away: it holds the student's answers.
   const valuePanels = new Set();
@@ -774,7 +774,8 @@
     guarded(stop, "Stop", "Stopping…", onStop);
     function update(fresh) {
       setText(step, fresh.summary);
-      const turn = fresh.phase === "your_turn";
+      // "form_elsewhere" is the same turn: the form tried to send somewhere the app stopped, and the student goes on or stops.
+      const turn = fresh.phase === "your_turn" || fresh.phase === "form_elsewhere";
       const closes = turn && fresh.handoff_until ? clockTime(fresh.handoff_until) : "";
       setText(until, closes ? `The window closes at ${closes} if you haven't pressed Submit application.` : "");
       const left = turn && fresh.handoff_until ? new Date(fresh.handoff_until).getTime() - Date.now() : 0;
@@ -1026,7 +1027,7 @@
 
   // What a finished (or stalled) rehearsal or Finish in browser run found: in words, from the run's row. The table says what was
   // done with each question and where the answer came from; the Answer column, when it arrives, is a separate read (setValues).
-  function applyResultPanel(view, { startAgain, finish, notNow, onMarked, settle, stale }) {
+  function applyResultPanel(view, { startAgain, finish, notNow, onMarked, settle, stale, postingUrl }) {
     const handoff = view.kind === "handoff";
     const node = element("div", "apply-result");
     const title = element("h4", "apply-result-title", view.summary);
@@ -1099,8 +1100,11 @@
     if (handoff) {
       // Nothing more to start for an application that went, or may have; one that was stopped or never sent can be tried again.
       // The claim says it when there is one: a stopped claim (including one the student released with "It didn't go through") can be tried again.
+      // A run that stopped on a property of the board (no submit address the app knows, a board that uploads on attach, a hidden field)
+      // would stop the same way again, so the posting is offered instead (the server says so in finish_again).
       const sent = view.claim ? view.claim.status !== "stopped" : ["submitted", "unconfirmed"].includes(view.outcome);
-      if (!sent) next.appendChild(finish());
+      if (!sent && view.finish_again !== false) next.appendChild(finish());
+      else if (!sent && postingUrl) next.appendChild(externalLink(postingUrl, "Open the posting ↗", { className: "secondary-button" }));
     } else {
       next.append(finish(), notNow(), startAgain());
     }
@@ -1427,6 +1431,7 @@
           onMarked: (fresh) => show(fresh, false),
           settle: (path, body) => settleClaim(view, path, body),
           stale,
+          postingUrl: item.url,
         });
         rehearse.appendChild(result.node);
         if (focus) result.focus();

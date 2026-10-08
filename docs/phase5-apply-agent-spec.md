@@ -1697,6 +1697,12 @@ key; otherwise it is a problem, "The form's wording differs from Greenhouse's li
 ({question})". So the browserless preflight, the live plan, and answers saved from the Needs you
 flow all use the same key.
 
+A radio or checkbox with no fieldset legend (a consent box wrapped in its own label) reports no question. Its own words, the scan's
+`label` with the control's name and id taken off, are then compared with the listing instead (`checks._lone_choice_agrees`): they must
+be contained in the listing's label, an option's label or its description, as a statement box is held to before it is ticked. Words that
+differ, or none at all, are the same wording problem, so a box that says something else on the form is left for the student. A statement
+only the form carries (`label_from_page`) has nothing to be compared with.
+
 Each field must join to exactly one visible control, or one field container for react-select and
 file groups. Anything else is a problem:
 
@@ -1913,6 +1919,15 @@ The outcome is **rehearsed**. Record the plan, the screenshots, `refused_json`, 
 `clean` (`apply_checks.clean_rehearsal`). Close the browser. When the student opens the preview in
 the one-click stage, the server issues the confirm nonce (4.6) and stores its hash on this run.
 
+**As built (2026-10-08): a form of more than one page is not "rehearsed".** The app reads one page. After the filled form's picture, a
+rehearsal runs `MORE_PAGES_SCRIPT` (`apply/checks.py`, read-only, in the form frame): any visible button, link or role=button on the
+page whose words (text, value, aria-label or title) include next, continue or proceed and not submit ("Continue to step 2", "Next
+section", "Next: Review"), or a step counter ("Step 1 of 3", "Page 1/3", a bare "2 of 4" beside the form, or `aria-current=step`),
+means the app read only the first page. The run then ends **needs_you** with "This form has more than one page, and the app read only the first" (so the view
+says "The rehearsal stopped: ... No application was sent."), `evidence.more_pages` is true, and it is never a clean rehearsal. No
+multi-page Greenhouse form has been recorded, so the script matches words and not a whole text, to fail closed; a Finish in browser
+run is unchanged (the student completes the form in the window).
+
 **Submit runs always start from a fresh page and fill again.** Rehearsal and submit are separate
 runs because:
 
@@ -1968,8 +1983,26 @@ After hand-over both modes continue with 6.14.
 spec left a choice open:
 
 - **D1 B holds everywhere.** The agent never presses Submit, including the second Submit after a security code. While the
-  agent types a code, and for 2 seconds after, the route aborts every submit-path POST without spending the prompt's
-  allowance.
+  agent types a code the route aborts every submit-path POST without spending the prompt's allowance (`code_post_while_typing`),
+  and after it has typed a code the route aborts the code POST until the student has pressed Submit (below).
+- **The code POST waits for the student's press (decided 2026-10-08, open question Q4).** Once the app has typed the emailed
+  code, `RouteState.code_press_required` is set and the prompt's one code POST is refused (`code_post_before_press`, nothing
+  spent) until a trusted click on the form's submit control has been seen after the typing finished (`RouteState.code_pressed`),
+  however long the widget waits and however often it retries. The press is used up by the code POST it sends and the rule stays on for
+  the rest of the run: a second prompt's code POST (the boxes still hold what the app typed, and a retrying widget keeps sending it)
+  needs a new press made after the last code POST went through. The two-second tail (`CODE_GUARD_S`) is gone: a student who presses
+  at once is not held up, and a widget that sends at 2.5 s is refused like one that sends at 0.3 s. A refusal for either reason is
+  recorded as the widget sending by itself (`auto_submit_blocked`) and the student has been told to press Submit. The press is
+  heard through the one DevTools session the agent opens (`_watch_presses`): a listener in an isolated world
+  (`PRESS_LISTENER`, `PRESS_WORLD`) registered on the window in the capture phase before any page script runs, which reports a
+  click only when `event.isTrusted` is true, the target is inside the application form's submit control (Enter in a box becomes
+  such a click in the browser) and the page is a board's own. It reports through a binding that exists in that world only, so a
+  page script cannot call it, find its name, or reach the listener's built-ins; a script click, a made-up event or a submit by
+  script has `isTrusted` false and is ignored (`tests/test_apply_agent_browser.py`, `security_code_forger`). The request can reach
+  this process a few milliseconds before the report of the click that made it, so a code POST refused for want of a press waits up
+  to `PRESS_GRACE_S` for the report and is judged again. If the listener cannot be set up, the app does not type the code (reason
+  `press_unseen`) and the student types it, which needs no press to be seen. The static guard allows the four DevTools calls in
+  `PRESS_CDP_CALLS` and nothing else.
 - **Telemetry.** Greenhouse posts Snowplow telemetry to `c.spl.greenhouse.io`, so step 3 above ("a POST from the page to
   any other Greenhouse address") cannot be read literally. Only an aborted non-GET to a form host (`job-boards`, `boards`,
   `boards-api.greenhouse.io`), or any aborted form navigation, ends the turn. Telemetry hosts are refused for every method,
@@ -1993,10 +2026,28 @@ spec left a choice open:
 - **A posting that differs from the saved role** needs the student's tick (`posting_confirmed`) before Finish in browser.
 - **A pause does not stop a Finish in browser window**, and the pause reply and the health card say so.
 - **Failed outcomes name the field, never the page's error text**, so a value the student typed cannot reach a note.
-- **Open question Q4** (the plan called it Q1, but Q1 in section 13 was already taken; Q4 is listed there too). Does Greenhouse's security-code widget submit
-  by itself when its eighth character is typed? No recording of the live widget exists. If it does, the app refuses that
-  POST and the student presses Submit; the owner decides whether D10 B's "type it in" should then stop typing the code.
-  The first real Finish in browser that asks for a code answers it (known-defects: the security-code widget).
+- **A send to an address the app does not recognize is said in the turn (2026-10-08).** Only an aborted non-GET to a form host, a
+  file going anywhere, or a form navigation ends the turn (above). Any other refused non-GET that carries a form-like body
+  (multipart, URL-encoded or JSON) within 15 s of the student's press of Submit (`checks.looks_like_a_send`, the press as the
+  listener of 6.13 reports it) is refused as before, the turn goes on, and the agent reports the progress step `form_elsewhere` with
+  the host ("The form tried to send a request to {host}, which the app doesn't recognize, so the app stopped that request. ...") once,
+  and only while the student's turn is still on (a hand-over during the wait for a late press sends nothing). The wording is about that
+  request, never about the application: a tracker that reports the Submit click looks the same, and the form's own submission goes on.
+  The run view shows it as the turn's sentence (phase `form_elsewhere`, still the student's turn), and a run that did not go on to the
+  board lists "While the window was open the form tried to send a request to {host} ... nothing went to that address" beside its ending
+  (`evidence.elsewhere_seen` holds the host only, and is dropped once the hand-over happened, so a submitted or unconfirmed run says
+  nothing of it). A beacon with no form body, Greenhouse's telemetry and a CAPTCHA request say nothing. The board's real submit address for such
+  a form is still unknown: when a live board shows one, add it to `FORM_POST_HOSTS` so the turn ends as it does for the others.
+- **Finish in browser is not offered again after a stop on a property of the board (2026-10-08).** A run that stops before the turn on a
+  property of the board itself (no submit address the app knows, a board that uploads on attach, a hidden field the app would have
+  filled) records `handoff_end` "board". The run view carries `handoff_end` and `finish_again`; the result panel offers Finish in
+  browser again unless the end is "board", where a second try meets the same thing and it offers "Open the posting" instead. Every
+  other stop is offered again, including one with no end of its own (a page that would not open, a Greenhouse error, a résumé file
+  that changed), because the result panel has no other way to start again. It costs no limit either way.
+- **Open question Q4, answered 2026-10-08** (the plan called it Q1, but Q1 in section 13 was already taken; Q4 is listed there too).
+  Does Greenhouse's security-code widget submit by itself when its eighth character is typed? No recording of the live widget exists.
+  The owner decided that it does not matter: the app types the code and the code POST waits for the student's press, whenever the
+  widget sends and however often it retries (the bullet above). A recording of the live widget would still be worth keeping.
 
 ### 6.14 Decide the outcome
 
@@ -3342,11 +3393,10 @@ except one the student hook caused.
   was not one.
 - **Open question Q1.** Does Greenhouse ever require an email verification step *before* submit
   for new candidates? No evidence was found. If it appears, it is `needs_you`.
-- **Open question Q4. The emailed security code's widget.** Does it submit by itself when its eighth character is typed? No
-  recording of the live widget exists. See section 6.13 (as built) and the known-defects entry "The security-code widget has not
-  been seen live". The app refuses a submit POST while it types the code and for two seconds after, and tells the student to press
-  Submit only then; a widget that sends later than that is not stopped, and the owner decides whether the code POST should wait for a
-  press by the student.
+- **Open question Q4. The emailed security code's widget. Answered 2026-10-08.** Does it submit by itself when its eighth character is
+  typed? No recording of the live widget exists. Owner decision: the app still types the code (D10 B), and the code POST waits for
+  the student's own press of Submit, seen as a trusted click that page scripts cannot forge, after the typing. A widget that sends
+  at once, later, or repeatedly is refused until then. See section 6.13 (as built).
 - **Open question Q2.** Should the bundled Chromium be replaced by the student's installed Google
   Chrome binary (`channel="chrome"`) with a fresh profile? It is not disguise, and it may score
   differently. Evaluate after R1 data exists.
