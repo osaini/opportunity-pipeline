@@ -1,5 +1,5 @@
 {
-  "_comment": "Vectors for the broad net (docs/phase5-apply-agent-spec.md 7.3, 'As built'). 'topics' is the sorted list of topics the net finds in the text (immigration, work_authorization, criminal, demographic, money, security, agreement, relative, and 'adult' for an 18-or-older wording), 'possibly_sensitive' is whether it finds any, and 'never_storable' whether it finds criminal, demographic, money or security: the topics no answer may be saved for or filled from the answer library. The net never says a question IS sensitive; the precise classifier still decides categories. apply_policy.net_topics, possibly_sensitive and never_storable and the engine's netTopics, possiblySensitive and neverStorable (apps/extension/apply-engine.js) must agree on every row. Node runs this in tests/extension/run_tests.mjs; the Python suites reuse this file. Rows added after review round 2 pin wordings the first lists missed (a guilty plea, a police caution, a person of color, income, CTC, TS/SCI, EAD, H-4, a blue card...). A few rows document deliberate over-reading ('Would you like to opt in to updates?', 'Are you interested in security engineering?'): over-blocking costs only some reuse, under-blocking is the bug. Rows added after review round 4 pin the wordings the second round of lists missed (legal matters, a restraining order, a suspended licence, litigation, law enforcement, an offender; a learning difference, a caregiver, children, caste, Aboriginal, Deaf, a first language; total comp, a fixed component, your ask, bankruptcy, a credit score; vetting, poly, NATO, access authorization) and the common prompts they must not catch (comp sci, a Docker registry, computer vision, a driver's licence). Rows added with the fail-closed work on the net pin fresh wordings the lists missed (a lawsuit, a disciplinary action, a justice system, a driving record, a debarment; a first-generation student, dependents, heritage, a tribe, faith, a Pell grant; a desired base, a package, equity, financial expectations; an active Secret, ITAR spelled out, classified information, foreign contacts, a CAC card) and the standard profile fields (name, email, phone, links, resume) and common prompts that must not be caught (a software package, fraud detection, disciplines, a dependency conflict, good faith). 'sections' pins the headings that make every question under them never storable (section_never in Python, sectionNeverText in the engine).",
+  "_comment": "Vectors for the broad net (docs/phase5-apply-agent-spec.md 7.3, 'As built'). 'topics' is the sorted list of topics the net finds in the text (immigration, work_authorization, criminal, demographic, money, security, agreement, relative, 'personal' for a non-compete, and 'adult' for an 18-or-older wording), 'possibly_sensitive' is whether it finds any, and 'never_storable' whether it finds criminal, demographic, money, security or personal: the topics no answer may be saved for or filled from the answer library. The net never says a question IS sensitive; the precise classifier still decides categories. apply_policy.net_topics, possibly_sensitive and never_storable and the engine's netTopics, possiblySensitive and neverStorable (apps/extension/apply-engine.js) must agree on every row. Node runs this in tests/extension/run_tests.mjs; the Python suites reuse this file. Rows added after review round 2 pin wordings the first lists missed (a guilty plea, a police caution, a person of color, income, CTC, TS/SCI, EAD, H-4, a blue card...). A few rows document deliberate over-reading ('Would you like to opt in to updates?', 'Are you interested in security engineering?'): over-blocking costs only some reuse, under-blocking is the bug. Rows added after review round 4 pin the wordings the second round of lists missed (legal matters, a restraining order, a suspended licence, litigation, law enforcement, an offender; a learning difference, a caregiver, children, caste, Aboriginal, Deaf, a first language; total comp, a fixed component, your ask, bankruptcy, a credit score; vetting, poly, NATO, access authorization) and the common prompts they must not catch (comp sci, a Docker registry, computer vision, a driver's licence). Rows added with the fail-closed work on the net pin fresh wordings the lists missed (a lawsuit, a disciplinary action, a justice system, a driving record, a debarment; a first-generation student, dependents, heritage, a tribe, faith, a Pell grant; a desired base, a package, equity, financial expectations; an active Secret, ITAR spelled out, classified information, foreign contacts, a CAC card) and the standard profile fields (name, email, phone, links, resume) and common prompts that must not be caught (a software package, fraud detection, disciplines, a dependency conflict, good faith). 'sections' pins the headings that make every question under them never storable (section_never in Python, sectionNeverText in the engine).",
   "vectors": [
     {
       "text": "Why are you interested in this role?",
@@ -2589,6 +2589,38 @@
     },
     {
       "text": "Describe a violation of a coding standard you found in review",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Are you subject to a non-compete agreement?",
+      "topics": [
+        "agreement",
+        "personal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you bound by a non-compete?",
+      "topics": [
+        "agreement",
+        "personal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you have a noncompete with your current employer?",
+      "topics": [
+        "personal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you compete in robotics events?",
       "topics": [],
       "possibly_sensitive": false,
       "never_storable": false

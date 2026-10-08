@@ -57,6 +57,17 @@
         false,
         false
       ]
+    },
+    {
+      "parent": "Are you subject to a non-compete agreement?",
+      "children": [
+        "Name of the employer",
+        "Describe the terms in detail"
+      ],
+      "never": [
+        true,
+        true
+      ]
     }
   ]
 }

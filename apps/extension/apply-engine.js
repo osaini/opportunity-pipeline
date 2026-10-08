@@ -294,9 +294,13 @@
       /\bretention/, /\bon file\b/, /\bhereby\b/,
     ],
     relative: [/\brelative/, /\bfamily/, /\bspouse/, /\brelated to\b/, /\breferr/, /\bformer employee/, /\bcurrent employee/, /\bconflict of interest/],
+    // What the precise classifier files as uncategorized and the topics above do not read (apply.classify._NEVER_STORABLE): a non-compete.
+    personal: [/\bnon ?compete/],
   });
   // Topics no answer may be saved for or filled from the library, whichever company.
   const NEVER_STORABLE_TOPICS = Object.freeze(["criminal", "demographic", "money", "security"]);
+  // The four, and the personal details a question the precise classifier called uncategorized passes on (apply.classify.NEVER_TOPICS).
+  const NEVER_TOPICS = Object.freeze([...NEVER_STORABLE_TOPICS, "personal"]);
   const NET_PATTERNS = Object.freeze(Object.fromEntries(Object.entries(NET_TOPICS).map(([topic, list]) => [topic, new RegExp(list.map((item) => item.source).join("|"))])));
   // Ordinary phrases removed before the topics are read, so "take charge of a project", "in two sentences", "network security" and
   // "exporting data" are not criminal or security questions and "hourly availability" is not about pay. Python's apply.policy.NET_BENIGN
@@ -344,7 +348,7 @@
   }
 
   function neverStorable(text) {
-    return netTopics(text).some((topic) => NEVER_STORABLE_TOPICS.includes(topic));
+    return netTopics(text).some((topic) => NEVER_TOPICS.includes(topic));
   }
 
   function sectionNeverText(text) {

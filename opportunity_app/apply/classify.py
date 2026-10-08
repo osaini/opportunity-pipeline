@@ -316,6 +316,8 @@ NET_TOPICS: dict[str, tuple[str, ...]] = {
         r"\bretention", r"\bon file\b", r"\bhereby\b",
     ),
     "relative": (r"\brelative", r"\bfamily", r"\bspouse", r"\brelated to\b", r"\breferr", r"\bformer employee", r"\bcurrent employee", r"\bconflict of interest"),
+    # What the precise classifier files as uncategorized and the topics above do not read (_NEVER_STORABLE): a non-compete.
+    "personal": (r"\bnon ?compete",),
 }
 # The topics no answer may be saved for or filled from the library, whichever company: the app leaves them for the student.
 NEVER_STORABLE_TOPICS = ("criminal", "demographic", "money", "security")
@@ -393,8 +395,8 @@ def section_never(heading: Any) -> bool:
 
 
 def never_storable(text: Any) -> bool:
-    """Whether the text hits a topic no answer may be saved for or filled from the library (criminal, demographic, money, security)."""
-    return bool(set(net_topics(text)) & set(NEVER_STORABLE_TOPICS))
+    """Whether the text hits a topic no answer may be saved for or filled from the library (criminal, demographic, money, security, a non-compete)."""
+    return bool(set(net_topics(text)) & NEVER_TOPICS)
 
 
 def plain_text(html_text: Any) -> str:
