@@ -335,7 +335,18 @@ def resolver_rule(extra_hosts: Sequence[str] = ()) -> str:
     return "--host-resolver-rules=MAP * ~NOTFOUND , " + " , ".join(f"EXCLUDE {host}" for host in (*RESOLVABLE_HOSTS, *extra_hosts))
 
 
-LAUNCH_ARGS = ("--disable-blink-features=FetchLaterAPI,WebSocketStream", "--disable-features=FedCm", resolver_rule())
+# What Playwright 1.62 switches off in Chromium at launch (its own ``--disable-features``). Chromium reads one value of a repeated switch, the
+# last, and the agent's follows Playwright's on the command line, so the agent's one switch names this list too and Playwright's takes
+# effect as it does everywhere else; FedCm is added to it. A test reads the installed Playwright's list and fails when it differs from this one.
+PLAYWRIGHT_DISABLED_FEATURES: tuple[str, ...] = (
+    "AvoidUnnecessaryBeforeUnloadCheckSync", "BoundaryEventDispatchTracksNodeRemoval", "DestroyProfileOnBrowserClose", "DialMediaRouteProvider",
+    "GlobalMediaControls", "HttpsUpgrades", "LensOverlay", "MediaRouter", "PaintHolding", "ThirdPartyStoragePartitioning",
+    "BlockOriginHeaderModificationOnRedirect", "Translate", "AutoDeElevate", "OptimizationHints", "msForceBrowserSignIn",
+    "msEdgeUpdateLaunchServicesPreferredVersion",
+)
+LAUNCH_ARGS = (
+    "--disable-blink-features=FetchLaterAPI,WebSocketStream", "--disable-features=" + ",".join((*PLAYWRIGHT_DISABLED_FEATURES, "FedCm")), resolver_rule(),
+)
 
 _SCAN = "(a) => OpportunityApplyEngine.scan(a.profile, a.answers, {tag: true})"
 _CONTAINS = "(c, e) => c.contains(e)"

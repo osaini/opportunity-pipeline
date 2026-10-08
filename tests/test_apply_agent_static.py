@@ -574,7 +574,8 @@ class LaunchIsPlain(unittest.TestCase):
     # needs before Submit: not Greenhouse's analytics collector or my.greenhouse.io, and no CAPTCHA service a Greenhouse form was not seen to use.
     LEFT_OUT = ["c.spl.greenhouse.io", "my.greenhouse.io", "www.google.com", "hcaptcha.com", "api.hcaptcha.com", "challenges.cloudflare.com"]
     ARGS = [
-        "--disable-blink-features=FetchLaterAPI,WebSocketStream", "--disable-features=FedCm",
+        "--disable-blink-features=FetchLaterAPI,WebSocketStream",
+        "--disable-features=" + ",".join((*apply_agent.PLAYWRIGHT_DISABLED_FEATURES, "FedCm")),
         "--host-resolver-rules=MAP * ~NOTFOUND , " + " , ".join(f"EXCLUDE {host}" for host in RESOLVABLE),
     ]
 
@@ -595,6 +596,41 @@ class LaunchIsPlain(unittest.TestCase):
             "the policy still allows the unconfirmed CAPTCHA hosts; only their names no longer resolve")
         for host in (*apply_checks.STATIC_ASSET_HOSTS, *BOARD_HOSTS):
             self.assertIn(host, self.RESOLVABLE)
+
+    @staticmethod
+    def playwrights_disabled_features():
+        """The features the installed Playwright switches off at launch, read from its driver (None when the driver is not laid out as expected)."""
+        try:
+            import playwright
+        except ImportError:
+            return None
+        bundle = Path(playwright.__file__).parent / "driver" / "package" / "lib" / "coreBundle.js"
+        try:
+            text = bundle.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        start = text.find("disabledFeatures = [")
+        end = text.find("];", start)
+        if start < 0 or end < 0:
+            return None
+        return re.findall(r'^\s*"([A-Za-z0-9]+)"', text[start:end], re.MULTILINE)
+
+    def test_the_one_disable_features_switch_names_everything_playwrights_names_and_fedcm(self):
+        # Chromium reads one value of a repeated switch, the last, and the agent's follows Playwright's own: so the agent's must hold both.
+        switches = [arg for arg in apply_agent.LAUNCH_ARGS if arg.startswith("--disable-features")]
+        self.assertEqual(len(switches), 1, switches)
+        named = switches[0].split("=", 1)[1].split(",")
+        self.assertIn("FedCm", named)
+        self.assertEqual(len(named), len(set(named)), "a feature named twice")
+        self.assertEqual(list(apply_agent.PLAYWRIGHT_DISABLED_FEATURES), sorted(set(apply_agent.PLAYWRIGHT_DISABLED_FEATURES), key=apply_agent.PLAYWRIGHT_DISABLED_FEATURES.index))
+        self.assertTrue(set(apply_agent.PLAYWRIGHT_DISABLED_FEATURES) <= set(named))
+        installed = self.playwrights_disabled_features()
+        if installed is None:
+            self.skipTest("the installed Playwright's driver is not laid out as this test reads it")
+        self.assertEqual(
+            sorted(installed), sorted(apply_agent.PLAYWRIGHT_DISABLED_FEATURES),
+            "Playwright's own list changed: update PLAYWRIGHT_DISABLED_FEATURES in agent.py to match it, so FedCm is added to it and replaces nothing",
+        )
 
     def test_launch_and_context_options_are_exactly_these(self):
         self.assertEqual(ApplyAgent.launch_options(False), {"headless": False, "args": self.ARGS})

@@ -18,7 +18,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Apply for me | 0 | 4 | 7 | 11 |
+| Apply for me | 0 | 4 | 6 | 10 |
 | Mail, Gmail and inboxes | 0 | 4 | 9 | 13 |
 | Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
@@ -26,7 +26,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Scoring, scheduling and configuration | 1 | 2 | 6 | 9 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **29** | **33** | **63** |
+| **Total** | **1** | **29** | **32** | **62** |
 
 ## Start here: the high-severity entries
 
@@ -155,13 +155,6 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** `orphaned` decides a "running" row is dead because this process holds no run of that id, on the reasoning that only this server runs rehearsals. Two servers on one database (`python -m opportunity_app.api` on another port beside the launcher's) break that: the second shows the first's live run as stopped after 15 seconds, its Stop closes the row as "The app stopped during this run", and `recover_stale` can do the same after two minutes of failed heartbeat writes. When the first run ends, its result is not stored (the runner now logs that and reports the row's outcome, not its own).
 - **Suggested fix:** Write a server instance id on the run row when it starts, and let `orphaned`, the cancel route and `recover_stale` close only rows that carry this server's id (or none).
 - **Regression suite:** tests/test_apply_runner.py (two runners on one database; the second does not close the first's running row)
-
-### LAUNCH_ARGS passes a second --disable-features switch, which replaces Playwright's own list
-- **Severity:** low (found 2026-10-03, in review of the rehearsal engine, M5a)
-- **Where:** `opportunity_app/apply/agent.py` `LAUNCH_ARGS` and `ApplyAgent.launch_options`
-- **What happens:** Playwright starts Chromium with its own `--disable-features=...` (HttpsUpgrades, Translate, OptimizationHints and others), and the agent's `--disable-features=FedCm` follows it on the command line. Chromium reads one value of a repeated switch, the last, so Playwright's list is not in effect (the process's command line shows both). Nothing the app relies on is known to change, but the browser is not the one Playwright's defaults describe.
-- **Suggested fix:** Put FedCm into one `--disable-features` that also names every feature Playwright's list does (read from the installed Playwright at launch, or pinned and tested against it), or close FedCM by the init script alone.
-- **Regression suite:** tests/test_apply_agent_static.py (the launch arguments carry one `--disable-features`, and it names Playwright's list)
 
 ### A form that posts its application to an address the app does not recognize is stopped without a word on the page
 - **Severity:** low (found 2026-10-03, planning Finish in browser, M5b part 2)
