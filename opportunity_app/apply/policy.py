@@ -55,6 +55,7 @@ from .classify import (
     classify_sensitive,
     context_dependent,
     field_net,
+    follow_up_shaped,
     follow_up_wording,
     most_restrictive,
     needs_label_key,
@@ -911,6 +912,20 @@ def _settle(entry: PlanField, ctx: _Context) -> PlanField:
     return entry
 
 
+def _page_never(scan: Iterable[Any] | None) -> frozenset[str]:
+    """The names the page's scan marked ``never_storable``: the engine's reading of the control's own words, the chain above it and the
+    heading of the part of the form it sits in (apps/extension/apply-engine.js ``scan``). The plan adds nothing the engine did not say."""
+    names: set[str] = set()
+    for control in scan or ():
+        if isinstance(control, Mapping):
+            marked, name, ident = control.get("never_storable"), control.get("name"), control.get("id")
+        else:
+            marked, name, ident = getattr(control, "never_storable", None), getattr(control, "name", None), getattr(control, "id", None)
+        if marked is True:
+            names.update(str(found) for found in (name, ident) if found)
+    return frozenset(names)
+
+
 def build_plan(
     schema: Iterable[SchemaField], scan: Iterable[Any] | None, sources: Sources, company: str, mode: str, *,
     canonical_url: str = "", adapter_version: str = "", uploads_on_attach: bool = False,
@@ -922,6 +937,7 @@ def build_plan(
     is "left for you" in a handoff; an optional one is left blank. ``scan``, when the page has been read, adds
     the problems of joining the listing to the page (apply_checks.join). Nothing here changes a row.
     """
+    scan = list(scan) if scan is not None else None
     mode = "submit" if mode == "check" else mode
     if mode not in ("rehearse", "submit", "handoff"):
         raise ValueError(f"Unknown plan mode: {mode!r}")
@@ -944,6 +960,10 @@ def build_plan(
     # The same, for the broad net's topics (NET_TOPICS): what each question's own words hit, and what a follow-up chain carries.
     net_own: dict[str, frozenset[str]] = {}
     net_chain: dict[str, frozenset[str]] = {}
+    # The never-storable topics only: they run on through every follow-up-shaped child (the extension's ``followsNever``), so a
+    # child that does not read as a follow-up cannot break the chain of a grandchild of a never-storable question.
+    never_chain: dict[str, frozenset[str]] = {}
+    page_never = _page_never(scan)
     for item in fields:
         control = control_of(item)
         if control == "hidden" or item.name in ALTERNATE_TEXT_FIELDS:
@@ -981,6 +1001,11 @@ def build_plan(
             # LinkedIn or portfolio link) is exempt.
             own_net, marks = field_net(item, control)
             topics = set(own_net)
+            if item.section == "custom" and item.name in page_never and label_key not in _PROFILE_KEYS:
+                # The page shows this question under a demographic, compliance or background heading, or the engine followed a
+                # never-storable chain to it (its ``never_storable``): it is left for the student whatever it says. The mark is this
+                # field's alone: what follows it is marked by the engine itself, by the same chain.
+                topics.add("personal")
             continues = custom_child and (text != item.label or follow_up_wording(label_key))
             parent_net = net_own.get(item.parent, frozenset()) | set(net_topics(item.parent)) if custom_child else frozenset()
             if custom_child and (continues or parent_category is not None or parent_net):
@@ -991,9 +1016,13 @@ def build_plan(
                     topics |= net_chain.get(item.parent, frozenset())
                 if parent_category is not None:
                     topics.add(CATEGORY_TOPIC[parent_category])
+            carried = never_chain.get(item.parent, frozenset()) if custom_child and follow_up_shaped(label_key) else frozenset()
+            topics |= carried
             net = frozenset(topics)
             net_own[item.label] = frozenset(net_own.get(item.label, frozenset()) | own_net)
             net_chain[item.label] = frozenset(net_chain.get(item.label, frozenset()) | (net if continues else own_net))
+            own_never = (frozenset(own_net) | {CATEGORY_TOPIC.get(category or "", "")}) & NEVER_TOPICS
+            never_chain[item.label] = frozenset(never_chain.get(item.label, frozenset()) | own_never | carried)
         # The net tightens only an ordinary question: a sensitive one already goes through the store and never the library.
         ordinary = control != "file" and category is None
         net_company = ordinary and (bool(net) or bool(marks))

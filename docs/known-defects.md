@@ -18,15 +18,15 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Apply for me | 0 | 4 | 5 | 9 |
-| Mail, Gmail and inboxes | 0 | 4 | 9 | 13 |
+| Apply for me | 0 | 3 | 6 | 9 |
+| Mail, Gmail and inboxes | 0 | 4 | 8 | 12 |
 | Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
 | Web API, auth and storage | 0 | 4 | 1 | 5 |
 | Scoring, scheduling and configuration | 1 | 2 | 8 | 11 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **29** | **33** | **63** |
+| **Total** | **1** | **28** | **33** | **62** |
 
 ## Start here: the high-severity entries
 
@@ -112,28 +112,28 @@ The entry flagged for an owner decision is
 
 ## Apply for me
 
-The first three were left open by PR #54 (the fail-closed net) and recorded here on 2026-10-03. Apply for me never carries an answer across companies, so each of those can at worst affect one company's own saved answer, and the student still presses Submit (D1 B). The next three were found while building the rehearsal engine (M5a), and the next one while building Finish in browser (M5b part 2); none was fixed there. The last two were found on 2026-10-04 and 2026-10-08.
+The first three were left open by PR #54 (the fail-closed net) and recorded here on 2026-10-03; each was narrowed on 2026-10-08 (the lists were widened, a page's headings now count, and the chain follows every follow-up-shaped child). Apply for me never carries an answer across companies, so each can at worst affect one company's own saved answer, and the student still presses Submit (D1 B). The next three were found while building the rehearsal engine (M5a), and the next one while building Finish in browser (M5b part 2); none was fixed there. The last two were found on 2026-10-04 and 2026-10-08.
 
-### Agreement-shaped choices and signatures outside the word list still fill from a same-company saved answer
-- **Severity:** medium (PR #54 review)
-- **Where:** `opportunity_app/apply/classify.py` `field_net()` (the `agreement` mark: `_AGREEMENT_OPTION`, `_SIGNATURE`, the `agree` net words); `opportunity_app/apply/policy.py` `_saved_answer()`
-- **What happens:** A select, radio or text field that agrees to something in words the lists miss (for example a one-option select that works as a tick box, or a signature line worded unusually) gets no `agreement` mark, so a saved answer the student gave at the same company for another posting fills it. Only an exact stored statement should tick or choose an agreement (D9 B).
-- **Suggested fix:** Treat any one-option select as a tick box, and leave a select or text field for the student whenever its options or heading hit the broad net's agreement topic, not only the narrow lists.
-- **Regression suite:** tests/ unittest (`test_apply_policy`, `test_apply_broad_net`)
+### Agreement-shaped choices and signatures in wordings no list has still fill from a same-company saved answer
+- **Severity:** medium (PR #54 review; narrowed on 2026-10-08)
+- **Where:** `opportunity_app/apply/classify.py` `field_net()` (`_AGREEMENT_OPTION`, `_SIGNATURE`, `_SIGNED_HEADING`); `apps/extension/apply-engine.js` `AGREEMENT_OPTION`, `SIGNATURE`
+- **What happens:** A one-option select is read as a tick box, a select whose options or heading hit the agreement topic is left for the student, and a single-line text field is a signature line when its heading, or its description beside a name heading, says it signs ("By typing your name...", "electronically signing", "I certify that..."). A select that agrees in words none of those lists has ("I honour the policy", "Done" and "Not yet" for "Please indicate your compliance") or a signature line worded in an unusual way still gets no `agreement` mark, so a saved answer the student gave at the same company for another posting fills it. Nothing carries across companies, and the student still presses Submit.
+- **Suggested fix:** Keep adding wordings from real Greenhouse questions as students meet them. A word list cannot be complete; the per-company rule is what bounds a miss.
+- **Regression suite:** tests/ unittest (`test_apply_broad_net`), node tests/extension/run_tests.mjs
 
-### The Python net chain stops at a child that does not continue by its wording, so a grandchild of a never-storable question gets a save form
-- **Severity:** medium (PR #54 review)
-- **Where:** `opportunity_app/apply/policy.py` `build_plan()` (the `net_chain` / `continues` logic for custom follow-ups)
-- **What happens:** Under a never-storable question (a criminal-history question, say), a child whose wording does not read as a follow-up breaks the chain, so its own child (the grandchild) is treated as ordinary: the Needs you view offers to save it and a same-company row can fill it. The extension marks the same field `never_storable`, so the two disagree.
-- **Suggested fix:** Carry the never-storable topics down every custom child of a never-storable parent, as the extension does, and pin the three-level chain with a shared vector.
-- **Regression suite:** tests/ unittest (`test_apply_policy`), node tests/extension/run_tests.mjs
+### A grandchild of a never-storable question still gets a save form when its parent is long and does not open as a follow-up
+- **Severity:** low (PR #54 review; narrowed on 2026-10-08)
+- **Where:** `opportunity_app/apply/policy.py` `build_plan()` (`never_chain`, `follow_up_shaped`); `apps/extension/apply-engine.js` `netReadings()` (`followsNever`)
+- **What happens:** A never-storable topic runs down every follow-up-shaped child (short, a follow-up wording, or one that opens with a question word). A child of a felony question that is six or more words and does not open that way ("Please list the employer you worked for at the time of the incident") is refused in the plan, because it is filed under the felony question, but it does not pass the topic on, so its own follow-up ("Anything else") is ordinary: the Needs you view offers to save it, and the side panel offers Save on both. The plan cannot tell such a child from a long independent question that happens to sit under the parent ("Tell us about a project you are proud of"), which must not hand a topic on, so passing it on would over-block. A same-company row can fill the grandchild; nothing carries across companies.
+- **Suggested fix:** Give the schema a way to tell a continuation from an independent question (the form's own grouping), then carry what the child took into `never_chain` and the engine's chain.
+- **Regression suite:** tests/ unittest (`test_apply_broad_net`, `tests/fixtures/apply/net_chains.json`), node tests/extension/run_tests.mjs
 
-### The broad never-storable net misses most fresh wordings
-- **Severity:** medium (PR #54 review)
-- **Where:** `opportunity_app/apply/classify.py` `NET_TOPICS` / `net_topics()`; `apps/extension/apply-engine.js` `netTopics`
-- **What happens:** In the PR #54 review, 29 of 30 newly written never-storable wordings (criminal history, demographics, money, security clearance phrased in other words) were not caught, and two wordings from confirmed finding 0 still are not. A missed question is treated as ordinary, so the student can save its answer for that company and a later posting at the same company fills it.
-- **Suggested fix:** Widen the net from a labelled set of real Greenhouse questions, or treat every custom question in a demographic, compliance or background section as never storable.
-- **Regression suite:** tests/ unittest (`test_apply_broad_net`, `tests/fixtures/apply/broad_net.json`)
+### The broad never-storable net still misses wordings no list has, and a heading covers only the questions under it
+- **Severity:** medium (PR #54 review; narrowed on 2026-10-08)
+- **Where:** `opportunity_app/apply/classify.py` `NET_TOPICS` / `net_topics()` / `NET_SECTION`; `apps/extension/apply-engine.js` `netTopics` / `inNeverSection`
+- **What happens:** The lists were widened from a fresh set of 128 never-storable wordings (criminal history, demographics, pay, security): the net missed 59 of them before and misses 11 now. Those left have no keyword to read ("Have you ever been fired?", "Do you have a record of any violations?", "Did you grow up in a rural community?", "Do you have relatives who live outside the US?"), or are immigration-status questions the precise classifier already files by category. A question under a demographic, compliance or background heading is now never storable whatever it says, but only in a run that has read the page: the engine reads the section, fieldset, region or group around each control (a heading that is a sibling of the fields, with nothing wrapped around them, is not read), and the plan takes the engine's mark from the scan. The check that drives the Needs you view reads no page, so it still offers to save such a question. A custom question under a plain heading ("Application questions") or none depends on the lists. A missed question is treated as ordinary, so the student can save its answer for that company and a later posting at the same company fills it; nothing carries across companies.
+- **Suggested fix:** Keep adding wordings from real Greenhouse questions as students meet them. A word list cannot be complete; the per-company rule is what bounds a miss.
+- **Regression suite:** tests/ unittest (`test_apply_broad_net`, `tests/fixtures/apply/broad_net.json`), node tests/extension/run_tests.mjs
 
 ### A request a page makes while its window is closing skips the route handler, so a hostile script can carry a typed value to one of the allowed hosts
 - **Severity:** medium, privacy (found 2026-10-03, in the M5a recheck)
@@ -243,26 +243,19 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **Suggested fix:** Reuse `is_throttle` from `opportunity_app/integrations/gmail_client.py`.
 - **Regression suite:** tests/ unittest (`test_pipeline_mailbox`)
 
-### Apply for me's confirmation watch compares the Gmail account read now, not the address the application used
-- **Severity:** low (found in review of the confirmation watch, M5b part 1)
-- **Where:** `opportunity_app/apply/watch.py` `reader_health()` (the `mailbox_reason` check) and `watch_for()`; the claim carries no record of the address it was submitted with
-- **What happens:** The watch pauses whenever the Gmail account the app reads is not the email in the profile, which is safe (a pause never writes "no email came") but imprecise. A student who edits the profile email after submitting, when the old address is still the connected account, sees a correct watch paused until the 13-day give-up turns it into not watched. A student who reconnects as another account and then back inside the window is not told the reader was in the wrong mailbox for part of it, because only the account read at each pass is compared.
-- **Suggested fix:** Record the address (or a hash of it) the application used on the claim at hand-over, and compare the connected account against that, not against the profile at each pass. The hand-over is `runs.py`, which the browser-driver milestone edits.
-- **Regression suite:** tests/ unittest (`test_apply_watch`: edit the profile email after the submission and expect the watch to keep running; switch the account and expect a pause)
+### Apply for me's confirmation watch cannot tell that the reader was in another mailbox for part of the window
+- **Severity:** low (found in review of the confirmation watch, M5b part 1; narrowed on 2026-10-08)
+- **Where:** `opportunity_app/apply/watch.py` `mailbox_reason()` and `reader_health()`; `opportunity_app/applications/inbox.py` (`application_mail_sync` records no account)
+- **What happens:** The claim now records the address it went out under (`detail.mailbox_hash`), and the watch compares the connected account with that at each watch pass, so editing the profile email after submitting no longer pauses it. A student who reconnects as another account and then back between two watch passes is not told the reader was in the wrong mailbox for part of it: the inbox reader's passes leave no record of the account they read, so the watch can still end as "no email in 24 hours".
+- **Suggested fix:** Record the account hash each reader pass ran under (in `application_mail_sync`), and pause or extend the watch when any pass since the hand-over ran under another account.
+- **Regression suite:** tests/ unittest (`test_apply_watch`: switch the account and back between two watch passes and expect a pause)
 
-### An email the Phase 1 reader set aside as an error stalls every Apply for me watch for the rest of its window
-- **Severity:** low (found in review of the confirmation watch, M5b part 1)
-- **Where:** `opportunity_app/applications/inbox.py` `_decide_safely()` and `_rescan()` (only `awaiting_resume` rows are read again); `opportunity_app/apply/watch.py` `reader_health()` (`READER_SET_ASIDE`)
-- **What happens:** A message whose decision raised is stored with state `error` and never read again. The watch now treats such a row received at or after the oldest watched hand-over (minus five minutes) as a stall, because the email that failed may be the confirmation. Nothing clears the row, so the watch stays paused until the 13-day give-up ends it as not watched, and the error row also pauses watches for unrelated applications handed over before it.
-- **Suggested fix:** Let the reader retry `error` rows a bounded number of times (or record the sender's domain on them), so the watch can tell an unrelated failure from the confirmation's.
-- **Regression suite:** tests/ unittest (`test_application_inbox`: an error row is retried; `test_apply_watch`: a retried row clears the pause)
-
-### apply/watch.py keeps its own copy of runs.py's time helpers
-- **Severity:** low, latent (found in review of the confirmation watch, M5b part 1)
-- **Where:** `opportunity_app/apply/watch.py` `_at()`, `stamp_now()`, `iso_utc()` against `opportunity_app/apply/runs.py` `_at()`, `_stamp()`, `_iso()`; `opportunity_app/apply/security_code.py` calls the watch's copy
-- **What happens:** The bodies match today, so stamps compare correctly as strings. If one copy drifts (for example the "never repeated" `utc_now` rule), claims, events and notices get differently formatted stamps, and the string comparisons in `_WATCHED` and `students_to_watch` misorder them. The copy exists because the browser-driver milestone edits `runs.py` in parallel and a rename there would conflict; AGENTS.md section 8 rules 3 and 6 want one copy with a public name. The Greenhouse sender check is already shared (`greenhouse.is_greenhouse_sender`).
-- **Suggested fix:** After both milestones merge, rename `runs._at`, `_stamp` and `_iso` to public names, import them in `watch.py` and `security_code.py`, and delete the copies.
-- **Regression suite:** tests/ unittest (a test that both modules format the same instant identically, or that `watch.py` defines none of these)
+### An email that might be a confirmation and keeps failing to be decided stalls every Apply for me watch until its 13-day give-up
+- **Severity:** low (found in review of the confirmation watch, M5b part 1; narrowed on 2026-10-08)
+- **Where:** `opportunity_app/applications/inbox.py` `_retry_errors()` and `_decide_safely()`; `opportunity_app/apply/watch.py` `reader_health()` (`READER_SET_ASIDE`)
+- **What happens:** A message set aside as an error is read again after half an hour, then after waits that double, for 14 days, and an email the reader parsed before the decision failed carries its sender and the match it found, so one that is not from Greenhouse and named none of the student's applications no longer holds the watch. An email that could be the confirmation (from Greenhouse, or from the company's own domain and naming one of the applications) or that could not even be parsed, and whose reading fails every time, because something in its content breaks the parse or the decision, stays an error until a code change ships, so the watch stays paused until it gives up as not watched, and the row also pauses watches for applications handed over before it. The retries end after 14 days, a day after the give-up, so they never release a watch.
+- **Suggested fix:** Decide a Greenhouse email whose decision keeps failing as "not a confirmation" after a few tries, or let the student dismiss the pause from the card.
+- **Regression suite:** tests/ unittest (`test_application_inbox`, `test_apply_watch`)
 
 ### The Gmail labelling worker can write label rows for an account that was just deleted
 - **Severity:** medium, privacy; left by design for an owner decision (found in review of the PR #60 erase fix, which closed the missing-tables gap but not this race)

@@ -2192,7 +2192,10 @@ card's two answers; `apply/security_code.py` holds the D10 B reader. Decisions t
   until 13 days after the submission, or whose extended deadline would pass day 13, becomes `not_watched`
   (`detail.watch_stopped = 'reader_stalled'`); one still awaiting its email when its 14 days end becomes `not_watched`
   too (`'window_ended'`). Neither counts. The reader is not "working" while an email it set aside unread (state `error`)
-  falls in the window, or while the Gmail account read is not the application's address: the watch pauses.
+  falls in the window, or while the Gmail account read is not the application's address: the watch pauses. An error
+  row the reader parsed first records its sender and its match (`matched_by`); it is passed over only when the sender
+  is not Greenhouse and the match is `none` or `ambiguous`, since a company may send Greenhouse's email from its own
+  domain. A row with no match recorded (not parsed, or recorded before this) always stalls.
 - One email confirms one attempt (`detail.email_gmail_id`), the newest attempt first. A tombstone whose application or
   job has a newer live attempt is not flipped; the student gets a notice instead.
 - Weak evidence also covers a strong-tier email from an unverified sender.
@@ -2437,12 +2440,26 @@ only tightens what may be done with a question the classifier called ordinary:
   ("Asian", "White", "$40,000-$50,000"). The lists are best-effort: they do not catch every wording (a fresh one is
   at worst saved for one company), and the extension's Save can only judge the question in front of it plus the chain
   of follow-ups above it (below).
+- **A heading can make every question under it never storable.** The listing reports the demographic, compliance and data
+  compliance blocks as sections of their own, and `classify_sensitive` already sends every field in them through the store. The
+  page shows the same blocks, and a custom question can sit under one, under a heading or an id that says demographic, voluntary
+  self-identification, equal employment opportunity, compliance, background check, criminal or diversity (`NET_SECTION`,
+  repeated as `SECTION_NEVER` and pinned by the `sections` rows of `broad_net.json`). The engine reads the section, fieldset or
+  group around each control (not a heading that is only a sibling of the fields) and marks it `never_storable`; `build_plan` takes
+  that mark from the scan, for a custom question that is not a profile link, and leaves the question for the student. That
+  holds only in a run that has read the page: the check that drives the Needs you view reads none, so it still offers to
+  save such a question. Over-blocking costs a Save button; a title like "Apply for Compliance Analyst" over the whole form
+  is read the same way.
 - **No checkbox or agreement control is filled from the answer library** (D9 B). A checkbox, single or a group, never is;
   nor is a select or multiselect whose option labels, heading or description agree to, accept, acknowledge, consent to,
   certify, attest or confirm something (an agreement word in the heading alone is enough: "Do you certify that your
   answers are true?" with the options "Yes I do" and "No I do not"), a Yes/No-shaped question that hits the agreement
-  topic, or a typed signature or typed initials ("Type your initials to agree"). Only an
-  exact sensitive-store statement ticks or chooses it; otherwise it is left for the student.
+  topic, or a typed signature or typed initials ("Type your initials to agree"). A select with one option is read as a tick
+  box. The broad net's agreement topic is read on a select's heading and on each of its options, not only the narrow list ("I
+  will comply", "I waive my right"), and a single-line text field whose heading states an agreement ("Acknowledged by (your
+  name)", "Signed by") is a signature line, as is a name field whose description signs ("By typing your name, you are
+  electronically signing", "I certify that the information above is true"). Only an exact sensitive-store statement ticks or chooses it; otherwise it is left
+  for the student.
 - **Every stored statement and tick-box entry is per company** (C). An acknowledgment or consent statement, and any
   work-authorization, sponsorship or 18-or-older entry whose `answer_kind` is a tick box, is typed text, or whose question or
   option also agrees to something, is refused for "any company" by `add_entry`, is not offered for it, and is ignored at
@@ -2465,7 +2482,12 @@ only tightens what may be done with a question the classifier called ordinary:
   follow a felony question, as do "Which type?" and then "What is the expiration date of your current status?" under a
   visa question. This mirrors the `own` chain in `build_plan`. A follow-up-shaped field in a chain under a never-storable
   question is marked `never_storable`, so the panel offers no Save for it; an independent question after one is still
-  offered. A checkbox is never pre-ticked from a row saved at another company (an option row never travels).
+  offered. `build_plan` keeps the same chain for the never-storable topics (`follow_up_shaped`, the engine's `followUpShaped`):
+  a child that is short or opens with a question word passes them on even when its own wording does not read as a follow-up,
+  so its own child is never storable too (`tests/fixtures/apply/net_chains.json`, run by both suites). A child that is long and
+  does not open as a follow-up does not pass them on, because the plan cannot tell it from an independent question filed under
+  the same parent; its own follow-up is then ordinary (known-defects). A checkbox is never
+  pre-ticked from a row saved at another company (an option row never travels).
 
 The net over-reads on purpose ("Would you like to opt in to updates?" is immigration wording to it, and a question that
 only comes after a sensitive one takes that one's topics). Over-blocking costs some reuse; under-blocking is the bug. It

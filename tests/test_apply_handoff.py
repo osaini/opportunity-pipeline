@@ -282,7 +282,7 @@ class RefusalTests(HandoffCase):
         with self.conn:
             self.conn.execute("UPDATE application_submit_claims SET state='unconfirmed', resolved_by='' WHERE token=?", (token,))
         apply_watch.resolve_by_student(self.conn, token, user_id=USER, went_through=False)
-        old = (utc_now() and (apply_runs._at(None) - timedelta(days=3)).isoformat(timespec="microseconds"))
+        old = (utc_now() and (apply_runs.at_utc(None) - timedelta(days=3)).isoformat(timespec="microseconds"))
         with self.conn:
             self.conn.execute("UPDATE application_submit_claims SET handed_over_at=? WHERE token=?", (old, token))
         self.assertEqual(self.claim_of(run_id)["state"], "released")
@@ -316,7 +316,7 @@ class RefusalTests(HandoffCase):
     def test_the_company_limit_is_a_tick_after_the_spacing_has_passed(self):
         first = self.handoff()
         self.finished(first)
-        old = (apply_runs._at(None) - timedelta(days=5)).isoformat(timespec="microseconds")
+        old = (apply_runs.at_utc(None) - timedelta(days=5)).isoformat(timespec="microseconds")
         with self.conn:
             self.conn.execute("UPDATE application_submit_claims SET handed_over_at=? WHERE run_id=?", (old, first))
         self.second_role()
@@ -1275,6 +1275,19 @@ class HandOverDeadlineTests(ApplyCase):
         self.assertEqual((row["state"], row["after_click"]), ("clicking", 1))
         self.assertEqual(json.loads(row["detail_json"])["waiting"], "", "a clicking claim never says the student is still working")
 
+    def test_a_deadline_that_passes_while_the_profile_is_read_refuses_and_leaves_the_claim_claimed(self):
+        # The deadline comparison is the last step before the UPDATE: nothing slow may sit between them.
+        real = apply_runs.application_address
+
+        def slow(*args, **kwargs):
+            time.sleep(0.2)
+            return real(*args, **kwargs)
+
+        with mock.patch.object(apply_runs, "application_address", side_effect=slow):
+            self.assertFalse(apply_runs.hand_over(self.conn, self.token, user_id=USER, deadline=time.monotonic() + 0.1))
+        row = self.claim_row(self.token)
+        self.assertEqual((row["state"], row["handed_over_at"], row["after_click"]), ("claimed", None, 0))
+
     def test_a_request_that_waited_in_the_queue_past_its_expiry_is_refused(self):
         case = self
 
@@ -2204,7 +2217,7 @@ class PreviewTests(HandoffCase):
     def test_a_newer_resume_version_is_a_change(self):
         row = self.rehearse()
         data = b"%PDF-1.4 another fictional resume"
-        stamp = (apply_runs._at(None) + timedelta(minutes=5)).isoformat(timespec="microseconds")
+        stamp = (apply_runs.at_utc(None) + timedelta(minutes=5)).isoformat(timespec="microseconds")
         (self.root / "resumes" / "resume-file-2.pdf").write_bytes(data)
         with self.conn:
             self.conn.execute(
@@ -2319,7 +2332,7 @@ class PreviewTests(HandoffCase):
         with self.conn:
             self.conn.execute("UPDATE application_submit_claims SET state='unconfirmed', resolved_by='' WHERE token=?", (token,))
         apply_watch.resolve_by_student(self.conn, token, user_id=USER, went_through=False)
-        old = (apply_runs._at(None) - timedelta(days=3)).isoformat(timespec="microseconds")
+        old = (apply_runs.at_utc(None) - timedelta(days=3)).isoformat(timespec="microseconds")
         with self.conn:
             self.conn.execute("UPDATE application_submit_claims SET handed_over_at=? WHERE token=?", (old, token))
         result = apply_preflight.check(self.conn, USER, ACME, client=self.schema, resume_root=self.root / "resumes")
