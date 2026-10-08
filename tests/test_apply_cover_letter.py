@@ -198,6 +198,21 @@ class RunnerReadsTheLetterTests(LetterCase):
         self.assertNotEqual(payload.sha256, old["sha256"])
         self.assertEqual(factory.seen["answers"], [True, True])
 
+    def test_a_role_renamed_after_approval_gets_a_letter_whose_name_is_the_one_the_plan_and_preview_show(self):
+        self.letter(1)
+        old = document_artifacts.ensure_document_artifact(self.conn, "doc-1", self.root / "resumes", user_id=USER)
+        with self.conn:
+            self.conn.execute("UPDATE opportunities SET title='Renamed Robotics Role' WHERE id=?", (ACME,))
+        factory = ProbeFactory()
+        row = self.finish(self.start(factory))
+        payload = factory.seen["files"]["cover_letter"]
+        self.assertNotEqual(payload.name, old["filename"], "the stored PDF carried the old role's name, so it was made again")
+        self.assertIn("Renamed-Robotics-Role", payload.name)
+        self.assertEqual(payload.name, factory.seen["entry"].file_name, "the file attached and the plan name the same file")
+        row = self.finish(self.start(FakeApplyAgentFactory(step_delay=0)))
+        shown = apply_policy.preview_values(self.conn, USER, row, key=apply_policy.mac_key(self.apply_root), storage_root=self.root / "resumes")["cover_letter"]
+        self.assertEqual(shown["text"], payload.name, "the preview shows the name the employer receives")
+
     def test_nothing_approved_gives_the_agent_no_letter_and_no_check(self):
         for label, prepare in (("no letter at all", lambda: None), ("only a draft", lambda: self.letter(1, "draft"))):
             with self.subTest(label):

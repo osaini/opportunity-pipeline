@@ -105,12 +105,17 @@ def _stored_file(storage_root: Path, artifact: Any) -> Path | None:
     return path if path.parent == root and path.is_file() else None
 
 
-def _is_current(artifact: Any, content: str, storage_root: Path) -> bool:
-    """The stored PDF was rendered from this exact text, and the file on disk is still the one that was stored.
+def _is_current(artifact: Any, document: dict[str, Any], storage_root: Path) -> bool:
+    """The stored PDF was rendered from this exact text, carries the name the role gives it now, and the file on disk is still the one stored.
+
+    The name is made from the role's company and title, so a role renamed since the PDF was made gets a new PDF with the new name:
+    the plan and the preview name the file from the role as it is now.
 
     An artifact made before ``content_sha256`` existed has none recorded, so it cannot be shown to match and is made again.
     """
-    if str(artifact["content_sha256"] or "") != content_digest(content):
+    if str(artifact["content_sha256"] or "") != content_digest(str(document["content"])):
+        return False
+    if str(artifact["filename"] or "") != document_file_name(document):
         return False
     path = _stored_file(storage_root, artifact)
     return path is not None and hashlib.sha256(path.read_bytes()).hexdigest() == str(artifact["sha256"])
@@ -136,7 +141,7 @@ def ensure_document_artifact(
         "SELECT * FROM generated_document_artifacts WHERE document_id=? AND user_id=?",
         (document_id, user_id),
     ).fetchone()
-    if existing and _is_current(existing, str(document["content"]), storage_root):
+    if existing and _is_current(existing, document, storage_root):
         return dict(existing)
 
     artifact_root = (storage_root.resolve() / "generated").resolve()
