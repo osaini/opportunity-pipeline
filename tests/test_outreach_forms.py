@@ -756,8 +756,27 @@ BROKEN_SEND_FORM = SCRIPT_FORM.replace(
     'await fetch("/api/contact"', 'await fetch("https://analytics.example/collect", {method: "POST", body: "event=click"}); return;\n    await fetch("/api/contact"')
 # A form that posts by script and then shows nothing at all: the form stays as it was.
 STILL_FORM = SCRIPT_FORM.replace("""root.innerHTML = "<p>Thank you for your message! We'll reply soon.</p>";""", "")
-# A page that posts as soon as it loads, before the window is the student's.
-EARLY_POST_FORM = BUDGET_FORM.replace("</form>", "</form><script>fetch('/early', {method: 'POST', body: 'x'});</script>")
+# A page that posts each box's value as it changes: the app's own fills carry the student's details.
+EARLY_POST_FORM = BUDGET_FORM.replace("</form>", "</form><script>document.querySelector('[name=name]').addEventListener("
+                                      "'change', (e) => fetch('/early', {method: 'POST', body: e.target.value}));</script>")
+# A page that must pass its site's own check (a POST, as Cloudflare's challenge makes) before it shows the form.
+CHALLENGED_FORM = """<html><body><div id="root">Checking your browser...</div><script>
+  fetch('/cdn-cgi/challenge-platform/check', {method: 'POST', body: 'ok'}).then((r) => r.ok && (document.getElementById('root').innerHTML =
+    """ + json.dumps(BUDGET_FORM.split("<body>", 1)[1].split("</body>", 1)[0]) + """));
+</script></body></html>"""
+# A script-built form sent by GET, its values in the address, and thanked in words the app does not know.
+GET_SENT_FORM = SCRIPT_FORM.replace(
+    'await fetch("/api/contact", {method: "POST", body: JSON.stringify({',
+    'await fetch("/mail?" + new URLSearchParams({').replace(
+    "message: document.getElementById(\"m\").value})});", "message: document.getElementById(\"m\").value}));").replace(
+    "Thank you for your message! We'll reply soon.", "Done.")
+# A form whose send button posts a beacon to its own site on every click, as a CDN's page-speed script does.
+BEACON_FORM = BUDGET_FORM.replace("</form>", "</form><script>document.querySelector('button').addEventListener("
+                                  "'click', () => fetch('/cdn-cgi/rum', {method: 'POST', body: 'rum'}));</script>")
+# A script-built form whose send posts only a ping to its own site, carrying none of the student's details.
+PING_FORM = SCRIPT_FORM.replace(
+    'await fetch("/api/contact", {method: "POST", body: JSON.stringify({',
+    'await fetch("/api/ping", {method: "POST", body: "x"}); return;\n    await fetch("/api/contact", {method: "POST", body: JSON.stringify({')
 
 
 class Site:
@@ -1075,14 +1094,56 @@ class FinishInBrowserTests(unittest.TestCase):
                 self.assertEqual((parse_qs(site.posts[0][1])["budget"], pressed), (["Under $10k"], [1]))
                 self.assertEqual(result["by_you"], ["Annual budget"])
 
-    def test_nothing_leaves_the_page_before_the_window_is_the_students(self):
+    def test_nothing_the_app_fills_leaves_before_the_students_press(self):
         def student(window, site):
             window.locator("[name=budget]").fill("Under $10k")
             window.get_by_role("button", name="Send message").click()
 
         result, site, _pressed = self.submit(EARLY_POST_FORM, student)
         self.assertEqual(result["outcome"], "submitted", result)
-        self.assertEqual([path for path, _ in site.posts], ["/send"], "the page's own post while the app filled never left")
+        self.assertEqual([path for path, _ in site.posts], ["/send"], "the page's post of what the app filled never left")
+        self.assertTrue(result["held_back"])
+        self.assertEqual(set(result["held_back"]), {"POST bovi.test"}, "each change the app made, held back")
+
+    def test_a_page_may_pass_its_sites_own_check_before_anything_is_filled(self):
+        def student(window, site):
+            window.locator("[name=budget]").fill("Under $10k")
+            window.get_by_role("button", name="Send message").click()
+
+        result, site, _pressed = self.submit(CHALLENGED_FORM, student, pages={"/cdn-cgi/challenge-platform/check": "ok"})
+        self.assertEqual(result["outcome"], "submitted", result)
+        self.assertEqual([path for path, _ in site.posts], ["/cdn-cgi/challenge-platform/check", "/send"])
+
+    def test_a_form_sent_by_get_is_never_called_unsent(self):
+        def student(window, site):
+            window.get_by_role("button", name="Send").click()
+            window.wait_for_timeout(500)
+            window.close()
+
+        result, site, pressed = self.submit(GET_SENT_FORM, student, pages={"/mail": "ok"})
+        self.assertEqual((result["outcome"], pressed), ("unconfirmed", [1]), result)
+        self.assertIn("the form left the page", result["note"], "it carried the student's details")
+
+    def test_a_press_the_browsers_own_check_stops_opens_nothing(self):
+        # The budget box is required and empty: the browser stops the form, and the page's beacon is held back.
+        def student(window, site):
+            window.get_by_role("button", name="Send message").click()
+            window.wait_for_timeout(500)
+            window.close()
+
+        result, site, pressed = self.submit(BEACON_FORM, student)
+        self.assertEqual((result["outcome"], site.posts, pressed), ("needs_you", [], []), result)
+
+    def test_something_that_left_without_the_students_details_is_not_called_the_form(self):
+        def student(window, site):
+            window.get_by_role("button", name="Send").click()
+            window.wait_for_timeout(500)
+            window.close()
+
+        result, site, pressed = self.submit(PING_FORM, student, pages={"/api/ping": "ok"})
+        self.assertEqual((result["outcome"], [path for path, _ in site.posts], pressed), ("unconfirmed", ["/api/ping"], [1]), result)
+        self.assertIn("may have been the form", result["note"])
+        self.assertNotIn("the form left the page", result["note"])
 
     def test_a_custom_element_send_button_is_the_students_press(self):
         def student(window, site):
@@ -1386,19 +1447,37 @@ class FinishInBrowserGateTests(unittest.TestCase):
     def test_only_reads_and_captcha_calls_leave_while_the_window_is_not_the_students(self):
         passed = []
         submitter = FormSubmitter(person_wait=60, route_hook=lambda route: passed.append(route.request.url))
-        submitter._gate_closed = True
+        submitter._gate = "closed"
         submitter._needles = ["sam rivera"]
+        submitter._sites = {"bovi.test"}
         routes = [_GateRoute("POST", "https://bovi.test/send"), _GateRoute("GET", "https://bovi.test/contact", "document"),
                   _GateRoute("POST", "https://www.google.com/recaptcha/api2/reload?k=x"),
-                  _GateRoute("GET", "https://bovi.test/send?name=Sam+Rivera", "document")]
+                  _GateRoute("GET", "https://bovi.test/send?name=Sam+Rivera", "document"),
+                  _GateRoute("GET", "https://api.example/mail?name=Sam+Rivera", "fetch"),
+                  _GateRoute("GET", "https://www.google.com/recaptcha/api2/reload?n=Sam+Rivera"),
+                  _GateRoute("POST", "https://www.google-analytics.com/g/collect")]
         for route in routes:
             submitter._route(route)
-        self.assertEqual([route.aborted for route in routes], [True, False, False, True], "a form sent by GET carries the student's name")
-        self.assertEqual(submitter.held_back, ["POST bovi.test", "GET bovi.test"])
-        submitter._gate_closed = False
+        self.assertEqual([route.aborted for route in routes], [True, False, False, True, True, True, True],
+                         "anything carrying the student's name is held, whatever it is and wherever it goes")
+        self.assertEqual(submitter.held_back, ["POST bovi.test", "GET bovi.test", "GET api.example", "GET www.google.com"],
+                         "only what goes to the form's site or carries the student's details is named")
+
+    def test_before_the_first_fill_only_the_students_details_are_held(self):
+        submitter = FormSubmitter(person_wait=60, route_hook=lambda route: None)
+        submitter._gate = "load"
+        submitter._needles = ["sam rivera"]
+        routes = [_GateRoute("POST", "https://bovi.test/cdn-cgi/challenge-platform/check"), _GateRoute("GET", "https://bovi.test/x?q=Sam+Rivera")]
+        for route in routes:
+            submitter._route(route)
+        self.assertEqual([route.aborted for route in routes], [False, True])
+
+    def test_the_gate_opens_only_for_a_press(self):
+        submitter = FormSubmitter(person_wait=60, route_hook=lambda route: None)
+        submitter._gate = "open"
         open_route = _GateRoute("POST", "https://bovi.test/send")
         submitter._route(open_route)
-        self.assertFalse(open_route.aborted, "the student's own send leaves once the window is theirs")
+        self.assertFalse(open_route.aborted, "the student's own send leaves once they pressed")
 
 
 class FormSubmitterCheckTests(unittest.TestCase):
