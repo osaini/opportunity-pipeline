@@ -1486,6 +1486,13 @@ class FormSubmitter:
             self.refused.append(f"{request.method} {request.url}")
             route.abort("blockedbyclient")
             return
+        if (self.rehearse or (self.person_wait and self._gate != "open")) and getattr(request, "resource_type", "") == "other":
+            # A page's own Speculation-Rules header has the browser load a rules file and then fetch the pages it names
+            # itself, where no route sees them; a Link header's prefetch is a read the gate cannot judge. The browser
+            # calls both "other", and the request says nothing more, so in a rehearsal, and in Finish in browser until
+            # the press, no "other" request goes: the rules never load, and nothing is prefetched.
+            route.abort("blockedbyclient")
+            return
         # Finish in browser fails closed: until the student's press is seen, and once the window's outcome is decided,
         # nothing that could carry the form leaves, so a press the app did not see sends nothing.
         if self._gate != "open" and self._could_carry(request, closed=self._gate != "load") and not self._press_arrives():
@@ -1536,18 +1543,6 @@ class FormSubmitter:
     def _guard(self, route: Any) -> None:
         if not request_allowed(route.request.url, self._resolve, self._allowed):
             route.abort("blockedbyclient")
-            return
-        request = route.request
-        if (self.person_wait or self.rehearse) and request.resource_type == "document" and request.method == "GET":
-            # Finish in browser and a rehearsal: a Speculation-Rules header, or a Link header asking to prefetch or
-            # prerender, makes the browser itself fetch pages no route sees. The page is fetched here and handed to the
-            # browser without them (a redirect is passed on as it is, and followed through this route again).
-            try:
-                response = route.fetch(max_redirects=0)
-                route.fulfill(response=response, headers={
-                    name: value for name, value in response.headers.items() if not _speculation_header(name, value)})
-            except Exception:  # noqa: BLE001 - a page that cannot be fetched this way is not loaded at all
-                route.abort("blockedbyclient")
             return
         route.continue_()
 
@@ -2196,14 +2191,6 @@ def _needles(identity: dict[str, str], subject: str, body: str) -> list[str]:
     found = [identity.get(key, "") for key in ("email", "name", "school", "link", "address_line1", "address_line2")]
     found += [phone, digits if len(digits) >= 7 else "", subject, opening]
     return list(dict.fromkeys(str(text).strip().casefold() for text in found if len(str(text).strip()) >= 6))
-
-
-def _speculation_header(name: str, value: str) -> bool:
-    """A response header that makes the browser itself fetch pages: Speculation-Rules, or a Link to prefetch or prerender."""
-    name = name.lower()
-    if name == "speculation-rules":
-        return True
-    return name == "link" and bool(re.search(r"rel\s*=\s*\"?[^\";,]*\b(prefetch|prerender)\b", value, re.IGNORECASE))
 
 
 def _may_be_the_form(request: Any, needles: list[str]) -> bool:

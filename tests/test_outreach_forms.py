@@ -1,6 +1,5 @@
 """Contact forms for companies with no email: found by the crawl, filled truthfully, sent once."""
 
-import gzip
 import json
 import socket
 import sqlite3
@@ -2093,13 +2092,17 @@ class _StubPage:
 
 @requires_chromium
 class SpeculationHeaderTests(unittest.TestCase):
-    """Finish in browser: a page's own Speculation-Rules header never has the browser fetch a page before the press."""
+    """Finish in browser and a rehearsal: a page's own Speculation-Rules or Link header never has the browser fetch a page."""
 
     def test_a_speculation_rules_header_never_prefetches(self):
         heard = []
-        rules = json.dumps({"prefetch": [{"source": "list", "urls": ["/p?v=Sam+Rivera"]}],
+        # The rules name fixed pages, and every link on the page; the page keeps a link carrying the filled name.
+        rules = json.dumps({"prefetch": [{"source": "list", "urls": ["/p?v=Sam+Rivera"]},
+                                         {"source": "document", "where": {"href_matches": "/d*"}, "eagerness": "immediate"}],
                             "prerender": [{"source": "list", "urls": ["/r?v=Sam+Rivera"]}]}).encode()
-        page = gzip.compress(PLAIN_FORM.encode())  # as most sites send it: the page is handed on whole all the same
+        page = PLAIN_FORM.replace("</form>", """</form><a id="d" href="/d">about</a><script>
+          setInterval(() => { document.getElementById("d").href = "/d?v=" + encodeURIComponent(document.querySelector("[name=name]").value); }, 100);
+        </script>""").encode()
 
         class Server(BaseHTTPRequestHandler):
             def do_GET(self):  # noqa: N802 - the http.server name
@@ -2113,9 +2116,8 @@ class SpeculationHeaderTests(unittest.TestCase):
                 self.send_response(200)
                 self.send_header("Content-Type", kind)
                 if self.path.startswith("/contact"):
-                    self.send_header("Content-Encoding", "gzip")
                     self.send_header("Speculation-Rules", '"/rules.json"')
-                    self.send_header("Link", '</p?v=Sam+Rivera>; rel=prefetch')
+                    self.send_header("Link", '</lp?v=Sam+Rivera>; rel=prefetch')
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -2130,15 +2132,17 @@ class SpeculationHeaderTests(unittest.TestCase):
         port = server.server_address[1]
         tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(tempdir.cleanup)
-        # The guard fetches the page itself, so the server is reached at its own address, let through for this test only.
-        loopback = mock.patch.object(outreach_forms, "request_allowed", lambda url, *_args: urlsplit(url).hostname == "127.0.0.1")
-        with loopback, FormSubmitter(person_wait=2, screenshot_dir=Path(tempdir.name),
-                                     student_hook=lambda window: window.wait_for_timeout(1_500)) as submitter:
-            result = submitter.submit(f"http://127.0.0.1:{port}/contact", identity=IDENTITY, subject="s", body=LETTER, name="bovi")
-        self.assertEqual(result["outcome"], "needs_you", result)
-        self.assertTrue(result["filled"], "the gzipped page reached the browser whole and was filled")
-        self.assertTrue(any(path.startswith("/contact") for path in heard), heard)
-        self.assertEqual([path for path in heard if not path.startswith("/contact")], [], "nothing fetched outside the route")
+        for mode in ({"person_wait": 2, "student_hook": lambda window: window.wait_for_timeout(1_500)}, {"rehearse": True}):
+            with self.subTest(mode=sorted(mode)):
+                heard.clear()
+                # The page is served from the loopback address, which the browser takes as a secure origin (where it acts on
+                # speculation rules) and the request guard is told to let through, for this test only.
+                loopback = mock.patch.object(outreach_forms, "request_allowed", lambda url, *_args: urlsplit(url).hostname == "127.0.0.1")
+                with loopback, FormSubmitter(screenshot_dir=Path(tempdir.name), **mode) as submitter:
+                    result = submitter.submit(f"http://127.0.0.1:{port}/contact", identity=IDENTITY, subject="s", body=LETTER, name="bovi")
+                self.assertEqual(result["outcome"], "rehearsed" if "rehearse" in mode else "needs_you", result)
+                self.assertTrue(result["filled"], result)
+                self.assertEqual([path for path in heard if not path.startswith("/contact")], [], "nothing fetched but the page")
 
 
 class _GateRoute:
