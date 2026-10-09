@@ -76,6 +76,24 @@ def canonical_url(site: str, job_id: str, host: str = DEFAULT_HOST) -> str:
 SEARCH_LOCATIONS_PATH = "/searchLocations"
 PARSE_RESUME_PATH = "/parseResume"
 
+# JavaScript's ``\s`` (ECMAScript WhiteSpace and LineTerminator), spelled out: Python's ``\s`` differs at the edges (it takes U+001C to U+001F and U+0085, and not U+FEFF).
+_JS_SPACE = "\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+_UNSAFE_CHAR = re.compile(r'[<>:"/\\|?*' + _JS_SPACE + "]")
+
+
+def posted_file_name(name: str) -> str:
+    r"""The file name Lever's own page posts to ``/parseResume`` for a file the browser calls ``name`` (its ``sanitizeFilename``, read from
+    /js/parseResume.js on 2026-10-08): each of ``< > : " / \ | ? *`` and each whitespace character becomes an underscore, leading and trailing dots
+    go, leading and trailing underscores go, each run of underscores becomes one, and nothing left is "untitled". Parentheses, apostrophes, commas,
+    ``&``, ``+``, ``#`` and letters of any script stay as they are. The request rules compare the name a request carries with this, so the
+    rule must stay Lever's own: a copy of it that drifts refuses the student's own file or lets a script's name through.
+    """
+    cleaned = _UNSAFE_CHAR.sub("_", name or "")
+    cleaned = re.sub(r"^\.+|\.+\Z", "", cleaned)
+    cleaned = re.sub(r"^_+|_+\Z", "", cleaned)
+    cleaned = re.sub(r"_+", "_", cleaned)
+    return cleaned or "untitled"
+
 
 def apply_path(site: str, job_id: str) -> str:
     """The path the application form posts to: the form has no ``action``, so it posts to its own page (spec 3.2, 6.12)."""

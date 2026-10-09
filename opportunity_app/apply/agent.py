@@ -34,7 +34,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from .. import ROOT
 from ..integrations.web_fetch import Resolver, close_browser, resolve_host
@@ -310,6 +310,9 @@ NO_SIDE_CHANNELS = """(() => {
 # Only a board's own page counts, so a frame the page makes up (about:blank, srcdoc) with a form of that name in it does not.
 PRESS_WORLD = "apply-student-press"
 PRESS_BINDING = "applyStudentPress"
+# The longest percent-encoded file name the listener reports (a 255-character name of letters outside ASCII encodes to about 9 times that).
+FILE_NAME_REPORT_CAP = 3000
+_FILE_REPORT = re.compile(r"file:[0-9]{1,9}:[A-Za-z0-9._~!*'()%-]{1,3000}")   # the cap above, written out
 # The page script is a template: ``press_listener`` fills in the run's ATS's board hosts (``RoutePolicy.navigation_hosts``) and the selector of its
 # Submit control (the adapter's ``press_selector``: Greenhouse's form submit, Lever's visible Submit button), so each ATS's student press is seen on its own page.
 PRESS_LISTENER_TEMPLATE = """(() => {
@@ -339,9 +342,13 @@ PRESS_LISTENER_TEMPLATE = """(() => {
     const file = box.files[0];
     if (!(fileLimit > 0 && file.size <= fileLimit)) return;
     const id = ++chosen;
-    // The name is reported as the page rewrites it when it posts the file (each run of characters outside letters, digits, dot, underscore and hyphen
-    // becomes one underscore): the read may carry that name only, so a script cannot send a value in the name of the student's own file.
-    window.__BINDING__('file:' + id + ':' + String(file.name || 'resume').replace(/[^A-Za-z0-9._-]+/g, '_'));
+    // The name is reported as the browser has it, percent-encoded so any name passes (and nothing longer than the cap): the app applies the page's own
+    // rewriting of it (``RoutePolicy.resume_post_name``), so the rule lives in one place and the read may carry that name only. A name that cannot be
+    // encoded (a lone surrogate) or is too long is not reported, so no read follows it.
+    let named;
+    try { named = encodeURIComponent(String(file.name || '')); } catch (error) { return; }
+    if (!named || named.length > __NAME_CAP__) return;
+    window.__BINDING__('file:' + id + ':' + named);
     try {
       file.arrayBuffer().then((data) => crypto.subtle.digest('SHA-256', data)).then((hash) => {
         window.__BINDING__('sha:' + id + ':' + Array.from(new Uint8Array(hash)).map((byte) => byte.toString(16).padStart(2, '0')).join(''));
@@ -361,7 +368,7 @@ def press_listener(hosts: Iterable[str], submit_selector: str, file_hosts: Itera
     """
     return (PRESS_LISTENER_TEMPLATE.replace("__HOSTS__", json.dumps(sorted(hosts))).replace("__FILE_HOSTS__", json.dumps(sorted(file_hosts)))
             .replace("__SUBMIT__", json.dumps(submit_selector)).replace("__FILE_BOX__", json.dumps(file_selector))
-            .replace("__FILE_LIMIT__", json.dumps(int(file_limit))).replace("__BINDING__", PRESS_BINDING))
+            .replace("__FILE_LIMIT__", json.dumps(int(file_limit))).replace("__NAME_CAP__", str(FILE_NAME_REPORT_CAP)).replace("__BINDING__", PRESS_BINDING))
 
 
 # The only DevTools calls the agent makes, and nothing else (tests/test_apply_agent_static.py reads the syntax tree for it).
@@ -1154,10 +1161,16 @@ class ApplyAgent:
             return
         if event.get("payload") == "1":
             self._state.note_student_press()
-        elif isinstance(event.get("payload"), str) and re.fullmatch(r"file:[0-9]{1,9}:[A-Za-z0-9._-]{1,255}", event["payload"]):
+        elif isinstance(event.get("payload"), str) and _FILE_REPORT.fullmatch(event["payload"]):
             if self._policy.resume_post_path and self._phase == PHASE_STUDENT and not self._handed_over:
                 # The student chose a file in the page's file box: the page's read of it may pass, once, and only for a moment (``RouteState.student_files_chosen``).
-                _, number, name = event["payload"].split(":", 2)
+                _, number, encoded = event["payload"].split(":", 2)
+                try:
+                    named = unquote(encoded, errors="strict")
+                except UnicodeDecodeError:
+                    return
+                rule = self._policy.resume_post_name
+                name = rule(named) if rule else named   # the name the page posts for it (Lever's own rewriting)
                 self._expire_student_choices()
                 self._open_choices.append((int(number), time.monotonic()))
                 self._choice_names[int(number)] = name

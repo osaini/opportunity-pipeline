@@ -472,7 +472,7 @@ class StudentFileSignalTests(unittest.TestCase):
 
     def test_anything_but_the_listeners_words_is_ignored(self):
         agent = self.agent(phase=apply_agent.PHASE_STUDENT)
-        for payload in ("", "File", "file", "file:", "file:x", "file:1 ", "file:1", "file:1:", "file:1:a b.pdf", "file:1:a/b.pdf", "file:1:" + "a" * 256, "file:1234567890", "sha:", "sha:1", "sha:1:xyz", f"sha:1:{self.SHA.upper()}", f"sha:1:{self.SHA}0", 1, None, {"file": 1}):
+        for payload in ("", "File", "file", "file:", "file:x", "file:1 ", "file:1", "file:1:", "file:1:a b.pdf", "file:1:a/b.pdf", "file:1:" + "a" * 3001, "file:1:é", "file:1:a%FF.pdf", "file:1234567890", "sha:", "sha:1", "sha:1:xyz", f"sha:1:{self.SHA.upper()}", f"sha:1:{self.SHA}0", 1, None, {"file": 1}):
             self.call(agent, payload)
         self.assertEqual((agent._state.student_files_chosen, agent._open_choices, agent._choice_digests), (0, [], {}))
         agent._on_binding({"name": "somebodyElse", "payload": "file:1"})

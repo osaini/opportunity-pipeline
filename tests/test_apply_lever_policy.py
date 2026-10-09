@@ -814,8 +814,8 @@ class ResumePostConditionTests(Cases):
         self.assertAborted(decide(FILL, resume_request(), state(resume_file_name="")), "value_guard")
         self.assertAborted(decide(FILL, resume_request(body=resume_body(filename="Samantha_Rivera_Resume (2).pdf"))), "value_guard")
 
-    def test_the_fill_lets_the_attached_name_pass_as_the_page_posts_it_with_each_run_of_odd_characters_made_one_underscore(self):
-        # The page sanitizes the name it posts (the stand-in turns each run of characters outside letters, digits, dot, underscore and hyphen into one underscore).
+    def test_the_fill_lets_the_attached_name_pass_as_the_page_posts_it_with_each_space_made_an_underscore(self):
+        # The page sanitizes the name it posts by Lever's own rule (``lever.posted_file_name``; tests/test_apply_lever_file_name.py holds the rule itself).
         # A name that holds a planned value is still the planned file, and only the attached name and that one rewriting of it are let through.
         attached = "Resume 555-0100.pdf"
         st = state(values={**VALUES, "phone": "555-0100"}, resume_file_name=attached)

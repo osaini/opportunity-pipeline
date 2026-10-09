@@ -362,12 +362,16 @@ class StudentAttachTests(LeverHandoffCase):
         self.assertEqual(len(self.refused(run, rule="resume_post_name")), 1)
 
     def test_the_name_the_page_gives_the_students_file_is_the_name_that_may_go(self):
-        """A name with spaces and an accent: the page rewrites it, and that is the one name the read may carry."""
-        path = self.file_named("My Résumé (final).pdf", STUDENTS_FILE)
-        run = self.go(src=lever_sources(upload=False), files={}, student=Student(("handoff", lambda page, seen: page.set_input_files('input[name="resume"]', str(path)))))
-        (post,) = run.fake.parse_posts()
-        self.assertEqual((post.status, post.part("resume").filename), (200, "My_R_sum_final_.pdf"))
-        self.assertEqual(run.result.evidence["student_attached_resume"]["sha256"], STUDENTS_SHA)
+        """Common file names, with spaces, accents, parentheses and an apostrophe: Lever's page rewrites each by its own rule (it keeps all but the spaces), and that is the one name the read may carry."""
+        for chosen, posted in (("My Résumé (final).pdf", "My_Résumé_(final).pdf"), ("Résumé (1).pdf", "Résumé_(1).pdf"), ("Résumé.pdf", "Résumé.pdf"),
+                               ("Sam's resume.pdf", "Sam's_resume.pdf"), ("Resume (2026).pdf", "Resume_(2026).pdf")):
+            with self.subTest(file=chosen):
+                path = self.file_named(chosen, STUDENTS_FILE)
+                run = self.go(src=lever_sources(upload=False), files={}, student=Student(("handoff", lambda page, seen, path=path: page.set_input_files('input[name="resume"]', str(path)))))
+                (post,) = run.fake.parse_posts()
+                self.assertEqual((post.status, post.part("resume").filename), (200, posted))
+                self.assertEqual(self.refused(run, rule="resume_post_name"), [])
+                self.assertEqual(run.result.evidence["student_attached_resume"]["sha256"], STUDENTS_SHA)
 
     def test_a_file_chosen_in_another_file_box_opens_no_read_for_a_script_to_use(self):
         """The cover letter box (a card on the page) is not read by Lever's reader: choosing a file there must not leave an allowance behind."""

@@ -149,6 +149,7 @@ class RoutePolicy:
     bind_submit_host: bool = False                    # the submit POST must go to the posting's own host (``RouteState.board_host``); with none bound, nothing is one
     security_code_posts: bool = True                  # one more POST to the submit path may pass for an emailed code (Greenhouse's); False where the ATS emails none (Lever, Q5)
     no_files_before_press: bool = False               # a write to a CAPTCHA endpoint or the bot check carries no file of any kind in the fill or before the student's first press (Lever's hCaptcha runs on Submit)
+    resume_post_name: Callable[[str], str] | None = None   # the file name its page posts for a file the browser calls this (Lever's own rewriting); None means unchanged
     outcome_table: Callable[..., Any] | None = None   # this ATS's own rows of the outcome table, which ``decide_outcome`` hands over to; None means the shared one
 
     def is_submit_request(self, host: str, path: str, submit_path: str, board_host: str = "") -> bool:
@@ -690,9 +691,11 @@ def _is_resume_post(mode: str, phase: str, method: str, host: str, path: str, st
     )
 
 
-def _posted_name(attached: str) -> str | None:
-    """The file name as the page posts it: each run of characters outside letters, digits, dot, underscore and hyphen is one underscore. None for no name."""
-    return re.sub(r"[^A-Za-z0-9._-]+", "_", attached) if attached else None
+def _posted_name(attached: str, policy: RoutePolicy) -> str | None:
+    """The file name as the ATS's page posts it (``RoutePolicy.resume_post_name``: Lever's own rewriting). None for no name."""
+    if not attached:
+        return None
+    return policy.resume_post_name(attached) if policy.resume_post_name else attached
 
 
 def resume_post_decision(phase: str, request: RouteRequest, state: RouteState, policy: RoutePolicy) -> Allow | Abort:
@@ -753,7 +756,7 @@ def resume_post_decision(phase: str, request: RouteRequest, state: RouteState, p
     # The part's bytes are the file (pinned by digest in the fill), but its type and its file name are text a script chooses. The type is always
     # read. The name is read in the fill unless it is the one the app attached the file under, or that name as the page rewrites it; in the student's turn it must be the chosen file's name as the page rewrites it, so it is not read for a value.
     kind = next((value for name, value in resume.headers if name == "content-type"), "")
-    if filling and resume.filename not in (state.resume_file_name, _posted_name(state.resume_file_name)):
+    if filling and resume.filename not in (state.resume_file_name, _posted_name(state.resume_file_name, policy)):
         rest += (resume.filename or "").encode("utf-8", errors="replace")
     leaked = leaked_field(RouteRequest(method="POST", url="", headers={"content-type": kind}, body=rest), state.values)
     if leaked:
@@ -1182,6 +1185,7 @@ LEVER_ROUTE_POLICY = RoutePolicy(
     confirmation_reached=_lever_confirmation_reached,
     challenge_path_prefixes=LEVER_CLOUDFLARE_PATH_PREFIXES,
     resume_post_path=lever.PARSE_RESUME_PATH,
+    resume_post_name=lever.posted_file_name,
     submit_content_types=("multipart/form-data",),
     bind_submit_host=True,
     security_code_posts=False,
