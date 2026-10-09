@@ -167,6 +167,7 @@
       const form = item.contact_form;
       if (form.state === "needs_you") return { label: "Finish the contact form", hint: form.note || "The form needs you before it can go.", tab: null, tone: "is-warning" };
       if (form.state === "failed") return { label: "Contact form did not send", hint: form.note || "Nothing was sent. Try again.", tab: null, tone: "is-warning" };
+      if (form.asks) return { label: "Did the form go?", hint: "You pressed its send button in Finish in browser. Say whether their page said your message was sent.", tab: null, tone: "is-warning" };
       if (form.state === "unconfirmed") return { label: "Check the form arrived", hint: "It may have been sent: their page did not confirm it. Look for a confirmation email.", tab: null, tone: "is-warning" };
       return { label: "Send through their contact form", hint: "They publish no email. The approved draft goes in through the form on their site, as you.", tab: null, tone: "is-region" };
     }
@@ -1266,9 +1267,12 @@
     }
     // With no email, the approved draft goes through the company's contact form.
     if (!item.contact_email && item.contact_form && item.draft_status === "approved" && !item.sent_at && ["not_started", "drafted", "paused"].includes(item.status)) {
-      actions.appendChild(formSendControls(item));
+      const controls = formSendControls(item);
+      actions.appendChild(controls);
       if (item.contact_form.state === "unconfirmed") {
-        const arrived = element("button", "secondary-button", "It arrived");
+        // Asked after the student's own press in Finish in browser, "It arrived" is their answer: Yes, it was sent.
+        const asks = Boolean(item.contact_form.asks);
+        const arrived = element("button", asks ? "primary-button" : "secondary-button", asks ? "Yes, it was sent" : "It arrived");
         arrived.type = "button";
         arrived.addEventListener("click", async () => {
           arrived.disabled = true;
@@ -1279,7 +1283,8 @@
             arrived.disabled = false;
           }
         });
-        actions.appendChild(arrived);
+        if (asks) controls.insertBefore(arrived, controls.querySelector("button"));
+        else actions.appendChild(arrived);
       }
     }
     // One follow-up per company; after it, the card suggests No response in time.

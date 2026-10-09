@@ -16,9 +16,12 @@ filled in as far as the app can: you fill in the boxes it outlines in orange, so
 any CAPTCHA, and press the form's own send button within 4 minutes. The app never
 presses it there, and nothing that could carry the form leaves the window until it
 has seen your press, so if you close the window without pressing send, nothing was
-sent. Once you press, it records what the page says: sent, or "may have been sent"
-when the form left without a confirmation. If pressing send does nothing, the app
-did not recognise the form's send button; the window's note says so. A form
+sent. Once you press, the app does not judge what the page says: when you close the
+window, the card asks whether their page said your message was sent. **Yes, it was
+sent** marks the company sent; **No, it was not sent** opens Finish in browser again
+(answer No only if their page showed an error or nothing, and no confirmation email
+came). If pressing send does nothing, the app did not recognise the form's send
+button; the window's note says so. A form
 box that requires a street, city, state, ZIP or country is answered only from the
 **Mailing address** you confirmed on the Profile page (About you), never any other
 address. When a form requires your street address, the rest of your confirmed

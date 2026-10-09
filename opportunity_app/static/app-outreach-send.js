@@ -325,6 +325,14 @@
     if (form.note && FORM_STATE_NOTES[form.state]) {
       controls.appendChild(element("p", "outreach-note is-wide", `${FORM_STATE_NOTES[form.state]} ${form.note}`));
     }
+    if (form.asks) {
+      // The student pressed send in Finish in browser, and only they saw what the page said: the pane adds "Yes, it was
+      // sent" beside this, and No opens the window again (never an automatic send).
+      controls.appendChild(element("p", "outreach-note is-wide",
+        "Answer No only if their page showed an error or nothing, and no confirmation email came from them."));
+      controls.appendChild(formSendButton(item, { retry: true, inBrowser: true, label: "No, it was not sent" }));
+      return controls;
+    }
     const retry = form.state === "unconfirmed";
     controls.appendChild(formSendButton(item, { retry, inBrowser: false }));
     if (form.state === "needs_you" || form.captcha) controls.appendChild(formSendButton(item, { retry, inBrowser: true }));
@@ -340,13 +348,15 @@
       return `Sent through ${item.company}'s contact form.${said}${changed} ${item.company} is marked sent; replies are read from Gmail.`;
     }
     if (result.outcome === "unconfirmed") {
+      if (result.target?.contact_form?.asks) return `You pressed send in ${item.company}'s form. Say on its card whether their page said your message was sent.`;
       return `${result.note || `${item.company}'s form may have been sent`}. If ${item.company} confirms it arrived, press "It arrived".`;
     }
     return `Nothing was sent to ${item.company}. ${result.note}`;
   }
 
-  function formSendButton(item, { retry, inBrowser }) {
-    const label = inBrowser ? "Finish in browser" : retry ? "Checked — send the form again" : "Send through contact form";
+  function formSendButton(item, { retry, inBrowser, label: named }) {
+    const label = named || (inBrowser ? "Finish in browser" : retry ? "Checked — send the form again" : "Send through contact form");
+    const again = Boolean(named);
     const button = element("button", inBrowser ? "secondary-button outreach-compose" : "primary-button outreach-compose outreach-send", label);
     button.type = "button";
     // Finish in browser: the student finishes the form in the window and presses its send button; the app never does.
@@ -354,8 +364,10 @@
     if (inBrowser) button.title = `Opens a browser window on this computer with the form filled in as far as the app can. ${yourTurn}`;
     const reset = armConfirm(button, {
       idleLabel: () => label,
-      armedLabel: () => inBrowser ? `Open ${formHost(item)}'s form?` : `Send through ${formHost(item)}'s form?`,
-      prompt: () => inBrowser
+      armedLabel: () => again ? `Open ${formHost(item)}'s form again?` : inBrowser ? `Open ${formHost(item)}'s form?` : `Send through ${formHost(item)}'s form?`,
+      prompt: () => again
+        ? `Press again only if it was not sent: ${item.company}'s form opens again in a window, and if it did go, pressing its send button would send it twice.`
+        : inBrowser
         ? `Press again to open ${item.company}'s contact form from ${item.contact_form.page_url} in a browser window, filled in as far as the app can (nothing, on a sales form). You press its send button there.`
         : `Press again to send the approved email through ${item.company}'s contact form as you, from ${item.contact_form.page_url}.`,
       beforeClick: () => refuseUnsavedHandOff(button, "initial"),

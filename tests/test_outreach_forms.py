@@ -22,7 +22,7 @@ from opportunity_app import STATIC_DIR
 from opportunity_app.outreach import forms as outreach_forms
 from opportunity_app.automation import ledger as automation, health as automation_health
 from opportunity_app.api import create_app
-from opportunity_app.outreach.targets import create_target, get_target
+from opportunity_app.outreach.targets import FORM_PRESSED_NOTE, create_target, get_target
 from opportunity_app.outreach.automation import AutomationWorker, draft_due, send_form, update_settings
 from opportunity_app.outreach.contacts import find_contacts
 from opportunity_app.outreach.forms import (
@@ -234,10 +234,11 @@ class FakeSubmitter:
         self.calls.append({"page_url": page_url, "should_continue": should_continue, **kwargs})
         outcome = self.outcomes.pop(0)
         if outcome == "student_press":
-            # Finish in browser: the student presses the form's own button, and the app is told as they do.
+            # Finish in browser: the student presses the form's own button, the app is told as they do, and asks them.
             kwargs["on_press"]()
             self.at_click()
-            outcome = "submitted"
+            return {"outcome": "unconfirmed", "note": FORM_PRESSED_NOTE, "confirmation": "", "filled": ["Message"], "screenshot": "",
+                    "attached": "", "by_you": [], "changed": [], "held_back": []}
         if outcome == "pause_at_button":
             # As FormSubmitter does: asked just before the button, and stopped there.
             self.before_button()
@@ -576,10 +577,72 @@ class FormSendTests(unittest.TestCase):
         target = self.approved()
         self.send(target)
         self.assertIsNone(self.submitter.calls[0].get("on_press"), "the app's own press needs no word of the student's")
-        self.assertEqual(self.send(target, in_browser=True).json()["outcome"], "submitted")
+        self.assertEqual(self.send(target, in_browser=True).json()["outcome"], "unconfirmed")
         self.assertEqual(states, [automation.FORM_HANDED_OVER, "unconfirmed"],
-                         "from their press on, a restart reads the form as possibly sent, with It arrived on the card")
+                         "from their press on, a restart reads the form as possibly sent, and the card asks")
         self.assertIsNone(self.submitter.calls[1]["should_continue"], "a pause never stops the student's own press")
+        self.assertFalse(self.submitter.calls[1]["tried_before"])
+
+    def pressed_in_browser(self):
+        """A company whose form the student pressed send on in Finish in browser, now waiting on their answer."""
+        self.submitter.outcomes = ["needs_you", "student_press"]
+        target = self.approved()
+        self.send(target)
+        self.assertEqual(self.send(target, in_browser=True).json()["outcome"], "unconfirmed")
+        return target
+
+    def test_after_the_students_press_the_card_asks_and_nothing_automatic_acts(self):
+        target = self.pressed_in_browser()
+        after = self.get(target)
+        self.assertEqual((after["status"], after["contact_form"]["state"], after["contact_form"]["asks"]), ("drafted", "unconfirmed", True))
+        self.assertTrue(after["contact_form"]["note"].startswith(FORM_PRESSED_NOTE))
+        worker = AutomationWorker(self.platform_path, fetcher_factory=lambda: None, form_submitter_factory=self.submitter.factory)
+        with closing(connect_product(self.platform_path)) as conn:
+            update_settings(conn, {"form_submission": True}, user_id=USER)
+            self.assertEqual(form_due(conn, user_id=USER), [], "a form that may have gone is never sent automatically")
+            self.assertEqual([item["target_id"] for item in automation_health.health_summary(conn, USER)["unconfirmed"]], [target["id"]])
+        calls = len(self.submitter.calls)
+        self.assertEqual(worker.run_once()["forms"], [])
+        self.assertEqual(len(self.submitter.calls), calls)
+        self.assertEqual(self.send(target).status_code, 428, "and no send of the student's either until they answer")
+
+    def test_yes_marks_it_sent(self):
+        target = self.pressed_in_browser()
+        marked = self.client.patch(f"/api/v1/outreach/{target['id']}", headers=AUTH, json={"status": "sent"})
+        self.assertEqual(marked.json()["status"], "sent", marked.text)
+
+    def test_no_opens_finish_in_browser_again_and_the_history_says_they_said_so(self):
+        target = self.pressed_in_browser()
+        self.submitter.outcomes = ["needs_you"]
+        self.assertEqual(self.send(target, in_browser=True, retry_unconfirmed=True).json()["outcome"], "needs_you")
+        self.assertTrue(self.submitter.calls[-1]["tried_before"], "the window warns the form may already have it")
+        self.assertEqual(self.submitter.in_browser[-1], True)
+        with closing(connect_product(self.platform_path)) as conn:
+            said = conn.execute(
+                "SELECT user_id, detail, created_at FROM outreach_events WHERE target_id=? AND event_type=?",
+                (target["id"], outreach_forms.SAID_NOT_SENT_EVENT),
+            ).fetchall()
+        self.assertEqual([(row["user_id"], json.loads(row["detail"])) for row in said], [(USER, {"in_browser": True})])
+        self.assertTrue(said[0]["created_at"])
+
+    def test_after_a_restart_mid_window_the_card_asks_and_answering_no_is_not_refused(self):
+        # The app stopped after the student's press, before the outcome was written: the claim is left mid-click by a
+        # process that is gone, and the form says what the press set.
+        self.submitter.outcomes = ["needs_you"]
+        target = self.approved()
+        self.send(target)
+        with closing(connect_product(self.platform_path)) as conn:
+            conn.execute(
+                "INSERT INTO outreach_send_claims(target_id, user_id, kind, token, state, action, instance, claimed_at) "
+                "VALUES(?, ?, 'initial', 'gone', 'clicking', 'form', 'gone-process', ?)",
+                (target["id"], USER, (datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat()),
+            )
+            conn.execute("UPDATE outreach_contact_forms SET state='unconfirmed', note=?", (FORM_PRESSED_NOTE,))
+            conn.commit()
+        self.assertTrue(self.get(target)["contact_form"]["asks"])
+        self.assertEqual(self.send(target, in_browser=True).status_code, 428, "an unanswered press is not sent over")
+        self.submitter.outcomes = ["needs_you"]
+        self.assertEqual(self.send(target, in_browser=True, retry_unconfirmed=True).json()["outcome"], "needs_you", "No opens the window")
 
     def test_a_company_with_only_a_form_gets_an_automatic_draft(self):
         target = self.target(email_body="", email_subject="", location="Austin, TX")
@@ -752,9 +815,6 @@ REDRAWN_FORM = BUDGET_FORM.replace('action="/send"', 'action="https://forms.exam
     document.body.dataset.redrawn = "1";
   }, 50);
 </script>""")
-# A send button that only reports the click to an analytics service and sends nothing.
-BROKEN_SEND_FORM = SCRIPT_FORM.replace(
-    'await fetch("/api/contact"', 'await fetch("https://analytics.example/collect", {method: "POST", body: "event=click"}); return;\n    await fetch("/api/contact"')
 # A form that posts by script and then shows nothing at all: the form stays as it was.
 STILL_FORM = SCRIPT_FORM.replace("""root.innerHTML = "<p>Thank you for your message! We'll reply soon.</p>";""", "")
 # A page that posts each box's value as it changes: the app's own fills carry the student's details.
@@ -774,42 +834,11 @@ GET_SENT_FORM = SCRIPT_FORM.replace(
 # A form whose send button posts a beacon to its own site on every click, as a CDN's page-speed script does.
 BEACON_FORM = BUDGET_FORM.replace("</form>", "</form><script>document.querySelector('button').addEventListener("
                                   "'click', () => fetch('/cdn-cgi/rum', {method: 'POST', body: 'rum'}));</script>")
-# A script-built form sent as a tracking image's address to another site, thanked in words the app does not know.
-PIXEL_SENT_FORM = SCRIPT_FORM.replace(
-    'await fetch("/api/contact", {method: "POST", body: JSON.stringify({',
-    'new Image().src = "https://forms.example/pixel?" + new URLSearchParams({').replace(
-    "message: document.getElementById(\"m\").value})});", "message: document.getElementById(\"m\").value});").replace(
-    "Thank you for your message! We'll reply soon.", "Done.")
-# A script-built form sent to another site with a file in it, so its body is not text.
-FILE_SENT_FORM = SCRIPT_FORM.replace(
-    'await fetch("/api/contact", {method: "POST", body: JSON.stringify({',
-    'const data = new FormData(); data.append("email", document.getElementById("e").value);\n'
-    '    data.append("file", new Blob([new Uint8Array([0xff, 0xfe, 0x00, 0x80, 0x81, 0xc3])]), "cv.pdf");\n'
-    '    await fetch("https://forms.example/submit", {method: "POST", body: data}); root.innerHTML = "<p>Done.</p>"; return;\n'
-    '    await fetch("/api/contact", {method: "POST", body: JSON.stringify({')
-# A script-built form whose send pings its own site and thanks the student, sending nothing of the message.
-PING_THANKS_FORM = SCRIPT_FORM.replace(
-    'await fetch("/api/contact", {method: "POST", body: JSON.stringify({',
-    'await fetch("/api/ping", {method: "POST", body: "x"}); root.innerHTML = "<p>Thank you for your message!</p>"; return;\n'
-    '    await fetch("/api/contact", {method: "POST", body: JSON.stringify({')
-# A script-built form that thanks the student as they press, and sends the form a second later.
-EARLY_THANKS_FORM = SCRIPT_FORM.replace(
-    'await fetch("/api/contact", {method: "POST", body: JSON.stringify({',
-    'root.insertAdjacentHTML("beforeend", "<p>Thank you for your message!</p>");\n'
-    '    await new Promise((done) => setTimeout(done, 1000));\n'
-    '    await fetch("/api/contact", {method: "POST", body: JSON.stringify({').replace(
-    """root.innerHTML = "<p>Thank you for your message! We'll reply soon.</p>";""", "")
 # A contact form between a header with its own "Contact us" button and a footer newsletter form.
 SECTIONED_FORM = BUDGET_FORM.replace("<body>", """<body><div id="app"><header><button type="button" id="cta"
   onclick="fetch('/track', {method: 'POST', body: 'cta'})">Contact us</button></header>""").replace("</body>", """<footer>
   <form action="/subscribe" method="post"><input type="email" name="nl" aria-label="Newsletter email"><button type="submit">Submit</button></form>
 </footer></div></body>""")
-# A script-built form whose send posts only a ping to its own site, carrying none of the student's details.
-PING_FORM = SCRIPT_FORM.replace(
-    'await fetch("/api/contact", {method: "POST", body: JSON.stringify({',
-    'await fetch("/api/ping", {method: "POST", body: "x"}); return;\n    await fetch("/api/contact", {method: "POST", body: JSON.stringify({')
-
-
 class Site:
     """Serves fixture pages to the browser in place of the network, and records what was posted."""
 
@@ -956,22 +985,42 @@ class BrowserSubmitTests(unittest.TestCase):
 class FinishInBrowserTests(unittest.TestCase):
     """Finish in browser: the app fills what it truthfully can, and the student finishes the form and presses its send button.
 
-    Each test acts as the student through ``student_hook``, which runs once the window is theirs.
+    Each test acts as the student through ``student_hook``, which runs once the window is theirs; unless told not to,
+    the window is then closed, as the student would close it. Nothing leaves before the student's press; after it, the
+    app does not judge what the page says, and the card asks the student.
     """
 
-    def submit(self, page, student, *, wait=20, pages=None, launch_args=None, site=None):
+    def submit(self, page, student, *, wait=20, pages=None, launch_args=None, close=True, tried_before=False):
         # The CAPTCHA box, if the app ticked it, would solve itself: the student's own solving is then the only way past it.
-        site = site or Site({"/contact": page, "/recaptcha/api2/anchor": ANCHOR_SOLVES, **(pages or {})})
+        site = Site({"/contact": page, "/recaptcha/api2/anchor": ANCHOR_SOLVES, **(pages or {})})
         tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(tempdir.cleanup)
         pressed = []
+
+        def hook(window):
+            student(window, site)
+            if close and not window.is_closed():
+                window.wait_for_timeout(300)
+                window.close()
+
         with FormSubmitter(route_hook=site.route, screenshot_dir=Path(tempdir.name), person_wait=wait, launch_args=launch_args,
-                           student_hook=lambda window: student(window, site)) as submitter:
+                           student_hook=hook) as submitter:
             result = submitter.submit(
                 "https://bovi.test/contact", identity=IDENTITY, subject="Robotics internship question",
-                body=LETTER, name="bovi", on_press=lambda: pressed.append(1),
+                body=LETTER, name="bovi", on_press=lambda: pressed.append(1), tried_before=tried_before,
             )
         return result, site, pressed
+
+    def assertAsked(self, result):
+        self.assertEqual(result["outcome"], "unconfirmed", result)
+        self.assertTrue(result["note"].startswith(FORM_PRESSED_NOTE), result["note"])
+        self.assertEqual(result["confirmation"], "", "the app does not judge what the page said")
+
+    def assertNothingSent(self, result, site, pressed):
+        self.assertEqual((result["outcome"], site.posts, pressed), ("needs_you", [], []), result)
+        self.assertIn("Nothing was sent", result["note"])
+
+    # --- the student finishes it ---------------------------------------------------------------------------------
 
     def test_the_student_answers_what_the_app_cannot_and_presses_send(self):
         seen = {}
@@ -984,96 +1033,208 @@ class FinishInBrowserTests(unittest.TestCase):
             window.get_by_role("button", name="Send message").click()
 
         result, site, pressed = self.submit(BUDGET_FORM, student)
-        self.assertEqual(result["outcome"], "submitted", result)
         self.assertEqual(seen, {"posts": [], "outline": "solid", "note": 1, "name": "Sam Rivera"},
                          "filled as far as the app could, the box it left outlined, a note on the page, and nothing sent yet")
+        self.assertAsked(result)
         posted = parse_qs(site.posts[0][1])
         self.assertEqual((posted["budget"], posted["name"]), (["Under $10k"], ["Sam Rivera"]))
-        self.assertIn("Your message has been sent", result["confirmation"])
-        self.assertEqual((result["by_you"], result["changed"]), (["Annual budget"], []))
-        self.assertEqual(pressed, [1])
+        self.assertEqual((result["by_you"], result["changed"], pressed), (["Annual budget"], [], [1]))
 
-    def test_the_app_never_presses_send_and_a_window_left_alone_sends_nothing(self):
-        result, site, pressed = self.submit(PLAIN_FORM, lambda window, site: None, wait=2)
-        self.assertEqual(result["outcome"], "needs_you", result)
-        self.assertIn("Nothing was sent", result["note"])
-        self.assertEqual((site.posts, pressed), ([], []), "every box was filled, and still only the student presses send")
+    def test_whatever_the_page_says_after_the_press_the_student_is_asked(self):
+        for page, button in ((PLAIN_FORM, "Send message"), (STILL_FORM, "Send")):
+            with self.subTest(button=button):
+                result, site, pressed = self.submit(page, lambda window, site: window.get_by_role("button", name=button).click())
+                self.assertAsked(result)
+                self.assertEqual((len(site.posts), pressed), (1, [1]))
 
-    def test_closing_the_window_sends_nothing(self):
-        result, site, pressed = self.submit(BUDGET_FORM, lambda window, site: window.close())
-        self.assertEqual(result["outcome"], "needs_you", result)
-        self.assertIn("closed", result["note"])
-        self.assertIn("Annual budget", result["note"], "and it still says what was left for them")
-        self.assertEqual((site.posts, pressed), ([], []))
+    def test_a_press_with_the_keyboard_is_a_press(self):
+        def student(window, site):
+            window.locator("[name=budget]").fill("Under $10k")
+            window.get_by_role("button", name="Send message").focus()
+            window.keyboard.press("Space")
 
-    def test_a_press_the_browser_stops_is_not_the_send(self):
+        result, site, pressed = self.submit(BUDGET_FORM, student)
+        self.assertAsked(result)
+        self.assertEqual(([path for path, _ in site.posts], pressed), (["/send"], [1]))
+
+    def test_enter_in_a_box_is_a_press_a_page_listener_cannot_hide(self):
+        hiding = BUDGET_FORM.replace("<form", "<script>window.addEventListener('click', (e) => e.stopImmediatePropagation(), true);"
+                                     "window.addEventListener('keydown', (e) => e.stopImmediatePropagation(), true);</script><form")
+
+        def student(window, site):
+            window.locator("[name=budget]").fill("Under $10k")
+            window.locator("[name=budget]").press("Enter")
+
+        result, site, pressed = self.submit(hiding, student)
+        self.assertAsked(result)
+        self.assertEqual((len(site.posts), pressed), (1, [1]))
+
+    def test_a_press_the_browsers_own_check_stops_is_not_the_send(self):
         def student(window, site):
             send = window.get_by_role("button", name="Send message")
-            send.click()  # the budget box is still empty, so the browser's own check stops the form
+            send.click()  # the budget box is required and empty: no submit, so no press, and the page's beacon is held
             window.locator("[name=budget]").fill("Under $10k")
             send.click()
 
-        result, site, pressed = self.submit(BUDGET_FORM, student)
-        self.assertEqual(result["outcome"], "submitted", result)
-        self.assertEqual((len(site.posts), pressed), (1, [1]))
+        result, site, pressed = self.submit(BEACON_FORM, student)
+        self.assertAsked(result)
+        self.assertIn("/send", [path for path, _ in site.posts])
+        self.assertEqual(pressed, [1])
 
-    def test_a_message_the_student_changed_is_named(self):
-        def student(window, site):
-            window.locator("[name=budget]").fill("Under $10k")
-            window.locator("[name=message]").fill("Hi Bovi team, a shorter note.")
-            window.get_by_role("button", name="Send message").click()
+    def test_a_message_the_student_changed_or_wrote_is_named(self):
+        short_box = BUDGET_FORM.replace('<textarea name="message" required>', '<textarea name="message" maxlength="60" required>')
+        for page, changes in ((BUDGET_FORM, "changed"), (short_box, "wrote")):
+            with self.subTest(changes=changes):
+                def student(window, site):
+                    window.locator("[name=budget]").fill("Under $10k")
+                    window.locator("[name=message]").fill("Hi Bovi team, a shorter note.")
+                    window.get_by_role("button", name="Send message").click()
 
-        result, site, _pressed = self.submit(BUDGET_FORM, student)
-        self.assertEqual(result["outcome"], "submitted", result)
-        self.assertEqual(result["changed"], ["Message"])
-        self.assertIn("\"Message\"", result["note"])
-        self.assertEqual(parse_qs(site.posts[0][1])["message"], ["Hi Bovi team, a shorter note."])
+                result, site, _pressed = self.submit(page, student)
+                self.assertAsked(result)
+                self.assertEqual(result["changed"], ["Message"])
+                self.assertIn('"Message" is your own text, so if it went', result["note"])
 
     def test_a_script_built_form_is_sent_by_the_students_click(self):
         result, site, pressed = self.submit(SCRIPT_FORM, lambda window, site: window.get_by_role("button", name="Send").click())
-        self.assertEqual(result["outcome"], "submitted", result)
-        self.assertEqual(json.loads(site.posts[0][1])["name"], "Sam Rivera")
-        self.assertEqual(pressed, [1])
+        self.assertAsked(result)
+        self.assertEqual((json.loads(site.posts[0][1])["name"], pressed), ("Sam Rivera", [1]))
 
-    def test_a_press_the_page_never_answers_then_a_closed_window_is_unconfirmed(self):
-        def student(window, site):
-            window.get_by_role("button", name="Send message").click()  # the page posts, then shows the same form again
-            window.close()
-
-        result, site, pressed = self.submit(SILENT_FORM, student)
-        self.assertEqual(result["outcome"], "unconfirmed", result)
-        self.assertIn("did not say it arrived", result["note"])
-        self.assertEqual((len(site.posts), pressed), (1, [1]))
-
-    def test_a_page_that_posts_while_the_student_types_sends_nothing(self):
-        # Lead-capture scripts post each keystroke before anyone presses send. Nothing leaves before the press, and
-        # what was held back is said in the window and kept in the history.
-        eager = BUDGET_FORM.replace("</form>", "</form><script>document.querySelector('[name=budget]').addEventListener("
-                                    "'input', (e) => fetch('/partial', {method: 'POST', body: e.target.value}));</script>")
-
+    def test_a_custom_element_send_button_is_the_students_press(self):
         def student(window, site):
             window.locator("[name=budget]").fill("Under $10k")
-            window.wait_for_timeout(300)
-            window.close()
+            window.locator("x-send").click()
 
-        result, site, pressed = self.submit(eager, student, pages={"/partial": "ok"})
-        self.assertEqual(result["outcome"], "needs_you", result)
-        self.assertIn("Nothing was sent", result["note"])
-        self.assertEqual((site.posts, pressed), ([], []))
-        self.assertEqual(result["held_back"], ["POST bovi.test"])
+        result, site, pressed = self.submit(CUSTOM_SEND_FORM, student, pages={"/submit": "ok"})
+        self.assertAsked(result)
+        self.assertEqual(([path for path, _ in site.posts], pressed), (["/submit"], [1]))
 
-    def test_a_request_held_back_before_the_press_is_named_in_the_window(self):
-        eager = BUDGET_FORM.replace("</form>", "</form><script>document.querySelector('[name=budget]').addEventListener("
-                                    "'change', (e) => fetch('/check', {method: 'POST', body: e.target.value}));</script>")
+    def test_a_form_redrawn_without_the_apps_marks_is_still_sent_by_the_students_press(self):
+        def student(window, site):
+            window.wait_for_function("() => document.body.dataset.redrawn", timeout=5_000)
+            window.locator("[name=budget]").fill("Under $10k")
+            window.get_by_role("button", name="Send message").click()
+
+        result, site, pressed = self.submit(REDRAWN_FORM, student)
+        self.assertAsked(result)
+        self.assertEqual(([path for path, _ in site.posts], pressed), (["/send"], [1]))
+
+    def test_the_students_send_after_a_reload_is_still_their_press(self):
+        elsewhere = BUDGET_FORM.replace('action="/send"', 'action="https://forms-backend.example/send"')
+
+        def student(window, site):
+            window.reload()
+            for box, value in (("name", "Sam Rivera"), ("email", ACCOUNT), ("message", "Hi Bovi team"), ("budget", "Under $10k")):
+                window.locator(f"[name={box}]").fill(value)
+            window.locator("[name=consent]").check()
+            window.get_by_role("button", name="Send message").click()
+
+        result, site, pressed = self.submit(elsewhere, student)
+        self.assertAsked(result)
+        self.assertEqual(([path for path, _ in site.posts], pressed), (["/send"], [1]))
+
+    def test_a_form_sent_by_get_goes_after_the_press(self):
+        result, site, pressed = self.submit(GET_SENT_FORM, lambda window, site: window.get_by_role("button", name="Send").click(),
+                                            pages={"/mail": "ok"})
+        self.assertAsked(result)
+        self.assertEqual(pressed, [1])
+
+    def test_a_captcha_is_left_for_the_student(self):
         seen = []
 
         def student(window, site):
-            window.locator("[name=budget]").fill("Under $10k")
-            window.locator("[name=budget]").blur()
+            token = window.locator("[name=g-recaptcha-response]")
+            seen.append(token.input_value())
+            token.evaluate("(el) => { el.value = 'token-'.padEnd(60, 'x'); }")  # the student solves it
+            window.get_by_role("button", name="Send message").click()
 
-        # The note is redrawn by the window's own look, after the student's hook: read it from the history instead.
-        result, site, _pressed = self.submit(eager, student, wait=2)
-        self.assertEqual((result["outcome"], site.posts, result["held_back"]), ("needs_you", [], ["POST bovi.test"]), result)
+        result, site, _pressed = self.submit(CAPTCHA_FORM, student)
+        self.assertAsked(result)
+        self.assertEqual(seen, [""], "the app does not tick it: a token would expire while they type")
+        self.assertTrue(parse_qs(site.posts[-1][1])["g-recaptcha-response"][0].startswith("token-"))
+
+    def test_a_form_in_a_frame_is_watched_on_the_page_s_site_and_on_another(self):
+        for src, launch_args in (("/embed", None), ("https://forms.example/embed", None), ("https://forms.example/embed", ["--site-per-process"])):
+            with self.subTest(src=src, launch_args=launch_args):
+                outer = f'<html><body><h1>Contact us</h1><iframe src="{src}" width="700" height="500"></iframe></body></html>'
+
+                def student(window, site):
+                    inner = window.frame_locator("iframe")
+                    inner.locator("[name=budget]").fill("Under $10k")
+                    # In another site's process the app's own tick sometimes does not take; the note asks the student.
+                    inner.locator("[name=consent]").check()
+                    inner.get_by_role("button", name="Send message").click()
+
+                result, site, pressed = self.submit(outer, student, pages={"/embed": BUDGET_FORM}, launch_args=launch_args)
+                self.assertAsked(result)
+                self.assertEqual((parse_qs(site.posts[0][1])["budget"], pressed), (["Under $10k"], [1]))
+                self.assertEqual(result["by_you"], ["Annual budget"])
+
+    def test_a_page_may_pass_its_sites_own_check_before_anything_is_filled(self):
+        def student(window, site):
+            window.locator("[name=budget]").fill("Under $10k")
+            window.get_by_role("button", name="Send message").click()
+
+        result, site, _pressed = self.submit(CHALLENGED_FORM, student, pages={"/cdn-cgi/challenge-platform/check": "ok"})
+        self.assertAsked(result)
+        self.assertEqual([path for path, _ in site.posts], ["/cdn-cgi/challenge-platform/check", "/send"])
+
+    def test_a_form_tried_before_warns_in_the_window(self):
+        seen = []
+
+        def student(window, site):
+            seen.append(window.evaluate("() => document.querySelector('[data-pipeline-note]').shadowRoot.textContent"))
+
+        result, site, pressed = self.submit(BUDGET_FORM, student, tried_before=True)
+        self.assertIn("pressing send again would send it twice", seen[0])
+        self.assertNothingSent(result, site, pressed)
+
+    # --- nothing leaves before the student's press ---------------------------------------------------------------
+
+    def test_the_app_never_presses_send_and_a_window_left_alone_sends_nothing(self):
+        result, site, pressed = self.submit(PLAIN_FORM, lambda window, site: None, wait=2, close=False)
+        self.assertNothingSent(result, site, pressed)
+        self.assertIn("waited", result["note"])
+
+    def test_closing_the_window_sends_nothing(self):
+        result, site, pressed = self.submit(BUDGET_FORM, lambda window, site: None)
+        self.assertNothingSent(result, site, pressed)
+        self.assertIn("closed", result["note"])
+        self.assertIn("Annual budget", result["note"], "and it still says what was left for them")
+
+    def test_nothing_the_app_fills_leaves_before_the_students_press(self):
+        def student(window, site):
+            window.locator("[name=budget]").fill("Under $10k")
+            window.get_by_role("button", name="Send message").click()
+
+        result, site, _pressed = self.submit(EARLY_POST_FORM, student)
+        self.assertAsked(result)
+        self.assertEqual([path for path, _ in site.posts], ["/send"], "the page's post of what the app filled never left")
+        self.assertEqual(set(result["held_back"]), {"POST bovi.test"})
+
+    def test_a_page_that_posts_while_the_student_types_sends_nothing(self):
+        eager = BUDGET_FORM.replace("</form>", "</form><script>document.querySelector('[name=budget]').addEventListener("
+                                    "'input', (e) => fetch('/partial', {method: 'POST', body: e.target.value}));</script>")
+        result, site, pressed = self.submit(eager, lambda window, site: window.locator("[name=budget]").fill("Under $10k"),
+                                            pages={"/partial": "ok"})
+        self.assertNothingSent(result, site, pressed)
+        self.assertEqual(set(result["held_back"]), {"POST bovi.test"})
+
+    def test_a_read_carrying_the_students_details_or_a_lookup_on_their_site_is_held_before_the_press(self):
+        # An image's address carrying the email, a script's lookup of the page's own site, and one carrying the
+        # phone number as digits: held while the window waits for the press.
+        lookups = BUDGET_FORM.replace("</form>", """</form><script>
+          const wait = setInterval(() => {
+            if (!document.querySelector('[data-pipeline-note]')) return;
+            clearInterval(wait);
+            new Image().src = "https://pixel.example/p?e=" + encodeURIComponent(document.querySelector('[name=email]').value);
+            fetch("/api/lookup?q=1");
+            fetch("https://numbers.example/check?n=5125550100");
+          }, 50);
+        </script>""")
+        result, site, pressed = self.submit(lookups, lambda window, site: window.wait_for_timeout(1_000), pages={"/api/lookup": "ok"})
+        self.assertNothingSent(result, site, pressed)
+        self.assertEqual(set(result["held_back"]), {"GET pixel.example", "GET bovi.test", "GET numbers.example"})
 
     def test_a_page_script_can_neither_find_the_press_nor_make_one(self):
         # Once the window is handed over (the app's note is on the page), the page's own script looks for the binding,
@@ -1094,215 +1255,60 @@ class FinishInBrowserTests(unittest.TestCase):
             window.wait_for_function("() => document.body.dataset.found", timeout=10_000)
             seen.append(window.evaluate("() => document.body.dataset.found"))
 
-        result, site, pressed = self.submit(forging, student, wait=6)
+        result, site, pressed = self.submit(forging, student, wait=6, close=False)
         self.assertEqual(seen, ["none"], "the binding is in a world of its own")
-        self.assertEqual((site.posts, pressed), ([], []), "a script's press is not the student's, and nothing left")
-        self.assertEqual(result["outcome"], "needs_you", result)
+        self.assertNothingSent(result, site, pressed)
         self.assertEqual(result["held_back"], ["POST bovi.test"])
 
-    def test_a_page_listener_cannot_hide_the_students_press(self):
-        hiding = BUDGET_FORM.replace("<form", "<script>window.addEventListener('click', (e) => e.stopImmediatePropagation(), true);"
-                                     "window.addEventListener('keydown', (e) => e.stopImmediatePropagation(), true);</script><form")
+    def test_a_press_before_the_window_is_the_students_sends_nothing(self):
+        # The student presses send as the app takes its picture of the filled form, before the hand-over.
+        original = FormSubmitter._screenshot
+
+        def pressing(submitter, page, name, element=None):
+            if name.endswith("-filled"):
+                page.locator("[name=budget]").fill("Under $10k")
+                page.get_by_role("button", name="Send message").click()
+            return original(submitter, page, name, element)
+
+        with mock.patch.object(FormSubmitter, "_screenshot", pressing):
+            result, site, pressed = self.submit(BUDGET_FORM, lambda window, site: None)
+        self.assertNothingSent(result, site, pressed)
+        self.assertEqual(result["held_back"], ["POST bovi.test"])
+
+    def test_a_press_after_the_window_ends_sends_nothing(self):
+        original = FormSubmitter._screenshot
+
+        def pressing(submitter, page, name, element=None):
+            if name == "bovi" and not page.is_closed():
+                page.get_by_role("button", name="Send message").click()
+            return original(submitter, page, name, element)
+
+        with mock.patch.object(FormSubmitter, "_screenshot", pressing):
+            result, site, pressed = self.submit(BUDGET_FORM, lambda window, site: window.locator("[name=budget]").fill("Under $10k"),
+                                                wait=1, close=False)
+        self.assertNothingSent(result, site, pressed)
+
+    def test_a_button_that_is_not_send_is_no_press_even_beside_reassuring_words(self):
+        helpful = BUDGET_FORM.replace("<button", '<button type="button" onclick="this.nextElementSibling.hidden=false">What happens next?</button>'
+                                      '<p hidden>We will respond within two business days.</p><button')
 
         def student(window, site):
             window.locator("[name=budget]").fill("Under $10k")
-            window.locator("[name=budget]").press("Enter")
+            window.get_by_role("button", name="What happens next?").click()
 
-        result, site, pressed = self.submit(hiding, student)
-        self.assertEqual(result["outcome"], "submitted", result)
-        self.assertEqual((len(site.posts), pressed), (1, [1]))
+        result, site, pressed = self.submit(helpful, student)
+        self.assertNothingSent(result, site, pressed)
 
-    def test_a_form_in_a_frame_is_watched_on_the_page_s_site_and_on_another(self):
-        for src, launch_args in (("/embed", None), ("https://forms.example/embed", None), ("https://forms.example/embed", ["--site-per-process"])):
-            with self.subTest(src=src, launch_args=launch_args):
-                outer = f'<html><body><h1>Contact us</h1><iframe src="{src}" width="700" height="500"></iframe></body></html>'
-
-                def student(window, site):
-                    inner = window.frame_locator("iframe")
-                    inner.locator("[name=budget]").fill("Under $10k")
-                    # In another site's process the app's own tick sometimes does not take; the note asks the student.
-                    inner.locator("[name=consent]").check()
-                    inner.get_by_role("button", name="Send message").click()
-
-                result, site, pressed = self.submit(outer, student, pages={"/embed": BUDGET_FORM}, launch_args=launch_args)
-                self.assertEqual(result["outcome"], "submitted", result)
-                self.assertEqual((parse_qs(site.posts[0][1])["budget"], pressed), (["Under $10k"], [1]))
-                self.assertEqual(result["by_you"], ["Annual budget"])
-
-    def test_nothing_the_app_fills_leaves_before_the_students_press(self):
+    def test_neither_a_newsletters_submit_nor_a_headers_contact_us_is_the_press(self):
         def student(window, site):
             window.locator("[name=budget]").fill("Under $10k")
-            window.get_by_role("button", name="Send message").click()
+            window.locator("#cta").click()
+            window.locator("[name=nl]").fill(ACCOUNT)
+            # Last: held back, the newsletter's own post leaves the window on the browser's error page.
+            window.locator("footer").get_by_role("button", name="Submit").click()
 
-        result, site, _pressed = self.submit(EARLY_POST_FORM, student)
-        self.assertEqual(result["outcome"], "submitted", result)
-        self.assertEqual([path for path, _ in site.posts], ["/send"], "the page's post of what the app filled never left")
-        self.assertTrue(result["held_back"])
-        self.assertEqual(set(result["held_back"]), {"POST bovi.test"}, "each change the app made, held back")
-
-    def test_a_page_may_pass_its_sites_own_check_before_anything_is_filled(self):
-        def student(window, site):
-            window.locator("[name=budget]").fill("Under $10k")
-            window.get_by_role("button", name="Send message").click()
-
-        result, site, _pressed = self.submit(CHALLENGED_FORM, student, pages={"/cdn-cgi/challenge-platform/check": "ok"})
-        self.assertEqual(result["outcome"], "submitted", result)
-        self.assertEqual([path for path, _ in site.posts], ["/cdn-cgi/challenge-platform/check", "/send"])
-
-    def test_a_form_sent_by_get_is_never_called_unsent(self):
-        def student(window, site):
-            window.get_by_role("button", name="Send").click()
-            window.wait_for_timeout(500)
-            window.close()
-
-        result, site, pressed = self.submit(GET_SENT_FORM, student, pages={"/mail": "ok"})
-        self.assertEqual((result["outcome"], pressed), ("unconfirmed", [1]), result)
-        self.assertIn("the form left the page", result["note"], "it carried the student's details")
-
-    def test_a_form_sent_as_an_images_address_is_never_called_unsent(self):
-        def student(window, site):
-            window.get_by_role("button", name="Send").click()
-            window.wait_for_timeout(500)
-            window.close()
-
-        result, site, pressed = self.submit(PIXEL_SENT_FORM, student, pages={"/pixel": "ok"})
-        self.assertEqual((result["outcome"], pressed), ("unconfirmed", [1]), result)
-        self.assertIn("the form left the page", result["note"])
-
-    def test_a_form_sent_with_a_file_in_it_is_never_called_unsent(self):
-        def student(window, site):
-            window.get_by_role("button", name="Send").click()
-            window.wait_for_timeout(500)
-            window.close()
-
-        result, site, pressed = self.submit(FILE_SENT_FORM, student, pages={"/submit": "ok"})
-        self.assertEqual(([path for path, _ in site.posts], pressed), (["/submit"], [1]))
-        self.assertEqual(result["outcome"], "unconfirmed", result)
-        self.assertIn("the form left the page", result["note"])
-
-    def test_a_press_the_browsers_own_check_stops_opens_nothing(self):
-        # The budget box is required and empty: the browser stops the form, and the page's beacon is held back.
-        def student(window, site):
-            window.get_by_role("button", name="Send message").click()
-            window.wait_for_timeout(500)
-            window.close()
-
-        result, site, pressed = self.submit(BEACON_FORM, student)
-        self.assertEqual((result["outcome"], site.posts, pressed), ("needs_you", [], []), result)
-
-    def test_a_request_without_the_students_details_is_not_the_form(self):
-        # After the press, only a ping to the page's own site goes: it carries nothing of the message.
-        def student(window, site):
-            window.get_by_role("button", name="Send").click()
-            window.wait_for_timeout(500)
-            window.close()
-
-        result, site, pressed = self.submit(PING_FORM, student, pages={"/api/ping": "ok"})
-        self.assertEqual((result["outcome"], [path for path, _ in site.posts], pressed), ("needs_you", ["/api/ping"], [1]), result)
-        self.assertIn("Nothing was sent", result["note"])
-
-    def test_thanks_after_a_request_without_the_students_details_is_not_sent(self):
-        # The page pings its own site and thanks the student, but nothing carrying the message left.
-        def student(window, site):
-            window.get_by_role("button", name="Send").click()
-
-        result, site, _pressed = self.submit(PING_THANKS_FORM, student, pages={"/api/ping": "ok"}, wait=3)
-        self.assertNotEqual(result["outcome"], "submitted", result)
-        self.assertIn("saw nothing carrying it leave", result["note"])
-
-    def test_thanks_before_the_form_left_is_not_its_confirmation(self):
-        # The page thanks the student as they press, then sends the form a second later and says nothing more.
-        def student(window, site):
-            window.get_by_role("button", name="Send").click()
-
-        result, site, _pressed = self.submit(EARLY_THANKS_FORM, student, wait=4)
-        self.assertEqual([path for path, _ in site.posts], ["/api/contact"])
-        self.assertEqual(result["outcome"], "unconfirmed", result)
-
-    def test_a_custom_element_send_button_is_the_students_press(self):
-        def student(window, site):
-            window.locator("[name=budget]").fill("Under $10k")
-            window.locator("x-send").click()
-
-        result, site, pressed = self.submit(CUSTOM_SEND_FORM, student, pages={"/submit": "ok"})
-        self.assertEqual(result["outcome"], "submitted", result)
-        self.assertEqual(([path for path, _ in site.posts], pressed), (["/submit"], [1]))
-
-    def test_thanks_from_a_page_whose_send_was_refused_is_not_called_sent(self):
-        # The form service answers 404, and the page thanks the student anyway: it may not have arrived.
-        def student(window, site):
-            window.locator("[name=budget]").fill("Under $10k")
-            window.locator("x-send").click()
-
-        result, site, _pressed = self.submit(CUSTOM_SEND_FORM, student, wait=3)
-        self.assertEqual(result["outcome"], "unconfirmed", result)
-        self.assertIn("saw nothing carrying it leave", result["note"])
-
-    def test_a_form_whose_send_button_the_app_cannot_find_is_not_handed_over(self):
-        handed = []
-        result, site, _pressed = self.submit(OUTSIDE_SEND_FORM, lambda window, site: handed.append(1))
-        self.assertEqual((result["outcome"], handed, site.posts), ("needs_you", [], []), result)
-        self.assertIn("could not find the form's send button", result["note"])
-
-    def test_a_form_redrawn_without_the_apps_marks_is_still_sent_by_the_students_press(self):
-        def student(window, site):
-            window.wait_for_function("() => document.body.dataset.redrawn", timeout=5_000)
-            window.locator("[name=budget]").fill("Under $10k")
-            window.get_by_role("button", name="Send message").click()
-
-        result, site, pressed = self.submit(REDRAWN_FORM, student)
-        self.assertEqual(result["outcome"], "submitted", result)
-        self.assertEqual(([path for path, _ in site.posts], pressed), (["/send"], [1]))
-
-    def test_a_press_that_only_reaches_an_analytics_service_sent_nothing(self):
-        def student(window, site):
-            window.get_by_role("button", name="Send").click()
-            window.wait_for_timeout(500)
-            window.close()
-
-        result, site, pressed = self.submit(BROKEN_SEND_FORM, student)
-        self.assertEqual(result["outcome"], "needs_you", result)
-        self.assertIn("Nothing was sent", result["note"])
-        self.assertEqual(([path for path, _ in site.posts], pressed), (["/collect"], [1]))
-
-    def test_a_press_that_sent_something_the_page_never_answers_is_unconfirmed(self):
-        result, site, pressed = self.submit(STILL_FORM, lambda window, site: window.get_by_role("button", name="Send").click(), wait=4)
-        self.assertEqual(result["outcome"], "unconfirmed", result)
-        self.assertIn("did not say it arrived", result["note"])
-        self.assertEqual(([path for path, _ in site.posts], pressed), (["/api/contact"], [1]))
-
-    def test_a_message_the_app_left_for_the_student_is_named_as_theirs(self):
-        short_box = BUDGET_FORM.replace('<textarea name="message" required>', '<textarea name="message" maxlength="60" required>')
-
-        def student(window, site):
-            window.locator("[name=budget]").fill("Under $10k")
-            window.locator("[name=message]").fill("Hi Bovi team, may I ask about internships?")
-            window.get_by_role("button", name="Send message").click()
-
-        result, site, _pressed = self.submit(short_box, student)
-        self.assertEqual(result["outcome"], "submitted", result)
-        self.assertEqual(result["changed"], ["Message"])
-        self.assertIn('"Message"', result["note"])
-
-    def test_a_frame_the_app_cannot_watch_is_not_handed_over(self):
-        outer = '<html><body><iframe src="https://forms.example/embed" width="700" height="500"></iframe></body></html>'
-        original = FormSubmitter._watch_presses
-        handed = []
-
-        def only_the_page(submitter, target, *args):
-            return original(submitter, target, *args) if hasattr(target, "main_frame") else ""
-
-        with mock.patch.object(FormSubmitter, "_watch_presses", only_the_page):
-            result, site, _pressed = self.submit(outer, lambda window, site: handed.append(1), pages={"/embed": BUDGET_FORM})
-        self.assertEqual((result["outcome"], handed, site.posts), ("needs_you", [], []), result)
-        self.assertIn("could not watch", result["note"])
-
-    def test_a_listener_that_never_said_it_is_in_place_is_not_handed_over(self):
-        handed = []
-        with mock.patch.object(outreach_forms, "PRESS_LISTENER", "void 0;"):
-            result, site, _pressed = self.submit(BUDGET_FORM, lambda window, site: handed.append(1))
-        self.assertEqual((result["outcome"], handed), ("needs_you", []), result)
-        self.assertIn("could not watch", result["note"])
+        result, site, pressed = self.submit(SECTIONED_FORM, student)
+        self.assertNothingSent(result, site, pressed)
 
     def test_a_press_another_sites_frame_hides_sends_nothing_and_says_so(self):
         # With one process per site (as the headed window runs), another site's frame is watched from when it is
@@ -1317,161 +1323,18 @@ class FinishInBrowserTests(unittest.TestCase):
                     inner.locator("[name=budget]").fill("Under $10k")
                     inner.locator("[name=consent]").check()
                     inner.get_by_role("button", name="Send message").click()
-                    window.wait_for_timeout(500)
-                    window.close()
 
                 result, site, pressed = self.submit(outer, student, pages={"/embed": hiding}, launch_args=launch_args)
                 if launch_args:
-                    self.assertEqual((result["outcome"], site.posts, pressed), ("needs_you", [], []), result)
+                    self.assertNothingSent(result, site, pressed)
                     self.assertIn("POST api.formhost.example", result["held_back"])
                 else:
                     # In the page's own process the frame is watched from load, so the press is seen and the form goes.
-                    self.assertEqual(([path for path, _ in site.posts], pressed), (["/send"], [1]), result)
+                    self.assertAsked(result)
+                    self.assertEqual(([path for path, _ in site.posts], pressed), (["/send"], [1]))
 
-    def test_a_press_before_the_window_is_the_students_sends_nothing(self):
-        # The student presses send as the app takes its picture of the filled form, before the hand-over.
-        original = FormSubmitter._screenshot
-
-        def pressing(submitter, page, name, element=None):
-            if name.endswith("-filled"):
-                page.locator("[name=budget]").fill("Under $10k")
-                page.get_by_role("button", name="Send message").click()
-            return original(submitter, page, name, element)
-
-        with mock.patch.object(FormSubmitter, "_screenshot", pressing):
-            result, site, pressed = self.submit(BUDGET_FORM, lambda window, site: window.close())
-        self.assertEqual((result["outcome"], site.posts, pressed), ("needs_you", [], []), result)
-        self.assertEqual(result["held_back"], ["POST bovi.test"])
-
-    def test_a_press_after_the_window_ends_sends_nothing(self):
-        original = FormSubmitter._screenshot
-
-        def pressing(submitter, page, name, element=None):
-            if name == "bovi" and not page.is_closed():
-                page.get_by_role("button", name="Send message").click()
-            return original(submitter, page, name, element)
-
-        with mock.patch.object(FormSubmitter, "_screenshot", pressing):
-            result, site, pressed = self.submit(BUDGET_FORM, lambda window, site: window.locator("[name=budget]").fill("Under $10k"), wait=1)
-        self.assertEqual((result["outcome"], site.posts, pressed), ("needs_you", [], []), result)
-
-    def test_a_button_that_is_not_send_is_no_press_even_beside_reassuring_words(self):
-        helpful = BUDGET_FORM.replace("<button", '<button type="button" onclick="this.nextElementSibling.hidden=false">What happens next?</button>'
-                                      '<p hidden>We will respond within two business days.</p><button')
-
-        def student(window, site):
-            window.locator("[name=budget]").fill("Under $10k")
-            window.get_by_role("button", name="What happens next?").click()
-            window.wait_for_timeout(300)
-            window.close()
-
-        result, site, pressed = self.submit(helpful, student)
-        self.assertEqual((result["outcome"], site.posts, pressed), ("needs_you", [], []), result)
-
-    def test_the_students_send_after_a_reload_is_still_their_press(self):
-        elsewhere = BUDGET_FORM.replace('action="/send"', 'action="https://forms-backend.example/send"')
-
-        def student(window, site):
-            window.reload()
-            for box, value in (("name", "Sam Rivera"), ("email", ACCOUNT), ("message", "Hi Bovi team"), ("budget", "Under $10k")):
-                window.locator(f"[name={box}]").fill(value)
-            window.locator("[name=consent]").check()
-            window.get_by_role("button", name="Send message").click()
-
-        result, site, pressed = self.submit(elsewhere, student)
-        self.assertEqual(result["outcome"], "submitted", result)
-        self.assertEqual(([path for path, _ in site.posts], pressed), (["/send"], [1]))
-
-    def test_a_form_sent_into_a_new_window_is_never_called_unsent(self):
-        popup = BUDGET_FORM.replace('<form action="/send" method="post">', '<form action="/send" method="post" target="_blank">')
-
-        def student(window, site):
-            window.locator("[name=budget]").fill("Under $10k")
-            window.get_by_role("button", name="Send message").click()
-            window.wait_for_timeout(1_000)
-            window.close()
-
-        result, site, pressed = self.submit(popup, student)
-        self.assertEqual(([path for path, _ in site.posts], pressed), (["/send"], [1]))
-        self.assertEqual(result["outcome"], "unconfirmed", result)
-
-    def test_a_confirmation_long_after_the_press_is_still_read(self):
-        slow = SCRIPT_FORM.replace('document.getElementById("go").addEventListener("click", async () => {',
-                                   'document.getElementById("go").addEventListener("click", async () => {\n    await new Promise((done) => setTimeout(done, 4000));')
-        with mock.patch.object(outreach_forms, "CONFIRM_WAIT_SECONDS", 1):
-            result, site, pressed = self.submit(slow, lambda window, site: window.get_by_role("button", name="Send").click(), wait=15)
-        self.assertEqual(result["outcome"], "submitted", result)
-        self.assertEqual(([path for path, _ in site.posts], pressed), (["/api/contact"], [1]))
-
-    def test_a_form_the_server_sends_back_with_an_error_stays_the_students(self):
-        # The first send comes back as the same form with an error. The window stays open (the app keeps looking), and
-        # the student corrects it and sends again from there.
-        retry = BUDGET_FORM.replace('action="/send"', 'action="/check"')
-        corrected = BUDGET_FORM.replace("<form", "<p>Please enter a valid budget.</p><form")
-        looks = []
-        reads = FormSubmitter._page_text
-
-        def look(submitter, page, frame):
-            looks.append(1)
-            if len(looks) == 4:  # the window is still open some looks after the first send came back
-                for box, value in (("name", "Sam Rivera"), ("email", ACCOUNT), ("message", "Hi Bovi team"), ("budget", "Under $10k")):
-                    page.locator(f"[name={box}]").fill(value)
-                page.locator("[name=consent]").check()
-                page.get_by_role("button", name="Send message").click()
-            return reads(submitter, page, frame)
-
-        def student(window, site):
-            window.locator("[name=budget]").fill("lots")
-            window.get_by_role("button", name="Send message").click()
-            window.wait_for_load_state()
-
-        with mock.patch.object(FormSubmitter, "_page_text", look):
-            result, site, pressed = self.submit(retry, student, pages={"/check": corrected})
-        self.assertEqual(result["outcome"], "submitted", result)
-        self.assertEqual(([path for path, _ in site.posts], pressed), (["/check", "/send"], [1]))
-        self.assertGreaterEqual(len(looks), 4)
-
-    def test_neither_a_newsletters_submit_nor_a_headers_contact_us_is_the_press(self):
-        def student(window, site):
-            window.locator("[name=budget]").fill("Under $10k")
-            window.locator("#cta").click()
-            window.locator("[name=nl]").fill(ACCOUNT)
-            # Last: held back, the newsletter's own post leaves the window on the browser's error page.
-            window.locator("footer").get_by_role("button", name="Submit").click()
-            window.wait_for_timeout(300)
-            window.close()
-
-        result, site, pressed = self.submit(SECTIONED_FORM, student)
-        self.assertEqual((result["outcome"], site.posts, pressed), ("needs_you", [], []), result)
-
-    def test_a_page_cannot_send_as_the_window_closes(self):
-        # What a page sends as it closes is sent after the route is no longer asked, so the gate could not hold it. In the
-        # window the page's own close handlers never run, a beacon is refused, and nothing is kept alive past the page.
-        page = BUDGET_FORM.replace("</form>", """</form><script>
-          window.ran = [];
-          for (const type of ["pagehide", "unload", "visibilitychange"]) window.addEventListener(type, () => window.ran.push(type));
-        </script>""")
-        seen = []
-
-        def student(window, site):
-            seen.append(window.evaluate("""() => {
-              for (const type of ["pagehide", "unload", "visibilitychange"]) window.dispatchEvent(new Event(type));
-              return {
-                ran: window.ran,
-                beacon: navigator.sendBeacon("/beacon", "Sam Rivera"),
-                keepalive: new Request("/keepalive", {method: "POST", body: "x", keepalive: true}).keepalive,
-                peer: typeof RTCPeerConnection,
-              };
-            }"""))
-            window.close()
-
-        result, site, _pressed = self.submit(page, student)
-        self.assertEqual(seen, [{"ran": [], "beacon": False, "keepalive": False, "peer": "undefined"}])
-        self.assertEqual((result["outcome"], site.posts), ("needs_you", []), result)
-
-    def test_a_press_reported_after_its_request_still_counts_what_went(self):
-        # The press reaches the app a moment after the request it makes, as it can: the gate waits for it, and the
-        # request it then lets out is counted.
+    def test_a_press_reported_after_its_request_still_lets_it_go(self):
+        # The press reaches the app a moment after the request it makes, as it can: the gate waits for it.
         withheld = []
         deliver = FormSubmitter._on_press_binding
 
@@ -1492,37 +1355,73 @@ class FinishInBrowserTests(unittest.TestCase):
             window.locator("[name=budget]").fill("Under $10k")
             window.get_by_role("button", name="Send message").click()
 
-        quiet = BUDGET_FORM.replace('action="/send"', 'action="/quiet"')
         with mock.patch.object(FormSubmitter, "_on_press_binding", late), mock.patch.object(FormSubmitter, "_press_arrives", arrives):
-            result, site, pressed = self.submit(quiet, student, wait=3)
-        self.assertEqual(([path for path, _ in site.posts], pressed), (["/quiet"], [1]))
-        self.assertEqual(result["outcome"], "unconfirmed", result)
+            result, site, pressed = self.submit(BUDGET_FORM, student)
+        self.assertEqual(([path for path, _ in site.posts], pressed), (["/send"], [1]))
+        self.assertAsked(result)
 
     def test_what_was_held_back_before_the_press_is_named_in_the_window_and_on_the_card(self):
         seen = []
 
         def student(window, site):
             seen.append(window.evaluate("() => document.querySelector('[data-pipeline-note]').shadowRoot.textContent"))
-            window.close()
 
-        result, site, _pressed = self.submit(EARLY_POST_FORM, student)
+        result, site, pressed = self.submit(EARLY_POST_FORM, student)
         self.assertIn("held back what this page tried to send to bovi.test", seen[0])
-        self.assertEqual(result["outcome"], "needs_you", result)
+        self.assertNothingSent(result, site, pressed)
         self.assertIn("tried to reach bovi.test", result["note"])
 
-    def test_a_captcha_is_left_for_the_student(self):
+    def test_a_page_cannot_send_as_the_window_closes(self):
+        # What a page sends as it closes is sent after the route is no longer asked, so the gate could not hold it. In the
+        # window the page's own close handlers never run, a beacon is refused, and nothing is kept alive past the page.
+        page = BUDGET_FORM.replace("</form>", """</form><script>
+          window.ran = [];
+          for (const type of ["pagehide", "unload", "visibilitychange"]) window.addEventListener(type, () => window.ran.push(type));
+        </script>""")
         seen = []
 
         def student(window, site):
-            token = window.locator("[name=g-recaptcha-response]")
-            seen.append(token.input_value())
-            token.evaluate("(el) => { el.value = 'token-'.padEnd(60, 'x'); }")  # the student solves it
-            window.get_by_role("button", name="Send message").click()
+            seen.append(window.evaluate("""() => {
+              for (const type of ["pagehide", "unload", "visibilitychange"]) window.dispatchEvent(new Event(type));
+              return {
+                ran: window.ran,
+                beacon: navigator.sendBeacon("/beacon", "Sam Rivera"),
+                keepalive: new Request("/keepalive", {method: "POST", body: "x", keepalive: true}).keepalive,
+                peer: typeof RTCPeerConnection,
+              };
+            }"""))
 
-        result, site, _pressed = self.submit(CAPTCHA_FORM, student)
-        self.assertEqual(result["outcome"], "submitted", result)
-        self.assertEqual(seen, [""], "the app does not tick it: a token would expire while they type")
-        self.assertTrue(parse_qs(site.posts[-1][1])["g-recaptcha-response"][0].startswith("token-"))
+        result, site, pressed = self.submit(page, student)
+        self.assertEqual(seen, [{"ran": [], "beacon": False, "keepalive": False, "peer": "undefined"}])
+        self.assertNothingSent(result, site, pressed)
+
+    # --- not handed over -----------------------------------------------------------------------------------------
+
+    def test_a_form_whose_send_button_the_app_cannot_find_is_not_handed_over(self):
+        handed = []
+        result, site, _pressed = self.submit(OUTSIDE_SEND_FORM, lambda window, site: handed.append(1))
+        self.assertEqual((result["outcome"], handed, site.posts), ("needs_you", [], []), result)
+        self.assertIn("could not find the form's send button", result["note"])
+
+    def test_a_frame_the_app_cannot_watch_is_not_handed_over(self):
+        outer = '<html><body><iframe src="https://forms.example/embed" width="700" height="500"></iframe></body></html>'
+        original = FormSubmitter._watch_presses
+        handed = []
+
+        def only_the_page(submitter, target, *args):
+            return original(submitter, target, *args) if hasattr(target, "main_frame") else ""
+
+        with mock.patch.object(FormSubmitter, "_watch_presses", only_the_page):
+            result, site, _pressed = self.submit(outer, lambda window, site: handed.append(1), pages={"/embed": BUDGET_FORM})
+        self.assertEqual((result["outcome"], handed, site.posts), ("needs_you", [], []), result)
+        self.assertIn("could not watch", result["note"])
+
+    def test_a_listener_that_never_said_it_is_in_place_is_not_handed_over(self):
+        handed = []
+        with mock.patch.object(outreach_forms, "PRESS_LISTENER", "void 0;"):
+            result, site, _pressed = self.submit(BUDGET_FORM, lambda window, site: handed.append(1))
+        self.assertEqual((result["outcome"], handed), ("needs_you", []), result)
+        self.assertIn("could not watch", result["note"])
 
 
 class _StubLocator:
@@ -1624,13 +1523,23 @@ class FinishInBrowserGateTests(unittest.TestCase):
                   _GateRoute("GET", "https://bovi.test/send?name=Sam+Rivera", "document"),
                   _GateRoute("GET", "https://api.example/mail?name=Sam+Rivera", "fetch"),
                   _GateRoute("GET", "https://www.google.com/recaptcha/api2/reload?n=Sam+Rivera"),
-                  _GateRoute("POST", "https://www.google-analytics.com/g/collect")]
+                  _GateRoute("POST", "https://www.google-analytics.com/g/collect"),
+                  _GateRoute("GET", "https://bovi.test/api/lookup", "fetch"), _GateRoute("GET", "https://bovi.test/logo.png", "image")]
         for route in routes:
             submitter._route(route)
-        self.assertEqual([route.aborted for route in routes], [True, False, False, True, True, True, True],
-                         "anything carrying the student's name is held, whatever it is and wherever it goes")
-        self.assertEqual(submitter.held_back, ["POST bovi.test", "GET bovi.test", "GET api.example", "GET www.google.com"],
+        self.assertEqual([route.aborted for route in routes], [True, False, False, True, True, True, True, True, False],
+                         "anything carrying the student's name is held, whatever it is and wherever it goes, and a script's "
+                         "read of the form's own site; the page's own images still load")
+        self.assertEqual(submitter.held_back, ["POST bovi.test", "GET bovi.test", "GET api.example", "GET www.google.com", "GET bovi.test"],
                          "only what goes to the form's site or carries the student's details is named")
+
+    def test_the_students_details_are_everything_of_theirs_alone_the_app_may_type(self):
+        needles = outreach_forms._needles({**IDENTITY, **ADDRESS}, "Robotics internship question", LETTER)
+        for theirs in (ACCOUNT, "sam rivera", "512-555-0100", "5125550100", "state university", "12 example lane",
+                       "robotics internship question", "hi bovi team,"):
+            self.assertIn(theirs.casefold(), needles)
+        for common in ("student", "oregon", "97000", "united states", "riverton"):
+            self.assertNotIn(common, needles, "a word many pages hold anyway is not held for")
 
     def test_before_the_first_fill_only_the_students_details_are_held(self):
         submitter = FormSubmitter(person_wait=60, route_hook=lambda route: None)
