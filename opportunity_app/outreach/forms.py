@@ -62,7 +62,6 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urljoin
-from uuid import uuid4
 
 from .. import ROOT
 from ..automation import ledger as automation
@@ -1067,37 +1066,9 @@ CAPTCHA_WIDGETS = (
     ("turnstile", "iframe[src*='challenges.cloudflare.com']", "input[type='checkbox']", "input[name='cf-turnstile-response']"),
 )
 
-# Finish in browser, in the form's frame: outline the boxes left for the student, and tell the app (through the
-# binding) when they may have sent it, with what each marked box holds then. A <form>'s submit event comes only once
-# the browser's own checks pass, so for a button that submits a <form> it, not the click, is the press. Otherwise a
-# trusted click on the send button or any other button in the form (not a dropdown's), or Enter in one of its
-# one-line boxes, may be one: a press that sent nothing leaves the window the student's.
-HAND_OVER_SCRIPT = r"""
-({ binding, left }) => {
-  const values = () => Object.fromEntries(Array.from(document.querySelectorAll("[data-pipeline-field]")).map((el) => [
-    el.getAttribute("data-pipeline-field"),
-    el.type === "checkbox" || el.type === "radio" ? (el.checked ? "on" : "") : String(el.value || ""),
-  ]));
-  const tell = () => {
-    try { window[binding](values()); } catch (_error) { /* the page is going away */ }
-  };
-  const marked = (form) => form.matches("[data-pipeline-form]") || Boolean(form.querySelector("[data-pipeline-form]") || form.closest("[data-pipeline-form]"));
-  document.addEventListener("submit", (event) => {
-    if (event.target instanceof Element && marked(event.target)) tell();
-  }, true);
-  const widget = (b) => b.hasAttribute("aria-haspopup") || b.hasAttribute("aria-expanded") || b.closest("[role=listbox], [role=combobox], select");
-  document.addEventListener("click", (event) => {
-    if (!event.isTrusted || !(event.target instanceof Element)) return;
-    const inForm = event.target.closest("[data-pipeline-form] :is(button, input[type=submit], input[type=image], input[type=button], [role=button])");
-    const button = event.target.closest("[data-pipeline-submit]") || (inForm && !widget(inForm) ? inForm : null);
-    if (!button || (button.form && ["submit", "image"].includes(button.type))) return;
-    tell();
-  }, true);
-  document.addEventListener("keydown", (event) => {
-    const box = event.target instanceof Element ? event.target : null;
-    if (!event.isTrusted || event.key !== "Enter" || !box || !box.matches("input") || box.form) return;
-    if (box.closest("[data-pipeline-form]")) tell();
-  }, true);
+# Finish in browser, in the form's frame: outline the boxes the app left for the student.
+OUTLINE_SCRIPT = r"""
+(left) => {
   for (const index of left) {
     const box = document.querySelector(`[data-pipeline-field='${index}']`);
     if (!box) continue;
@@ -1106,6 +1077,42 @@ HAND_OVER_SCRIPT = r"""
   }
 }
 """
+# Finish in browser: the student's own press of send, seen from a world the page cannot reach (as Apply for me's
+# PRESS_LISTENER in apply/agent.py). The listener runs in an isolated world (a JavaScript realm of its own over the
+# same page, made by the browser through the DevTools protocol), and the binding it calls exists in that world only,
+# so no script on the page can call it, find its name, or change the built-ins it uses. It is registered on the
+# window, in the capture phase, before any script of the page runs, so a page listener cannot stop the event first
+# (a form in another site's frame is watched from when that frame is found: FormSubmitter._hand_to_student). A
+# press is a trusted click on the marked send button or any other button in the marked form (not a dropdown's), or a
+# trusted Enter in one of its one-line boxes. A click or submit a script makes has ``isTrusted`` false, and a submit
+# event is not used at all, since a page's script can fire a trusted one. It carries what each marked box holds then.
+PRESS_WORLD = "outreach-student-press"
+PRESS_BINDING = "outreachStudentPress"
+PRESS_LISTENER = r"""(() => {
+  const values = () => {
+    const held = {};
+    for (const el of document.querySelectorAll("[data-pipeline-field]")) {
+      held[el.getAttribute("data-pipeline-field")] = el.type === "checkbox" || el.type === "radio" ? (el.checked ? "on" : "") : String(el.value || "");
+    }
+    return held;
+  };
+  const tell = () => {
+    try { window.__BINDING__(JSON.stringify(values())); } catch (_error) { /* the page is going away */ }
+  };
+  const widget = (b) => b.hasAttribute("aria-haspopup") || b.hasAttribute("aria-expanded") || b.closest("[role=listbox], [role=combobox], select");
+  const send = "[data-pipeline-form] :is(button, input[type=submit], input[type=image], input[type=button], [role=button])";
+  window.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!event.isTrusted || !target || typeof target.closest !== "function") return;
+    const inForm = target.closest(send);
+    if (target.closest("[data-pipeline-submit]") || (inForm && !widget(inForm))) tell();
+  }, true);
+  window.addEventListener("keydown", (event) => {
+    const box = event.target;
+    if (!event.isTrusted || event.key !== "Enter" || !box || typeof box.matches !== "function" || !box.matches("input")) return;
+    if (box.closest("[data-pipeline-form]") || (box.form && box.form.matches("[data-pipeline-form]"))) tell();
+  }, true);
+})();""".replace("__BINDING__", PRESS_BINDING)
 # Finish in browser, in a corner of the page: what is left for the student, in the app's words, apart from the site's
 # styles. Clicks pass through it to the page, except on its own Hide button, so it never stands between them and the form.
 NOTE_SCRIPT = r"""
@@ -1181,6 +1188,8 @@ class FormSubmitter:
         self._route_hook = route_hook
         # Tests act as the student through this: it is given the page once the window is theirs.
         self._student_hook = student_hook
+        # Finish in browser: where the student's presses go once the window is theirs (None before, and after).
+        self._press_sink: Callable[[dict[str, Any]], None] | None = None
         self._playwright: Any = None
         self._browser: Any = None
         self._context: Any = None
@@ -1241,6 +1250,8 @@ class FormSubmitter:
                 result["note"] = f"Could not start the browser ({type(exc).__name__}). Install Playwright and Chromium: python -m playwright install chromium"
                 return result
             page = self._context.new_page()
+            # Before the page loads, so the press listener is in place ahead of every script of the page.
+            watching = bool(self.person_wait) and self._watch_presses(page)
             response = page.goto(page_url, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
             if response is not None and response.status >= 400:
                 result["note"] = f"The contact page answered HTTP {response.status}"
@@ -1258,7 +1269,7 @@ class FormSubmitter:
             if self.person_wait:
                 clicked = self._hand_to_student(
                     page, frame, read, result, identity=identity, subject=subject, body=body, attachment=attachment,
-                    name=name, on_press=on_press,
+                    name=name, on_press=on_press, watching=watching,
                 )
                 return result
             purpose = _sales_purpose(read)
@@ -1366,6 +1377,7 @@ class FormSubmitter:
                 result.update(outcome="failed", note=f"The page could not be filled in ({type(exc).__name__}: {str(exc)[:160]})")
             return result
         finally:
+            self._press_sink = None
             if page is not None:
                 if clicked or result["outcome"] == "needs_you":
                     result["screenshot"] = self._screenshot(page, name)
@@ -1391,6 +1403,33 @@ class FormSubmitter:
         elif fill["action"] == "upload":
             control.set_input_files(fill["value"], timeout=FIELD_TIMEOUT_MS)
 
+    def _watch_presses(self, target: Any) -> bool:
+        """Have the browser report the student's presses in ``target`` (a page, or a frame of another site), from PRESS_WORLD.
+
+        False when no DevTools session could be made for it: for the page, Finish in browser then does not hand the
+        form over, since it could not tell the student's press from anything else.
+        """
+        try:
+            cdp = self._context.new_cdp_session(target)
+            cdp.on("Runtime.bindingCalled", self._on_press_binding)
+            cdp.send("Page.enable")
+            cdp.send("Runtime.enable")
+            cdp.send("Runtime.addBinding", {"name": PRESS_BINDING, "executionContextName": PRESS_WORLD})
+            cdp.send("Page.addScriptToEvaluateOnNewDocument", {"source": PRESS_LISTENER, "worldName": PRESS_WORLD, "runImmediately": True})
+        except Exception:  # noqa: BLE001 - a frame that shares its page's session, or a browser without DevTools sessions
+            return False
+        return True
+
+    def _on_press_binding(self, event: dict[str, Any]) -> None:
+        """The press listener called its binding, which exists only in the listener's world, with what each box held."""
+        if event.get("name") != PRESS_BINDING or self._press_sink is None:
+            return
+        try:
+            values = json.loads(event.get("payload") or "{}")
+        except ValueError:
+            values = {}
+        self._press_sink(values if isinstance(values, dict) else {})
+
     def _fill_for_student(self, frame: Any, fills: list[dict[str, Any]], result: dict[str, Any], notes: list[str]) -> None:
         """Make each fill the page takes; one it will not take is named for the student, not a reason to stop."""
         for fill in fills:
@@ -1405,7 +1444,7 @@ class FormSubmitter:
 
     def _hand_to_student(
         self, page: Any, frame: Any, read: dict[str, Any], result: dict[str, Any], *, identity: dict[str, str],
-        subject: str, body: str, attachment: str, name: str, on_press: Callable[[], Any] | None,
+        subject: str, body: str, attachment: str, name: str, on_press: Callable[[], Any] | None, watching: bool,
     ) -> bool:
         """Finish in browser: fill what the app truthfully can, then the window is the student's until they press send.
 
@@ -1413,11 +1452,15 @@ class FormSubmitter:
         form gets nothing. The app never presses send here, and never ticks a CAPTCHA (a ticked one would expire
         while they type). Their press is a <form>'s submit event, which comes only once the browser's own checks
         pass, or a trusted click on a button in the form that does not submit a <form>, or Enter in a one-line
-        box of a form with no <form> element (HAND_OVER_SCRIPT). ``on_press`` is told at the first, and what went
+        box of a form with no <form> element (PRESS_LISTENER). ``on_press`` is told at the first, and what went
         is read from the page as after the app's own press. Only the page saying it arrived, or the form going
         away, ends the window early: a press the page answers with its own error, or that was not send at all,
         leaves it theirs. Returns whether they pressed; ``result`` holds the outcome.
         """
+        if not watching:
+            result.update(outcome="needs_you", note=(
+                "The app could not watch the window for your press of send, so it did not hand the form over. Nothing was sent"))
+            return False
         notes: list[str] = []
         plan: dict[str, Any] = {"fills": [], "left": []}
         purpose = _sales_purpose(read)
@@ -1452,15 +1495,16 @@ class FormSubmitter:
                 notes.append(f"The form changed what the app typed into \"{fill['label']}\": {changed}. Check it before you send")
         result["filled_screenshot"] = self._screenshot(page, f"{name}-filled", frame.locator("[data-pipeline-form]").first)
 
-        binding = f"pipelinePressed{uuid4().hex}"  # a fresh name, so the page's own scripts cannot press for the student
+        if frame is not page.main_frame:
+            self._watch_presses(frame)  # a form in another site's frame has a session of its own; one in the page's is watched already
         presses: list[dict[str, Any]] = []
         # The requests that could carry the form, since each press; batches[0] holds those before any.
         batches: list[list[Any]] = [[]]
         sites = {website_domain(page.url), website_domain(frame.url)} - {""}
         posted: list[Any] = []  # anything posted to the form's own site while the window was theirs
 
-        def pressed(_source: Any, values: Any = None) -> None:
-            presses.append(values if isinstance(values, dict) else {})
+        def pressed(values: dict[str, Any]) -> None:
+            presses.append(values)
             batches.append([])
 
         def watch(request: Any) -> None:
@@ -1471,9 +1515,9 @@ class FormSubmitter:
             if request.method != "GET" and any(same_site(request.url, site) for site in sites):
                 posted.append(request)
 
-        page.expose_binding(binding, pressed)
         page.on("request", watch)
-        frame.evaluate(HAND_OVER_SCRIPT, {"binding": binding, "left": [entry["index"] for entry in plan["left"]]})
+        self._press_sink = pressed
+        frame.evaluate(OUTLINE_SCRIPT, [entry["index"] for entry in plan["left"]])
         lines = (["Fill in the boxes outlined in orange."] if plan["left"] else []) + notes
         try:
             page.evaluate(NOTE_SCRIPT, lines)
@@ -1488,8 +1532,8 @@ class FormSubmitter:
         seen, stopped, closed = 0, "", False
         while True:
             if len(presses) > seen:
-                seen = len(presses)
-                if seen == 1 and on_press is not None:
+                first, seen = seen == 0, len(presses)
+                if first and on_press is not None:
                     try:
                         on_press()
                     except Exception:  # noqa: BLE001 - the press has happened; recording it cannot undo it

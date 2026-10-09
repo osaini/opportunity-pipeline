@@ -949,6 +949,51 @@ class FinishInBrowserTests(unittest.TestCase):
         self.assertIn("did not see you send it", result["note"])
         self.assertEqual(([path for path, _ in site.posts], pressed), (["/partial"], []))
 
+    def test_a_page_script_can_neither_find_the_press_nor_make_one(self):
+        # Once the window is handed over (the app's note is on the page), the page's own script looks for the binding,
+        # puts what it found in the box left for the student, and presses send itself: the form really goes, but a
+        # script's click is not the student's.
+        forging = BUDGET_FORM.replace("</form>", """</form><script>
+          const wait = setInterval(() => {
+            if (!document.querySelector('[data-pipeline-note]')) return;
+            clearInterval(wait);
+            const found = Object.getOwnPropertyNames(window).filter((n) => /outreach|student/i.test(n));
+            document.querySelector('[name=budget]').value = 'found:' + (found.join(',') || 'none');
+            document.querySelector('button').click();
+          }, 50);
+        </script>""")
+        result, site, pressed = self.submit(forging, lambda window, site: None, wait=3)
+        self.assertEqual(parse_qs(site.posts[0][1])["budget"], ["found:none"], "the binding is in a world of its own")
+        self.assertEqual(pressed, [], "a script's press is not the student's")
+        self.assertEqual(result["outcome"], "unconfirmed", "the form did go, so it is never called unsent, nor sent by the student")
+
+    def test_a_page_listener_cannot_hide_the_students_press(self):
+        hiding = BUDGET_FORM.replace("<form", "<script>window.addEventListener('click', (e) => e.stopImmediatePropagation(), true);"
+                                     "window.addEventListener('keydown', (e) => e.stopImmediatePropagation(), true);</script><form")
+
+        def student(window, site):
+            window.locator("[name=budget]").fill("Under $10k")
+            window.locator("[name=budget]").press("Enter")
+
+        result, site, pressed = self.submit(hiding, student)
+        self.assertEqual(result["outcome"], "submitted", result)
+        self.assertEqual((len(site.posts), pressed), (1, [1]))
+
+    def test_a_form_in_a_frame_is_watched_on_the_page_s_site_and_on_another(self):
+        for src in ("/embed", "https://forms.example/embed"):
+            with self.subTest(src=src):
+                outer = f'<html><body><h1>Contact us</h1><iframe src="{src}" width="700" height="500"></iframe></body></html>'
+
+                def student(window, site):
+                    inner = window.frame_locator("iframe")
+                    inner.locator("[name=budget]").fill("Under $10k")
+                    inner.get_by_role("button", name="Send message").click()
+
+                result, site, pressed = self.submit(outer, student, pages={"/embed": BUDGET_FORM})
+                self.assertEqual(result["outcome"], "submitted", result)
+                self.assertEqual((parse_qs(site.posts[0][1])["budget"], pressed), (["Under $10k"], [1]))
+                self.assertEqual(result["by_you"], ["Annual budget"])
+
     def test_a_captcha_is_left_for_the_student(self):
         seen = []
 
