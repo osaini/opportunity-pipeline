@@ -1725,6 +1725,36 @@ class FinishInBrowserTests(unittest.TestCase):
         self.assertEqual([path for path, _ in site.posts], ["/send"])
         self.assertAsked(result)
 
+    def test_a_captchas_own_worker_loads_its_scripts_before_the_press(self):
+        # A CAPTCHA may compute in a worker in its own frame, and the browser calls the worker's importScripts "other":
+        # unlike any other "other" request before the press, it loads.
+        frame = """<html><body><script>
+          const worker = new Worker(URL.createObjectURL(new Blob([
+            "try { importScripts('https://newassets.hcaptcha.com/c/hsw.js'); postMessage(self.solved || 'empty'); }"
+            + " catch (error) { postMessage('refused'); }"], {type: "text/javascript"})));
+          worker.onmessage = (event) => parent.postMessage(event.data, "*");
+        </script></body></html>"""
+        page = PLAIN_FORM.replace("</form>", '</form><iframe src="https://newassets.hcaptcha.com/captcha/v1/frame"></iframe>'
+                                  '<script>addEventListener("message", (event) => { document.body.dataset.worker = event.data; });</script>')
+        original = Site.route
+
+        def with_scripts(site, route):
+            if urlsplit(route.request.url).path.endswith(".js"):
+                route.fulfill(status=200, content_type="text/javascript", body="self.solved = 'loaded';")
+            else:
+                original(site, route)
+
+        seen = []
+
+        def student(window, site):
+            window.wait_for_timeout(1_000)
+            seen.append(window.evaluate("document.body.dataset.worker || ''"))
+
+        with mock.patch.object(Site, "route", with_scripts):
+            result, site, pressed = self.submit(page, student, pages={"/captcha/v1/frame": frame})
+        self.assertEqual(seen, ["loaded"])
+        self.assertNothingSent(result, site, pressed)
+
     def test_a_captcha_is_left_for_the_student(self):
         seen = []
 

@@ -1486,11 +1486,12 @@ class FormSubmitter:
             self.refused.append(f"{request.method} {request.url}")
             route.abort("blockedbyclient")
             return
-        if (self.rehearse or (self.person_wait and self._gate != "open")) and getattr(request, "resource_type", "") == "other":
+        if (self.rehearse or (self.person_wait and self._gate != "open")) and getattr(request, "resource_type", "") == "other"                 and not CAPTCHA_ENDPOINTS.search(request.url):
             # A page's own Speculation-Rules header has the browser load a rules file and then fetch the pages it names
             # itself, where no route sees them; a Link header's prefetch is a read the gate cannot judge. The browser
             # calls both "other", and the request says nothing more, so in a rehearsal, and in Finish in browser until
-            # the press, no "other" request goes: the rules never load, and nothing is prefetched.
+            # the press, no "other" request goes: the rules never load, and nothing is prefetched. A CAPTCHA's own
+            # address is left to the gate, since its worker's scripts (importScripts) are "other" too.
             route.abort("blockedbyclient")
             return
         # Finish in browser fails closed: until the student's press is seen, and once the window's outcome is decided,
