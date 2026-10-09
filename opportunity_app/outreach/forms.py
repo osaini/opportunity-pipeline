@@ -1324,9 +1324,11 @@ class FormSubmitter:
         self._browser = self._playwright.chromium.launch(headless=not self.headed, args=self._launch_args)
         self._context = self._browser.new_context(service_workers="block", accept_downloads=False)
         self._context.route("**/*", self._route)
-        # A route never sees a WebSocket: closed before it connects, as the renderer's are (outreach/render.py).
+        # A route never sees a WebSocket, so each is refused by never connecting it to its server, as Apply for me's
+        # are (apply/agent.py _refuse_socket): the page's socket goes nowhere. Closing it from inside this handler
+        # would deadlock the sync API.
         if hasattr(self._context, "route_web_socket"):
-            self._context.route_web_socket("**/*", lambda socket: socket.close())
+            self._context.route_web_socket("**/*", lambda _socket: None)
         if self.person_wait or self.rehearse:
             self._context.add_init_script(CLOSE_GUARD)
 

@@ -20,13 +20,13 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Browser extension | 0 | 1 | 0 | 1 |
 | Apply for me | 0 | 4 | 11 | 15 |
 | Mail, Gmail and inboxes | 0 | 4 | 8 | 12 |
-| Outreach drafting, research, forms and CLI | 0 | 5 | 4 | 9 |
+| Outreach drafting, research, forms and CLI | 0 | 6 | 4 | 10 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
 | Web API, auth and storage | 0 | 4 | 1 | 5 |
 | Scoring, scheduling and configuration | 1 | 2 | 8 | 11 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **28** | **38** | **67** |
+| **Total** | **1** | **29** | **38** | **68** |
 
 ## Start here: the high-severity entries
 
@@ -314,6 +314,13 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** the `company` role matches any text box whose label, name or id says company, organization, business, employer, school, university or institution, and a required one is typed with `identity["school"]`. A required "Company website", "Company address" or "Company size" box therefore gets the school's name, which answers none of those questions, and the form goes out with it when the page accepts any text. A `type="url"` box is read as a link first, so only text boxes are affected. (A box whose label is only address words, such as "Address" or "City", and whose name or id says company, school, business or the like is no longer affected: `_role` makes it unanswerable. A label that itself says company still is.)
 - **Suggested fix:** Give the `company` role only to a label that asks for the name ("Company", "Company name", "Organization", "School"). A label that also says address, website, phone, email, size or industry is unanswerable, so the form waits for the student.
 - **Regression suite:** tests/ unittest (`test_outreach_forms`: required "Company website", "Company address" and "Company size" text boxes are named as unanswerable and nothing is typed in them)
+
+### The renderer hangs on a page that opens a WebSocket
+- **Severity:** medium, a crash (a hang) (found 2026-10-09, while closing the form submitter's WebSockets the same way)
+- **Where:** `opportunity_app/outreach/render.py` (`route_web_socket("**/*", lambda socket: socket.close())` where the renderer starts its browser)
+- **What happens:** the handler calls `socket.close()` from inside Playwright's own event dispatch, which deadlocks the sync API: the first page the renderer loads that opens a WebSocket stops the render (and whatever called it, such as a contact search) for good. The form submitter had the same handler and hung its tests for nine hours; it now refuses a socket by never connecting it, as Apply for me does.
+- **Suggested fix:** `route_web_socket("**/*", lambda _socket: None)`, as in `FormSubmitter._start`.
+- **Regression suite:** tests/ unittest under Chromium (render a page that opens a WebSocket to a loopback listener: it returns, and the listener hears nothing)
 
 ### Finish in browser for contact forms: sends it holds back, and the narrow ones it cannot see
 - **Severity:** low (found while making the window the student's to finish, and in three reviews of it, 2026-10-08). Gaps (1), (2), (4) and (5) never record a send that went as unsent: the form is held back and the record says so. Gap (3) could, but needs a form whose post encodes everything the student typed, which no site the app has met does.
