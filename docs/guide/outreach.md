@@ -84,7 +84,9 @@ bounce resend check first.
    list queues the ticked follow-ups for their mornings or sends them now. It
    asks once more before anything goes, approves any not yet approved, asks in
    one question about any whose approval raises warnings, and lists every
-   company left out and why. Paste a reply into **Log a reply** to get a suggested status
+   company left out and why. A queued follow-up is handled, so it moves from Follow-ups
+   due (and from Urgent) to Scheduled; one whose scheduled send stopped comes
+   back as due. Paste a reply into **Log a reply** to get a suggested status
    (call, declined, come back later); nothing changes until you click it. After
    a follow-up goes unanswered for 14 days, the card suggests No response.
 
