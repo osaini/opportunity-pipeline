@@ -70,7 +70,12 @@ bounce resend check first.
    seven-day follow-up.
 5. **Follow up and log replies.** Due follow-ups get an in-app reminder (from
    the daily run and the worker) and a **Generate follow-up** draft with the same
-   approval step. Paste a reply into **Log a reply** to get a suggested status
+   approval step. The follow-up has its own **Follow-up** tab on the card, and
+   picking **Follow-ups due** in the rail opens each company there. A due
+   follow-up is listed under Follow-ups due, not Drafts to review. With Gmail
+   connected, **Approve and send** approves the follow-up and sends it from your
+   Gmail in one step; like **Send**, the first click asks you to confirm the
+   recipient and the second sends. Paste a reply into **Log a reply** to get a suggested status
    (call, declined, come back later); nothing changes until you click it. After
    a follow-up goes unanswered for 14 days, the card suggests No response.
 
