@@ -768,6 +768,29 @@ class FormSendTests(unittest.TestCase):
         self.assertEqual(waiting.status_code, 409)
         self.assertIn("Finish in browser window is still open", waiting.json()["detail"])
 
+    def test_after_a_restart_during_a_no_window_a_second_no_still_keeps_asking(self):
+        # A No opened a window, and the app stopped while it was open: its claim is left mid-draft by a gone process.
+        target = self.pressed_in_browser()
+        with closing(connect_product(self.platform_path)) as conn:
+            conn.execute("UPDATE outreach_send_claims SET state='drafting', instance='gone-process', claimed_at=?",
+                         ((datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat(timespec="microseconds"),))
+            conn.commit()
+        self.submitter.outcomes = ["needs_you"]
+        answered = self.send(target, in_browser=True, retry_unconfirmed=True).json()
+        self.assertEqual((answered["outcome"], answered["asked_again"]), ("unconfirmed", True))
+        self.assertTrue(self.get(target)["contact_form"]["asks"])
+        self.assertTrue(self.submitter.calls[-1]["tried_before"], "the window warns the form may already have it")
+        with closing(connect_product(self.platform_path)) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM outreach_events WHERE event_type=?", (outreach_forms.SAID_NOT_SENT_EVENT,)).fetchone()[0], 1)
+
+    def test_a_form_the_app_itself_pressed_is_not_said_to_be_the_students_press(self):
+        self.submitter.outcomes = ["unconfirmed", "needs_you"]
+        target = self.approved()
+        self.send(target)  # the app pressed send; their page said nothing
+        answered = self.send(target, in_browser=True, retry_unconfirmed=True).json()
+        self.assertEqual((answered["outcome"], answered["asked_again"]), ("needs_you", False))
+        self.assertFalse(self.get(target)["contact_form"]["asks"])
+
     def test_the_press_is_logged_where_replies_and_thank_yous_read_it(self):
         target = self.pressed_in_browser()
         with closing(connect_product(self.platform_path)) as conn:
@@ -1010,6 +1033,17 @@ def websocket_form(port):
         '    await fetch("/api/contact", {method: "POST", body: JSON.stringify({')
 
 
+# A script-built form whose page opens a WebSocket to its own site as it loads (socket.io style), queues the message
+# until it opens, and thanks the student at once.
+QUEUED_SOCKET_FORM = SCRIPT_FORM.replace('<div id="root"></div><script>', """<div id="root"></div><script>
+  const socket = new WebSocket("wss://bovi.test/socket");
+  const queue = [];
+  socket.onopen = () => { while (queue.length) socket.send(queue.shift()); };""").replace(
+    'await fetch("/api/contact", {method: "POST", body: JSON.stringify({',
+    'queue.push(document.getElementById("e").value); root.innerHTML = "<p>Thank you for your message!</p>"; return;\n'
+    '    await fetch("/api/contact", {method: "POST", body: JSON.stringify({')
+
+
 # A page that hands the filled name to a worker, which would open a WebSocket with it.
 def worker_relay(port):
     return BUDGET_FORM.replace("</form>", f"""</form><script>
@@ -1186,10 +1220,14 @@ class BrowserSubmitTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "submitted", result)
         self.assertTrue(parse_qs(site.posts[-1][1])["g-recaptcha-response"][0].startswith("token-"))
 
-    def test_a_form_sent_over_a_websocket_is_never_called_submitted(self):
-        result, site = self.submit(websocket_form(9))
-        self.assertEqual(result["outcome"], "needs_you", result)
-        self.assertIn("over a connection the app does not allow (a WebSocket), so nothing was sent", result["note"])
+    def test_the_apps_own_send_leaves_the_pages_sockets_and_workers_as_they_are(self):
+        # Only Finish in browser and a rehearsal close the channels a route never sees; the app's own send is as before.
+        probing = PLAIN_FORM.replace('<button', '<input type="hidden" name="probe"><button').replace("</form>", """</form><script>
+          document.querySelector('[name=probe]').value = [typeof Worker, new WebSocket('ws://127.0.0.1:9/x').readyState].join(' ');
+        </script>""")
+        result, site = self.submit(probing)
+        self.assertEqual(result["outcome"], "submitted", result)
+        self.assertEqual(parse_qs(site.posts[0][1])["probe"], ["function 0"])
 
     def test_a_captcha_that_asks_for_a_challenge_waits_for_the_student(self):
         with mock.patch.object(outreach_forms, "CAPTCHA_WAIT_SECONDS", 1):
@@ -1513,6 +1551,55 @@ class FinishInBrowserTests(unittest.TestCase):
                                             pages={"/mail": "ok"})
         self.assertAsked(result)
         self.assertEqual(pressed, [1])
+
+    def test_a_form_whose_way_of_sending_is_a_refused_websocket_sent_nothing(self):
+        # The page's socket, opened at load, is refused; it queues the message and thanks the student anyway. Nothing
+        # carrying the message left, so nothing was sent, and the card says why rather than ask.
+        result, site, pressed = self.submit(QUEUED_SOCKET_FORM, lambda window, site: window.get_by_role("button", name="Send").click(),
+                                            close=False, wait=3)
+        self.assertEqual((result["outcome"], site.posts), ("needs_you", []), result)
+        self.assertIn("over a connection the app does not allow (a WebSocket)", result["note"])
+        self.assertIn("WEBSOCKET bovi.test", result["held_back"])
+
+    def test_a_refused_websocket_is_noted_even_where_the_page_forbids_its_own_requests(self):
+        # The page's content security policy forbids every connection it makes, which would also stop a report sent as a request.
+        strict = QUEUED_SOCKET_FORM.replace("<html><body>", """<html><head><meta http-equiv="Content-Security-Policy" content="connect-src 'none'"></head><body>""")
+        result, site, _pressed = self.submit(strict, lambda window, site: window.get_by_role("button", name="Send").click(), close=False, wait=3)
+        self.assertIn("WEBSOCKET bovi.test", result["held_back"])
+        self.assertEqual(result["outcome"], "needs_you", result)
+
+    def test_the_channels_a_route_never_sees_are_closed_in_the_window(self):
+        seen = []
+
+        def student(window, site):
+            seen.append(window.evaluate("""async () => {
+              const rules = document.createElement('script'); rules.type = 'speculationrules';
+              rules.textContent = JSON.stringify({prefetch: [{source: 'list', urls: ['https://bovi.test/p?v=Sam']}]});
+              document.head.appendChild(rules);
+              const link = document.createElement('link'); link.rel = 'prerender'; link.href = '/p?v=Sam'; document.head.appendChild(link);
+              await new Promise((done) => setTimeout(done, 50));
+              const refused = async (run) => { try { await run(); return 'went'; } catch (error) { return error.name; } };
+              return {
+                kept: document.querySelectorAll('script[type=speculationrules], link[rel=prerender]').length,
+                fedcm: await refused(() => navigator.credentials.get({identity: {providers: [{configURL: 'https://idp.example/c.json', clientId: 'x'}]}})),
+                worklet: await refused(() => new AudioContext().audioWorklet.addModule('data:text/javascript,0')),
+              };
+            }"""))
+
+        result, site, pressed = self.submit(PLAIN_FORM, student)
+        self.assertEqual(seen, [{"kept": 0, "fedcm": "NotSupportedError", "worklet": "NotSupportedError"}])
+        self.assertNothingSent(result, site, pressed)
+
+    def test_a_typeless_send_button_pressed_with_a_required_box_empty_is_no_press(self):
+        typeless = EARLY_POST_FORM.replace('<button type="submit">Send message</button>', '<button>Send message</button>')
+
+        def student(window, site):
+            window.get_by_role("button", name="Send message").click()  # the budget box is required and empty
+            window.locator("[name=name]").fill("Sam Rivera-Lopez")
+            window.locator("[name=name]").blur()
+
+        result, site, pressed = self.submit(typeless, student)
+        self.assertNothingSent(result, site, pressed)
 
     def test_a_captcha_is_left_for_the_student(self):
         seen = []

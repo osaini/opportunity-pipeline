@@ -67,6 +67,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import unquote_plus, urljoin, urlsplit
+from uuid import uuid4
 
 from .. import ROOT
 from ..automation import ledger as automation
@@ -105,8 +106,9 @@ READY_WAIT_SECONDS = 3
 PRESS_GRACE_SECONDS = 0.15
 # After the student's press the window stays at least this long, so a press near the end is not cut off.
 AFTER_PRESS_SECONDS = 30
-# Where a refused WebSocket is reported (SOCKET_GUARD): the route takes it, notes it, and refuses it. The name cannot resolve.
-REFUSED_SOCKET_HOST = "websocket.refused.invalid"
+# Finish in browser and a rehearsal: what Apply for me also switches off at launch (apply/agent.py LAUNCH_SWITCHES), a
+# fetch kept past the page and a WebSocket stream, neither of which a route sees.
+GUARD_SWITCH = "--disable-blink-features=FetchLaterAPI,WebSocketStream"
 NAVIGATION_TIMEOUT_MS = 30_000
 # How long after the click the page has to say the message arrived.
 CONFIRM_WAIT_SECONDS = 15
@@ -1125,20 +1127,62 @@ CLOSE_GUARD = r"""(() => {
     const swallow = (event) => { call(stopNow, event); };
     for (const type of ['pagehide', 'unload', 'beforeunload', 'visibilitychange', 'freeze', 'pageswap']) call(addListener, window, type, swallow, true);
   } catch (error) { /* no events */ }
+  // Browser sign-in (FedCM) fetches a config from a host the script names, and a worklet's module (audio, paint)
+  // is fetched with no route asked: both refused, as Apply for me does.
+  try {
+    const get = CredentialsContainer.prototype.get;
+    fix(CredentialsContainer.prototype, 'get', function get_(options) {
+      if (options && options.identity) return Promise.reject(new DOMException('Not supported', 'NotSupportedError'));
+      return apply(get, this, arguments);
+    });
+  } catch (error) { /* no credentials container */ }
+  try { fix(Worklet.prototype, 'addModule', function addModule() { return Promise.reject(new DOMException('Not supported', 'NotSupportedError')); }); }
+  catch (error) { /* no worklets */ }
+  // Speculation rules, a prerender link and a prefetch link make the browser itself fetch a page, with no request a
+  // route sees. Each is removed as it is inserted (the observer's microtask runs before the browser acts on it), in
+  // the document and in every shadow root.
+  const SPECULATION = 'script[type="speculationrules" i], link[rel~="prerender" i], link[rel~="prefetch" i]';
+  const Observer = MutationObserver, observe = MutationObserver.prototype.observe;
+  const removeNode = Element.prototype.remove, itemOf = NodeList.prototype.item;
+  const lengthOf = Object.getOwnPropertyDescriptor(NodeList.prototype, 'length').get;
+  const findIn = {document: Document.prototype.querySelectorAll, fragment: DocumentFragment.prototype.querySelectorAll};
+  const sweep = (root, find) => {
+    try {
+      const found = call(find, root, SPECULATION);
+      const count = call(lengthOf, found);
+      for (let index = 0; index < count; index += 1) call(removeNode, call(itemOf, found, index));
+    } catch (error) { /* gone */ }
+  };
+  const watch = (root, find) => {
+    try {
+      call(observe, new Observer(() => sweep(root, find)), root, {childList: true, subtree: true, attributes: true, characterData: true});
+      sweep(root, find);
+    } catch (error) { /* not observable */ }
+  };
+  watch(document, findIn.document);
+  try {
+    const attach = Element.prototype.attachShadow;
+    fix(Element.prototype, 'attachShadow', function attachShadow(init) {
+      const root = apply(attach, this, arguments);
+      watch(root, findIn.fragment);
+      return root;
+    });
+  } catch (error) { /* no shadow roots */ }
 })();"""
-# Every mode: a WebSocket is a channel no route sees, and a route's own refusal leaves the page a socket that looks open
-# and swallows what is sent (Playwright opens a socket nobody connects), so a form sent over one would look sent. In
-# every frame, before the page's scripts run, the page's WebSocket fails as a blocked connection does: it is CLOSED,
-# send() throws, and error then close (1006) follow on a later task. Each attempt is reported to the route (a request
-# to REFUSED_SOCKET_HOST, which it refuses). Workers, which no init script reaches and whose own sockets no route sees,
-# are removed (as Apply for me's NO_SIDE_CHANNELS removes them), except in a CAPTCHA's own frames, where its
+# Finish in browser and a rehearsal, whose promise is that nothing leaves before the student's press (or ever): a
+# WebSocket is a channel no route sees, and a route's own refusal leaves the page a socket that looks open and swallows
+# what is sent (Playwright opens a socket nobody connects). In every frame, before the page's scripts run, the page's
+# WebSocket fails as a blocked connection does: it is CLOSED, send() throws, and error then close (1006) follow on a
+# later task. Each attempt is reported on the console with this submitter's own token (``_on_console``), which the
+# page's content security policy cannot block. Workers, which no init script reaches and whose own sockets no route
+# sees, are removed (as Apply for me's NO_SIDE_CHANNELS removes them), except in a CAPTCHA's own frames, where its
 # challenge may compute. ``route_web_socket`` stays as the backstop for a realm this misses (FormSubmitter._start).
+# The app's own send leaves sockets and workers as they are.
 SOCKET_GUARD = r"""(() => {
-  const define = Object.defineProperty, nativeFetch = window.fetch;
+  const define = Object.defineProperty, log = console.debug.bind(console);
   const captchaFrame = /(^|\.)(google\.com|recaptcha\.net|gstatic\.com|hcaptcha\.com|challenges\.cloudflare\.com)$/.test(location.hostname);
   const report = (url) => {
-    try { nativeFetch.call(window, "https://__HOST__/?u=" + encodeURIComponent(String(url)).slice(0, 300), {method: "POST", body: "x"}).catch(() => {}); }
-    catch (error) { /* nothing to report through */ }
+    try { log("__TOKEN__ " + String(url).slice(0, 300)); } catch (error) { /* nothing to report through */ }
   };
   class WebSocket extends EventTarget {
     constructor(url, protocols) {
@@ -1174,7 +1218,7 @@ SOCKET_GUARD = r"""(() => {
       try { define(window, name, {value: undefined, configurable: false, writable: false}); } catch (error) { /* kept */ }
     }
   }
-})();""".replace("__HOST__", REFUSED_SOCKET_HOST)
+})();"""
 # Finish in browser, in the form's frame: outline the boxes the app left for the student.
 OUTLINE_SCRIPT = r"""
 (left) => {
@@ -1222,7 +1266,8 @@ PRESS_LISTENER = r"""(() => {
   const holdsMessage = (node) => Boolean(node && node.querySelector("textarea"));
   const submits = (el) => (el.matches("button") && (el.getAttribute("type") || "").toLowerCase() === "submit") || el.matches("input[type=submit], input[type=image]");
   // A <form> the browser's own check will stop (a required box empty) fires no submit: pressing its submit button sends nothing.
-  const stopped = (el) => submits(el) && el.form && !el.form.noValidate && !el.formNoValidate && el.form.matches(":invalid");
+  const stopped = (el) => el.form && (el.type === "submit" || el.matches("input[type=image]")) && !el.form.noValidate && !el.formNoValidate
+    && el.form.matches(":invalid");
   const sendControl = (el) => el.matches("[data-pipeline-submit]") || (submits(el) && !widget(el) && holdsMessage(el.form));
   window.addEventListener("click", (event) => {
     if (!event.isTrusted) return;
@@ -1331,11 +1376,10 @@ class FormSubmitter:
         self._sites: set[str] = set()
         # Finish in browser, after the student's press: told of each request that may carry the form as it is let go.
         self._left_sink: Callable[[Any], bool] | None = None
-        # WebSockets the backstop handler met (never connected; closed from the main greenlet, never in the handler),
-        # and whether one was tried after the app's own press, which then cannot be taken as sent from the page's words.
+        # WebSockets the backstop handler met (never connected; closed from the main greenlet, never in the handler), and
+        # the token SOCKET_GUARD reports a refused one with on the console.
         self._sockets: list[Any] = []
-        self._pressing = False
-        self._socket_after_press = False
+        self._report_token = f"pipeline-socket-{uuid4().hex}"
         # What only the student's form would carry (``_needles``), and the window, for the gate; and what the gate held back
         # (method and host), which the window's note and the history name, so a form that will not send explains itself.
         self._needles: list[str] = []
@@ -1357,30 +1401,42 @@ class FormSubmitter:
         from playwright.sync_api import sync_playwright
 
         self._playwright = sync_playwright().start()
-        self._browser = self._playwright.chromium.launch(headless=not self.headed, args=self._launch_args)
+        # Finish in browser and a rehearsal promise that nothing leaves before the student's press (or at all): every
+        # channel a route never sees is closed for them. The app's own send keeps the page as it is.
+        guarded = bool(self.person_wait or self.rehearse)
+        self._browser = self._playwright.chromium.launch(
+            headless=not self.headed, args=[*self._launch_args, *([GUARD_SWITCH] if guarded else [])])
         self._context = self._browser.new_context(service_workers="block", accept_downloads=False)
         self._context.route("**/*", self._route)
-        self._context.add_init_script(SOCKET_GUARD)
-        # The backstop, for a realm SOCKET_GUARD misses: a socket a route never sees is never connected to its server (as
-        # Apply for me's _refuse_socket), noted, and closed from the main greenlet (``_close_sockets``); closing it inside
-        # this handler would deadlock the sync API.
-        if hasattr(self._context, "route_web_socket"):
-            self._context.route_web_socket("**/*", self._met_socket)
-        if self.person_wait or self.rehearse:
+        if guarded:
+            self._context.add_init_script(SOCKET_GUARD.replace("__TOKEN__", self._report_token))
             self._context.add_init_script(CLOSE_GUARD)
+            self._context.on("console", self._on_console)
+            # The backstop, for a realm SOCKET_GUARD misses: a socket a route never sees is never connected to its server
+            # (as Apply for me's _refuse_socket), noted, and closed from the main greenlet (``_close_sockets``); closing
+            # it inside this handler would deadlock the sync API.
+            if hasattr(self._context, "route_web_socket"):
+                self._context.route_web_socket("**/*", self._met_socket)
 
     def _met_socket(self, socket: Any) -> None:
         """The backstop's handler: note the socket and leave it unconnected. No Playwright call here (it would deadlock)."""
         self._sockets.append(socket)
         self._note_socket(getattr(socket, "url", "") or "")
 
+    def _on_console(self, message: Any) -> None:
+        """SOCKET_GUARD's report of a refused WebSocket, told apart from the page's own messages by this submitter's token."""
+        try:
+            text = str(message.text or "")
+        except Exception:  # noqa: BLE001
+            return
+        if text.startswith(self._report_token + " "):
+            self._note_socket(text[len(self._report_token) + 1:])
+
     def _note_socket(self, url: str) -> None:
         # Named only when it could be the form's: on the form's site, or opened once the app began filling it. A chat
         # widget's socket at page load is no reason the form will not send.
         if self._gate != "load" or any(same_site(url, site) for site in self._sites):
             self.held_back.append(f"WEBSOCKET {urlsplit(url).hostname or ''}")
-        if self._pressing:
-            self._socket_after_press = True
 
     def _close_sockets(self) -> None:
         """Close what the backstop met, from the main greenlet, so the page's socket does not stay open going nowhere."""
@@ -1393,11 +1449,6 @@ class FormSubmitter:
 
     def _route(self, route: Any) -> None:
         request = route.request
-        if (urlsplit(request.url).hostname or "") == REFUSED_SOCKET_HOST:
-            # A page's WebSocket, refused by SOCKET_GUARD: noted, and nothing goes.
-            self._note_socket(unquote_plus(request.url.split("?u=", 1)[-1]))
-            route.abort("blockedbyclient")
-            return
         if self.rehearse and request.method != "GET" and not CAPTCHA_ENDPOINTS.search(request.url):
             self.refused.append(f"{request.method} {request.url}")
             route.abort("blockedbyclient")
@@ -1483,7 +1534,6 @@ class FormSubmitter:
             self._sites = {website_domain(page_url)} - {""}
             self._needles = _needles(identity, subject, body)
             self.held_back = []
-            self._pressing = self._socket_after_press = False
             page = self._context.new_page()
             self._window = page
             # Before the page loads, so the press listener is in place ahead of every script of the page.
@@ -1601,23 +1651,10 @@ class FormSubmitter:
             sent: list[Any] = []
             page.on("request", lambda request: sent.append(request) if (
                 request.method != "GET" or request.resource_type == "document"
-            ) and request.resource_type not in {"image", "stylesheet", "font", "media"}
-                and (urlsplit(request.url).hostname or "") != REFUSED_SOCKET_HOST else None)
-            clicked = self._pressing = True
+            ) and request.resource_type not in {"image", "stylesheet", "font", "media"} else None)
+            clicked = True
             frame.locator("[data-pipeline-submit]").first.click(timeout=10_000)
             outcome = self._await_outcome(page, frame, before, sent)
-            self._close_sockets()
-            if outcome["outcome"] == "submitted" and self._socket_after_press:
-                # The page tried a WebSocket after the press, which the app does not allow: its thank-you cannot be
-                # taken as the form having arrived.
-                outcome = {"outcome": "unconfirmed", "confirmation": "", "note": (
-                    "After the app pressed send, the page tried a connection the app does not allow (a WebSocket), so the app "
-                    "cannot tell whether the form arrived. Look for a confirmation email from them")}
-            elif outcome["outcome"] in {"failed", "needs_you"} and self._socket_after_press:
-                # Say why, so the student is not left with a form that silently will not go.
-                outcome = {**outcome, "outcome": "needs_you", "note": (
-                    "The page tried to send it over a connection the app does not allow (a WebSocket), so nothing was sent. "
-                    "Send it from their page in your own browser")}
             result.update(outcome)
             return result
         except Exception as exc:  # noqa: BLE001 - the outcome must still be recorded
@@ -1787,6 +1824,7 @@ class FormSubmitter:
                 self._gate = "open"  # the student pressed send: what the form sends may leave
 
         unrecorded: list[str] = []  # requests held back because the press they followed could not be recorded
+        carried: list[str] = []  # of what left after the press, what carried the student's details
 
         def gone(request: Any) -> bool:
             """Whether this request, which may carry the form, may go: only once the press is recorded."""
@@ -1799,6 +1837,8 @@ class FormSubmitter:
                         return False
                 result["pressed_at"] = utc_now()
             left.append(f"{request.method} {urlsplit(request.url).hostname or ''}")
+            if _carries(request, self._needles):
+                carried.append(left[-1])
             return True
 
         def held_line() -> list[str]:
@@ -1869,7 +1909,14 @@ class FormSubmitter:
             closed = True
         self._gate = "closed"
         self._left_sink = None
-        if left or vanished:
+        refused_socket = any(entry.startswith("WEBSOCKET ") for entry in self.held_back)
+        if (left or vanished) and refused_socket and not carried:
+            # The page's way of sending was a WebSocket the app refused, and nothing carrying the student's message left:
+            # whatever the page then said, nothing was sent.
+            result.update(outcome="needs_you", confirmation="", note=(
+                "The page tried to send it over a connection the app does not allow (a WebSocket), and nothing carrying your "
+                "message left the page, so nothing was sent. Send it from their page in your own browser"))
+        elif left or vanished:
             # The app does not judge what the page said: the student does, on the card.
             result.update(outcome="unconfirmed", confirmation="", note=FORM_PRESSED_NOTE)
             self._note_students_part(result, plan, held, presses[-1] if presses else {})
@@ -2258,7 +2305,7 @@ def submit_contact_form(
         tried_before = existing["state"] in {"unconfirmed", automation.FORM_HANDED_OVER}
         stale_token = existing["token"]
     # ... or did so before, and that window closed with nothing pressed (its claim is gone, the history is not).
-    tried_before = tried_before or in_browser and conn.execute(
+    tried_before = tried_before or in_browser and bool(target["contact_form"]["asks"]) or in_browser and conn.execute(
         "SELECT 1 FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=? LIMIT 1", (target_id, user_id, SAID_NOT_SENT_EVENT),
     ).fetchone() is not None
     path = attachment_path()
@@ -2310,7 +2357,7 @@ def submit_contact_form(
         submit_options: dict[str, Any] = (
             {"should_continue": hand_over} if automatic else {"on_press": student_pressed, "tried_before": tried_before} if in_browser else {}
         )
-        if retry_unconfirmed and existing is not None and existing["state"] in {"unconfirmed", automation.FORM_HANDED_OVER}:
+        if retry_unconfirmed and (bool(target["contact_form"]["asks"]) or existing is not None and existing["state"] in {"unconfirmed", automation.FORM_HANDED_OVER}):
             with conn:
                 log_event(conn, target_id, user_id, SAID_NOT_SENT_EVENT, detail=json.dumps({"in_browser": in_browser}))
         page_url = fresh["contact_form"]["page_url"]
@@ -2328,8 +2375,7 @@ def submit_contact_form(
         held = bool(result.get("paused")) and outcome not in {"submitted", "unconfirmed"}
         # After the student answered No, a window that sent nothing does not erase what their first press may have sent:
         # the form keeps asking, and its claim stays possibly sent.
-        asked_again = (in_browser and retry_unconfirmed and existing is not None
-                       and existing["state"] in {"unconfirmed", automation.FORM_HANDED_OVER} and outcome not in {"submitted", "unconfirmed"})
+        asked_again = in_browser and bool(target["contact_form"]["asks"]) and outcome not in {"submitted", "unconfirmed"}
         if asked_again:
             outcome = "unconfirmed"
             result = {**result, "outcome": outcome, "note": f"{FORM_PRESSED_NOTE} {ASKED_AGAIN}"}

@@ -20,13 +20,13 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Browser extension | 0 | 1 | 0 | 1 |
 | Apply for me | 0 | 4 | 11 | 15 |
 | Mail, Gmail and inboxes | 0 | 4 | 8 | 12 |
-| Outreach drafting, research, forms and CLI | 0 | 7 | 4 | 11 |
+| Outreach drafting, research, forms and CLI | 0 | 8 | 4 | 12 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
 | Web API, auth and storage | 0 | 4 | 1 | 5 |
 | Scoring, scheduling and configuration | 1 | 2 | 8 | 11 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **30** | **39** | **70** |
+| **Total** | **1** | **31** | **39** | **71** |
 
 ## Start here: the high-severity entries
 
@@ -315,6 +315,13 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **Suggested fix:** Give the `company` role only to a label that asks for the name ("Company", "Company name", "Organization", "School"). A label that also says address, website, phone, email, size or industry is unanswerable, so the form waits for the student.
 - **Regression suite:** tests/ unittest (`test_outreach_forms`: required "Company website", "Company address" and "Company size" text boxes are named as unanswerable and nothing is typed in them)
 
+### The app's own contact-form send does not block WebSockets or workers, so page scripts get past the request guard
+- **Severity:** medium, privacy (notes 15, 97; narrowed 2026-10-09 by PR #97)
+- **Where:** `opportunity_app/outreach/forms.py` `FormSubmitter._start()` (compare `opportunity_app/outreach/render.py`)
+- **What happens:** `context.route()` does not intercept WebSockets, and no route sees a worker's requests. When the app itself sends a form ("Send through contact form", and the automatic path), a contact page can open ws:// connections, from the page or a worker, to loopback or private hosts such as the local app, and stream what was filled out. Finish in browser and a rehearsal refuse them (`SOCKET_GUARD`); the app's own send was left as it was, since refusing them there turned a page whose form sends over a socket from sent into a false "submitted" or a silent failure.
+- **Suggested fix:** in the app's own send, refuse a WebSocket only to a loopback or private address (a `route_web_socket` handler that connects to the server otherwise), and say so in the outcome when the form needed one.
+- **Regression suite:** tests/ unittest under Chromium (`test_outreach_forms`: a contact page in the app's own send opens a WebSocket to a loopback listener, which hears nothing)
+
 ### The app's own contact-form send records a thank-you that comes with nothing sent as submitted
 - **Severity:** medium, wrong visible state (named in review of PR #97, 2026-10-09; the behaviour predates it)
 - **Where:** `opportunity_app/outreach/forms.py` `FormSubmitter._await_outcome` (the "Send through contact form" and automatic paths, not Finish in browser)
@@ -332,14 +339,14 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 ### Finish in browser for contact forms: sends it holds back, and what its gate cannot see
 - **Severity:** low (found while making the window the student's to finish, and in five reviews of it, 2026-10-08/09). Gaps (1), (2), (4) and (5) hold the form back, so nothing is sent and the record says so; (3) concerns what a page could send that is not the form; (6) could record a send as unsent, but needs a form sent only as an encoded image address, which no site the app has met does.
 - **Where:** `opportunity_app/outreach/forms.py`: `FormSubmitter._route`, `_could_carry` and `_needles` (the gate), `PRESS_LISTENER`, `CLOSE_GUARD`, `FormSubmitter._hand_to_student`
-- **What happens:** Finish in browser fails closed. From page load, nothing carrying the student's details leaves the window: their email, name, phone (as typed or as digits), school, link, street address, the subject, and the message's opening words, found as typed or once form-decoded, whatever the request and wherever it goes. From the app's first fill, nothing but reads leaves either (CAPTCHA calls aside), nor a script's read of the form's own site. What a closing page would send is kept from it (`CLOSE_GUARD`). A page's WebSocket fails as a blocked connection does, and workers are removed outside a CAPTCHA's own frames (`SOCKET_GUARD`, in every mode). So with no press seen, "Nothing was sent" is true, and after the press the card asks the student. Five gaps remain:
+- **What happens:** Finish in browser fails closed. From page load, nothing carrying the student's details leaves the window: their email, name, phone (as typed or as digits), school, link, street address, the subject, and the message's opening words, found as typed or once form-decoded, whatever the request and wherever it goes. From the app's first fill, nothing but reads leaves either (CAPTCHA calls aside), nor a script's read of the form's own site. What a closing page would send is kept from it, and speculation rules, prerender and prefetch links, browser sign-in (FedCM) and worklet modules are refused (`CLOSE_GUARD`). A page's WebSocket fails as a blocked connection does, and workers are removed outside a CAPTCHA's own frames (`SOCKET_GUARD`). Both apply to Finish in browser and a rehearsal; the app's own send leaves the page as it is (the WebSocket entry above). So with no press seen, "Nothing was sent" is true, and after the press the card asks the student. Five gaps remain:
   (1) A send control the listener does not recognise (a link, a plain `<div>` with a click handler, a button outside the form) is no press. Neither is a press that another site's frame stops with a listener it registered before the app's, since that frame is watched only from when it is found. Either way the form is held back: nothing is sent, the record says so, and the window's note names what was held back. The student then has to send it from the page outside the app.
   (2) A form whose own checks run before the press (an email lookup, a field check) has them held back, and may then never let the student send. The note and the result name the host.
   (3) A read (GET) to another site carrying only what the student typed into a box the app left for them, or carrying a detail in an encoding the app does not check (base64, double encoding), passes the gate before the press. It cannot be the form's own send without the app's details too, but it can carry an answer of theirs off the page unrecorded.
   (4) Under one process per site (as the headed window runs), the app's own tick of a box in another site's frame sometimes does not take. The note names it and the student ticks it.
   (5) A frame that shares the page's process is handed over on the page's own "ready", not its own, so a frame a script wrote into the page (about:blank) may lack the listener. Its form then cannot be sent.
   (6) After the press, anything but a read of an image, style, font or media file counts as the form leaving (and the card asks), and so does the form going from the page. A form sent as an image's address carrying the student's values in an encoding the app does not read, on a page that then stays as it was, would end as "Nothing was sent".
-  (7) A CAPTCHA that computes in the page's own workers rather than in its own frame (Friendly Captcha, for one) cannot finish, since workers are removed outside a CAPTCHA's frames: the form cannot be sent, by the app or in the window.
+  (7) A CAPTCHA that computes in the page's own workers rather than in its own frame (Friendly Captcha, for one) cannot finish in the window, since workers are removed there outside a CAPTCHA's frames: the form cannot be sent from Finish in browser.
 - **Suggested fix:** (7) Allow workers whose script comes from a known CAPTCHA host, with the WebSocket replacement put at the start of their script. (1) Recognise send links and click handlers in the listener from what EXTRACT_SCRIPT reads, and attach to another site's frame before its scripts run (auto-attach with the frame paused). (2) Allow a check that carries only the email to the form's own site, once there is evidence it is needed. (3) Hold every read to another site that a script makes after the first fill, once it is clear what that breaks. (4) Find why the tick fails in an out-of-process frame. (5) Require each frame's own "ready".
 - **Regression suite:** tests/ unittest under Chromium (`test_outreach_forms.FinishInBrowserTests`, `FinishInBrowserGateTests`)
 
