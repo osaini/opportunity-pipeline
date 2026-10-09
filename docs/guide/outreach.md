@@ -75,7 +75,11 @@ bounce resend check first.
    follow-up is listed under Follow-ups due, not Drafts to review. With Gmail
    connected, **Approve and send** approves the follow-up and sends it from your
    Gmail in one step; like **Send**, the first click asks you to confirm the
-   recipient and the second sends. Paste a reply into **Log a reply** to get a suggested status
+   recipient and the second sends. With Send on their weekday morning on, the
+   button is **Approve and schedule for their morning** instead, which queues
+   the follow-up for the recipient's next weekday morning (cancellable until it
+   goes, and read by the follow-up reviewer first when that is on), with
+   **Approve and send now** beside it. Paste a reply into **Log a reply** to get a suggested status
    (call, declined, come back later); nothing changes until you click it. After
    a follow-up goes unanswered for 14 days, the card suggests No response.
 

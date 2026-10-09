@@ -52,9 +52,9 @@ def answer_schedule(owner_page, live_server, requests):
         with db(live_server) as conn, conn:
             conn.execute(
                 "INSERT INTO outreach_scheduled_sends(target_id, user_id, kind, fingerprint, send_at, timezone, label, state, created_at, updated_at) "
-                "VALUES(?, ?, 'initial', ?, ?, 'America/Chicago', ?, 'scheduled', ?, ?)",
-                (target_id, USER, body["fingerprint"], now, LABEL, now, now))
-        route.fulfill(json={"kind": "initial", "send_at": now, "label": LABEL, "state": "scheduled"})
+                "VALUES(?, ?, ?, ?, ?, 'America/Chicago', ?, 'scheduled', ?, ?)",
+                (target_id, USER, body["kind"], body["fingerprint"], now, LABEL, now, now))
+        route.fulfill(json={"kind": body["kind"], "send_at": now, "label": LABEL, "state": "scheduled"})
 
     owner_page.route("**/api/v1/outreach/*/schedule", schedule)
 
@@ -110,4 +110,81 @@ def test_a_refused_schedule_says_what_was_done_and_leaves_the_schedule_button(ow
         "Confirmed the research and approved the draft for Bovi, but it is not scheduled: Reconnect Gmail once before scheduling")
     assert stored(live_server, target["id"]) == ("confirmed", "approved")
     expect(card.get_by_role("button", name="Schedule for their morning")).to_be_visible()
+    owner_page.unroute_all(behavior="ignoreErrors")
+
+
+def turn_on_scheduling(live_server):
+    with db(live_server) as conn, conn:
+        conn.execute(
+            "INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, 'scheduled_sending', 'on', ?) "
+            "ON CONFLICT(user_id, key) DO UPDATE SET value='on'", (USER, utc_now()))
+
+
+DUE_FOLLOW_UP = {
+    "contact_email": "jane@bovi.example", "contact_name": "Jane Doe", "status": "sent", "follow_up_at": "2026-01-05",
+    "email_subject": "Internship question", "email_body": "Hi Jane,\n\nWould you be open to a call?\n\nTest Student",
+    "follow_up_subject": "Re: Internship question", "follow_up_body": "Hi Jane,\n\nJust following up on my note.\n\nTest Student",
+}
+
+
+def follow_up_status(live_server, target_id):
+    with db(live_server) as conn:
+        return conn.execute("SELECT follow_up_status FROM outreach_targets WHERE id=?", (target_id,)).fetchone()[0]
+
+
+def test_a_due_follow_up_is_approved_and_scheduled_for_their_morning_in_one_press(owner_page, live_server, base_url):
+    target = seed_target(owner_page, base_url, **DUE_FOLLOW_UP)
+    turn_on_scheduling(live_server)
+    gmail_listing(owner_page, bounce_check=True)
+    requests = []
+    answer_schedule(owner_page, live_server, requests)
+    open_outreach(owner_page, "follow-ups-due")
+    card = card_for(owner_page, "Bovi")
+    button = card.locator("[data-follow-up-approve-schedule]")
+    expect(button).to_have_text("Approve and schedule for their morning")
+    # Sending at once stays beside it, as Send now does beside Schedule.
+    expect(card.locator("[data-follow-up-approve-send]")).to_have_text("Approve and send now")
+
+    button.click()
+    expect(button).to_have_text("Schedule to jane@bovi.example?")
+    assert follow_up_status(live_server, target["id"]) == "generated", "the first press only arms it"
+    button.click()
+
+    next_step = card.locator(".outreach-next")
+    expect(next_step.locator(".outreach-next-text strong")).to_have_text("Next: Follow-up scheduled")
+    expect(next_step.locator(".chip", has_text="Goes out")).to_have_text(f"Goes out {LABEL}")
+    expect(next_step.get_by_role("button", name="Cancel")).to_be_visible()
+    assert follow_up_status(live_server, target["id"]) == "approved"
+    assert requests == [{"kind": "follow_up", "fingerprint": target["follow_up_fingerprint"]}]
+    expect(card.locator("[data-follow-up-approve-schedule]")).to_have_count(0)
+    owner_page.unroute_all(behavior="ignoreErrors")
+
+
+def test_without_scheduled_sending_a_follow_up_offers_only_approve_and_send(owner_page, live_server, base_url):
+    seed_target(owner_page, base_url, **DUE_FOLLOW_UP)
+    gmail_listing(owner_page, bounce_check=True)
+    open_outreach(owner_page, "follow-ups-due")
+    card = card_for(owner_page, "Bovi")
+    expect(card.locator("[data-follow-up-approve-send]")).to_have_text("Approve and send")
+    expect(card.locator("[data-follow-up-approve-schedule]")).to_have_count(0)
+    owner_page.unroute_all(behavior="ignoreErrors")
+
+
+@pytest.mark.allow_page_errors  # the refused schedule is a 422 by design
+def test_a_follow_up_schedule_that_is_refused_after_approving_says_so(owner_page, live_server, base_url):
+    target = seed_target(owner_page, base_url, **DUE_FOLLOW_UP)
+    turn_on_scheduling(live_server)
+    gmail_listing(owner_page, bounce_check=True)
+    owner_page.route("**/api/v1/outreach/*/schedule", lambda route: route.fulfill(
+        status=422, content_type="application/json", body='{"detail": "Reconnect Gmail once before scheduling"}'))
+    open_outreach(owner_page, "follow-ups-due")
+    card = card_for(owner_page, "Bovi")
+    button = card.locator("[data-follow-up-approve-schedule]")
+    button.click()
+    button.click()
+    expect(owner_page.locator("#error-banner")).to_have_text(
+        "Approved the Bovi follow-up, but it is not scheduled: Reconnect Gmail once before scheduling")
+    assert follow_up_status(live_server, target["id"]) == "approved"
+    # The bar's own schedule button can try again.
+    expect(card.get_by_role("button", name="Schedule follow-up for their morning")).to_be_visible()
     owner_page.unroute_all(behavior="ignoreErrors")
