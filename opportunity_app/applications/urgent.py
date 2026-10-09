@@ -459,6 +459,15 @@ def _outreach_rows(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any
             others = []
         for owner in [str(message["target_id"]), *others]:
             waiting.setdefault(owner, str(message["received_at"] or ""))
+    # A follow-up the student queued, or one going out now, is handled: Outreach lists it under Scheduled. One whose
+    # scheduled send stopped needs them again, so it is due.
+    queued = {
+        str(row[0]) for row in conn.execute(
+            "SELECT target_id FROM outreach_scheduled_sends WHERE user_id=? AND kind='follow_up' "
+            "AND state IN ('scheduled', 'sending', 'transmitting')",
+            (user_id,),
+        ).fetchall()
+    }
     for row in targets:
         base = {
             "record_id": str(row["id"]),
@@ -474,9 +483,9 @@ def _outreach_rows(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any
             continue
         if row["deadline_date"]:
             rows.append({**base, "kind": "outreach_deadline", "raw_date": row["deadline_date"]})
-        # Same rule as Outreach's own "follow-up due": only while awaiting a first reply, and not while
-        # an email from them may be one.
-        if row["follow_up_at"] and row["status"] == "sent" and str(row["id"]) not in waiting:
+        # Same rule as Outreach's own "Follow-ups due": only while awaiting a first reply, not while an email from
+        # them may be one, and not once it is queued.
+        if row["follow_up_at"] and row["status"] == "sent" and str(row["id"]) not in waiting and str(row["id"]) not in queued:
             rows.append({**base, "kind": "outreach_follow_up", "raw_date": row["follow_up_at"]})
     # Whatever the company's status: a reply may change it.
     # The targets loaded above are the same rows (user's own, not set aside); only a closed one the first query

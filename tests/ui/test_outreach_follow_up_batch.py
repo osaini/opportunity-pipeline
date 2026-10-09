@@ -160,9 +160,12 @@ def test_queue_approves_and_schedules_each_ticked_follow_up_and_names_any_left_o
         (alpha["id"], {"kind": "follow_up", "fingerprint": alpha["follow_up_fingerprint"]}),
         (bravo["id"], {"kind": "follow_up", "fingerprint": bravo["follow_up_fingerprint"]}),
     ])
-    # What went is unticked; what was left out stays ticked for another go.
-    expect(owner_page.locator(".outreach-pick:checked")).to_have_count(1)
+    # A queued follow-up is handled, so it leaves Follow-ups due for Scheduled; what was left out stays, still ticked.
+    expect(owner_page.locator(".outreach-row-company")).to_have_text(["Charlie Co"])
     expect(pick(owner_page, "Charlie Co")).to_be_checked()
+    expect(owner_page.locator('#subnav [data-subtab="follow-ups-due"] .subnav-count')).to_have_text("1")
+    open_tab(owner_page, "scheduled")
+    expect(owner_page.locator(".outreach-row-company")).to_have_text(["Alpha Co", "Bravo Co"])
     expect(card_for(owner_page, "Alpha Co").locator(".outreach-next-text strong")).to_have_text("Next: Follow-up scheduled")
     owner_page.unroute_all(behavior="ignoreErrors")
 
