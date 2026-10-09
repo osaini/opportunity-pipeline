@@ -356,7 +356,7 @@
       idleLabel: () => label,
       armedLabel: () => inBrowser ? `Open ${formHost(item)}'s form?` : `Send through ${formHost(item)}'s form?`,
       prompt: () => inBrowser
-        ? `Press again to open ${item.company}'s contact form from ${item.contact_form.page_url} in a browser window, filled in with the approved email. You press its send button there.`
+        ? `Press again to open ${item.company}'s contact form from ${item.contact_form.page_url} in a browser window, filled in as far as the app can (nothing, on a sales form). You press its send button there.`
         : `Press again to send the approved email through ${item.company}'s contact form as you, from ${item.contact_form.page_url}.`,
       beforeClick: () => refuseUnsavedHandOff(button, "initial"),
       onConfirm: async () => {
@@ -947,7 +947,7 @@
     const email = gmail?.connected
       ? "approved emails send from your Gmail only when you press Send and confirm the recipient"
       : "approved emails open in your own email, where you press Send";
-    const byClick = "only when you press Send through contact form and confirm";
+    const byClick = "only when you press Send through contact form and confirm, or press the form's own send button under Finish in browser";
     const form = automation?.form_submission ? "" : gmail?.connected ? `, and a contact form ${byClick}` : `; a contact form goes out ${byClick}`;
     if (!automatic) return `Nothing sends on its own. ${email.charAt(0).toUpperCase()}${email.slice(1)}${form}.`;
     return `${automatic.running.replace(/\.$/, "")}, while automation is running. Anything else goes out only by your own click: ${email}${form}.`;

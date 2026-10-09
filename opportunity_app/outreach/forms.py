@@ -1078,6 +1078,39 @@ CAPTCHA_WIDGETS = (
     ("turnstile", "iframe[src*='challenges.cloudflare.com']", "input[type='checkbox']", "input[name='cf-turnstile-response']"),
 )
 
+# Finish in browser and a rehearsal: what a page sends as it closes is sent after the route handler is no longer asked
+# (Playwright stalls a closing page's requests, and Chromium lets them go when the page's session ends), so the gate
+# would be bypassed on every close: the student's, and the app's after the outcome or the time running out. The events
+# that announce a close never reach the page's scripts (this listener is registered first, on the window, in the capture
+# phase), a beacon is refused as the browser does when it cannot queue one, and a fetch is never kept alive past the
+# page. The channels a route never sees at all (a peer connection, WebTransport, a WebSocket stream, fetchLater) are
+# removed; WebSockets are closed at the context (FormSubmitter._start). A subset of Apply for me's NO_SIDE_CHANNELS
+# (apply/agent.py), without the parts a contact form's CAPTCHA may need (its workers).
+CLOSE_GUARD = r"""(() => {
+  const call = Function.prototype.call.bind(Function.prototype.call);
+  const apply = Reflect.apply, construct = Reflect.construct, reflectGet = Reflect.get, define = Object.defineProperty;
+  for (const name of ['RTCPeerConnection', 'webkitRTCPeerConnection', 'RTCDataChannel', 'fetchLater', 'FetchLaterResult',
+                      'WebTransport', 'WebSocketStream']) {
+    try { delete window[name]; } catch (error) { /* already gone */ }
+    try { define(window, name, {value: undefined, configurable: false, writable: false}); } catch (error) { /* kept as it is */ }
+  }
+  const fix = (target, name, value) => { try { define(target, name, {value, configurable: false, writable: false, enumerable: false}); } catch (error) { /* kept */ } };
+  try { fix(Navigator.prototype, 'sendBeacon', function () { return false; }); } catch (error) { /* no beacons */ }
+  try {
+    const plain = (init) => (init !== null && typeof init === 'object')
+      ? new Proxy(init, {get: (target, key) => (key === 'keepalive' ? false : reflectGet(target, key, target))}) : init;
+    const nativeFetch = window.fetch, NativeRequest = window.Request;
+    fix(window, 'fetch', function (input, init) { return apply(nativeFetch, this, [input, plain(init)]); });
+    const WrappedRequest = new Proxy(NativeRequest, {construct: (target, args, newTarget) => construct(target, [args[0], plain(args[1])], newTarget)});
+    fix(NativeRequest.prototype, 'constructor', WrappedRequest);
+    fix(window, 'Request', WrappedRequest);
+  } catch (error) { /* no fetch */ }
+  try {
+    const addListener = EventTarget.prototype.addEventListener, stopNow = Event.prototype.stopImmediatePropagation;
+    const swallow = (event) => { call(stopNow, event); };
+    for (const type of ['pagehide', 'unload', 'beforeunload', 'visibilitychange', 'freeze', 'pageswap']) call(addListener, window, type, swallow, true);
+  } catch (error) { /* no events */ }
+})();"""
 # Finish in browser, in the form's frame: outline the boxes the app left for the student.
 OUTLINE_SCRIPT = r"""
 (left) => {
@@ -1099,11 +1132,14 @@ OUTLINE_SCRIPT = r"""
 # says "ready" once in each document, which the app waits for before handing the form over.
 #
 # A press is a trusted click whose path (``composedPath``, so a send button drawn inside a custom element counts)
-# holds a send control, judged from the live page rather than only the app's marks, which a redraw or a reload
-# drops: the send button the app found (data-pipeline-submit); a control that submits a <form> holding a message
-# box; or a button, in a <form> or the nearest container holding a message box, that says it sends ("Send",
-# "Submit", "Contact us", as EXTRACT_SCRIPT picks one). A press is also a trusted Enter in a one-line box of such a
-# <form>, which submits it. A click a script makes has ``isTrusted`` false, and nothing else (a help toggle, "Next",
+# holds a send control of the contact form, judged from the live page rather than only the app's marks, which a
+# redraw or a reload drops: the send button the app found (data-pipeline-submit); a control that submits a <form>
+# holding a message box; a button that says it sends ("Send", "Submit", as EXTRACT_SCRIPT picks one) in such a <form>
+# with no submit control of its own; or, with no <form>, one in the container the app marked, or else in the nearest
+# container holding the message box that is not a page section (no header, nav, footer or form in it, one message
+# box, never the body). A newsletter's "Submit" or a header's "Contact us" is no press. A press is also a trusted
+# Enter in a one-line box of such a <form>, which submits it. A click a script makes has ``isTrusted`` false, and
+# nothing else (a help toggle, "Next",
 # "Add a file") is a press, and neither is a press of a <form> the browser's own check stops (a required box empty),
 # which sends nothing. It carries what each marked box holds then.
 PRESS_WORLD = "outreach-student-press"
@@ -1123,9 +1159,15 @@ PRESS_LISTENER = r"""(() => {
   const widget = (b) => b.hasAttribute("aria-haspopup") || b.hasAttribute("aria-expanded") || Boolean(b.closest("[role=listbox], [role=combobox], select"));
   const holdsMessage = (node) => Boolean(node && node.querySelector("textarea"));
   const submits = (el) => (el.matches("button") && el.type === "submit") || el.matches("input[type=submit], input[type=image]");
-  const nearContainer = (el) => {
-    for (let node = el.parentElement, depth = 0; node && depth < 8; node = node.parentElement, depth += 1) {
-      if (holdsMessage(node)) return node;
+  const words = (el) => `${el.innerText || ""} ${el.value || ""} ${el.getAttribute("aria-label") || ""}`;
+  const ownContainer = (el) => {
+    const marked = el.closest("[data-pipeline-form]");
+    if (marked) return marked;
+    for (let node = el.parentElement, depth = 0; node && depth < 6; node = node.parentElement, depth += 1) {
+      if (node.matches("body, html, form")) return null;
+      if (holdsMessage(node)) {
+        return node.querySelectorAll("textarea").length === 1 && !node.querySelector("header, nav, footer, form") ? node : null;
+      }
     }
     return null;
   };
@@ -1134,9 +1176,15 @@ PRESS_LISTENER = r"""(() => {
   const sendControl = (el) => {
     if (el.matches("[data-pipeline-submit]")) return true;
     if (!el.matches("button, input[type=submit], input[type=image], input[type=button], [role=button]") || widget(el)) return false;
-    if (submits(el) && holdsMessage(el.form)) return true;
-    const words = `${el.innerText || ""} ${el.value || ""} ${el.getAttribute("aria-label") || ""}`;
-    return SAYS_SEND.test(words) && Boolean(holdsMessage(el.form) || nearContainer(el));
+    const form = el.form || el.closest("form");
+    if (form) {
+      if (!holdsMessage(form)) return false;  // a newsletter's or a search's form
+      if (submits(el)) return true;
+      // A plain button in a <form> that has a submit control of its own is not how that form sends.
+      if (Array.from(form.elements).some((other) => other instanceof Element && submits(other))) return false;
+      return SAYS_SEND.test(words(el));
+    }
+    return SAYS_SEND.test(words(el)) && Boolean(ownContainer(el));
   };
   window.addEventListener("click", (event) => {
     if (!event.isTrusted) return;
@@ -1255,6 +1303,8 @@ class FormSubmitter:
         self._needles: list[str] = []
         self._window: Any = None
         self.held_back: list[str] = []
+        # Which requests the gate refused (``_request_key``), so they are never counted as having carried the form.
+        self._refused_keys: set[int] = set()
         self._playwright: Any = None
         self._browser: Any = None
         self._context: Any = None
@@ -1274,6 +1324,8 @@ class FormSubmitter:
         self._browser = self._playwright.chromium.launch(headless=not self.headed, args=self._launch_args)
         self._context = self._browser.new_context(service_workers="block", accept_downloads=False)
         self._context.route("**/*", self._route)
+        if self.person_wait or self.rehearse:
+            self._context.add_init_script(CLOSE_GUARD)
 
     def _route(self, route: Any) -> None:
         request = route.request
@@ -1287,6 +1339,7 @@ class FormSubmitter:
             if _carries(request, self._needles) or any(same_site(request.url, site) for site in self._sites):
                 # What the window's note and the history name: not a third party's beacon, which no form needs.
                 self.held_back.append(f"{request.method} {urlsplit(request.url).hostname or ''}")
+            self._refused_keys.add(_request_key(request))
             route.abort("blockedbyclient")
             return
         (self._route_hook or self._guard)(route)
@@ -1348,6 +1401,7 @@ class FormSubmitter:
             self._sites = {website_domain(page_url)} - {""}
             self._needles = _needles(identity, subject, body)
             self.held_back = []
+            self._refused_keys = set()
             page = self._context.new_page()
             self._window = page
             # Before the page loads, so the press listener is in place ahead of every script of the page.
@@ -1629,9 +1683,12 @@ class FormSubmitter:
             result.update(outcome="needs_you", note=NOT_WATCHED)
             return False
 
-        sites = self._sites | ({website_domain(page.url)} - {""})
         presses: list[dict[str, Any]] = []
-        went: list[Any] = []  # what may have carried the form, since the first press
+        # What may have carried the form: a request carrying the student's details, whatever it is (an image's address
+        # too) and wherever it goes, or a page the window posts (a <form> sent the old way). A request to the form's
+        # site alone (a beacon, an autosave) is not the form. Counted as it is made, whether or not the press has been
+        # reported yet (it can come a moment after its request); what the gate refused is left out.
+        went: list[Any] = []
         detailed: set[int] = set()  # which of those carried the student's details: then it was the form
 
         def heard(kind: str, values: dict[str, Any]) -> None:
@@ -1640,25 +1697,31 @@ class FormSubmitter:
                 self._gate = "open"  # the student pressed send: what the form sends may leave
 
         def watch(request: Any) -> None:
-            if not presses or request.resource_type in {"image", "stylesheet", "font", "media"} or CAPTCHA_ENDPOINTS.search(request.url):
-                return
             carries = _carries(request, self._needles)
-            if request.method == "GET" and not carries:
-                return
-            if carries or any(same_site(request.url, site) for site in sites):
+            if carries or (request.resource_type == "document" and request.method != "GET" and self._gate != "load"):
                 went.append(request)
                 if carries:
-                    detailed.add(id(request))
+                    detailed.add(_request_key(request))
 
         # Each answer's status as it comes: once the window is closed, a request can no longer be asked for it.
         statuses: dict[int, int] = {}
 
         def answered(response: Any) -> None:
-            statuses[id(response.request)] = response.status
+            statuses[_request_key(response.request)] = response.status
 
-        def refused(request: Any) -> bool:
-            status = statuses.get(id(request))
-            return _refused(request) if status is None else 400 <= status < 500
+        def carried_now() -> list[Any]:
+            def refused(request: Any) -> bool:
+                status = statuses.get(_request_key(request))
+                return _refused(request) if status is None else 400 <= status < 500
+
+            return [request for request in went if _request_key(request) not in self._refused_keys and not refused(request)]
+
+        def held_line() -> list[str]:
+            hosts = sorted({entry.split(" ", 1)[1] for entry in self.held_back if " " in entry})
+            if not hosts:
+                return []
+            return [f"Before your press, the app held back what this page tried to send to {', '.join(hosts)}. "
+                    "If the form will not let you send, that is why: close this window and send it from the page in your own browser."]
 
         self._context.on("request", watch)  # the window, and any window it opens
         self._context.on("response", answered)
@@ -1667,7 +1730,7 @@ class FormSubmitter:
         lines = (["Fill in the boxes outlined in orange."] if plan["left"] else []) + notes + [
             "If pressing send does nothing, the app did not see your press and nothing left: close this window."]
         try:
-            page.evaluate(NOTE_SCRIPT, {"lines": lines, "seconds": int(self.person_wait)})
+            page.evaluate(NOTE_SCRIPT, {"lines": lines + held_line(), "seconds": int(self.person_wait)})
         except Exception:  # noqa: BLE001 - the note is a help, not the hand-over
             pass
         page.bring_to_front()
@@ -1676,7 +1739,7 @@ class FormSubmitter:
             self._student_hook(page)
 
         deadline = time.monotonic() + self.person_wait
-        told, closed, said_sent, thanks, said_held = False, False, False, "", len(self.held_back)
+        told, closed, said_sent, said_held = False, False, False, len(self.held_back)
         try:
             while True:
                 if presses and not told:
@@ -1689,49 +1752,50 @@ class FormSubmitter:
                 if page.is_closed():
                     closed = True
                     break
+                # The page's words first, then what has left: a thank-you counts only once something carrying the form
+                # has gone, and until then whatever the page says (before or after a press) is its own.
                 text = self._page_text(page, frame)
-                fresh = next((match for match in SUCCESS_TEXT.finditer(text) if match.group(0).casefold() not in known), None)
-                if not presses:
+                carried = carried_now()
+                if not carried:
                     known |= {match.group(0).casefold() for match in SUCCESS_TEXT.finditer(text)}
-                elif fresh is not None:
-                    thanks = _sentence(text, fresh)
-                carried = [request for request in went if not refused(request)]
-                if thanks and carried:
-                    result.update(outcome="submitted", note="", confirmation=thanks)
-                    break
-                if carried:
+                else:
+                    fresh = next((match for match in SUCCESS_TEXT.finditer(text) if match.group(0).casefold() not in known), None)
+                    if fresh is not None:
+                        result.update(outcome="submitted", note="", confirmation=_sentence(text, fresh))
+                        break
+                if presses and (carried or self._form_shown(frame) is False):
                     found, _read = self._find_form(page)
                     if found is None:
-                        # The form went: a moment for the page to say why, read again (it may have changed since the look above).
+                        # The form went after a press: a moment for the page to say why, then its words read again.
                         page.wait_for_timeout(1_500)
                         text = self._page_text(page, frame)
+                        carried = carried_now()
                         fresh = next((match for match in SUCCESS_TEXT.finditer(text) if match.group(0).casefold() not in known), None)
-                        if fresh is not None:
+                        if carried and fresh is not None:
                             result.update(outcome="submitted", note="", confirmation=_sentence(text, fresh))
+                        elif carried:
+                            result.update(outcome="unconfirmed", confirmation="", note=_left_note(any(_request_key(r) in detailed for r in carried)))
                         else:
-                            result.update(outcome="unconfirmed", confirmation="", note=_left_note(any(id(r) in detailed for r in carried)))
+                            result.update(outcome="unconfirmed", confirmation="", note=(
+                                "After you pressed send, the form went from the page, though the app saw nothing carrying it leave. "
+                                "Check whether it arrived"))
                         break
                     frame = found
-                    if not said_sent:
-                        said_sent = True
-                        sent_form = any(id(request) in detailed for request in carried)
-                        try:
-                            page.evaluate(NOTE_SCRIPT, {
-                                "lines": ["The page has not said it arrived. Close this window when you are done: pressing send again may send it twice."],
-                                "seconds": max(0, int(deadline - time.monotonic())),
-                                "title": "Your press sent the form." if sent_form else
-                                         "Something left the page after your press; it may have been the form."})
-                        except Exception:  # noqa: BLE001
-                            pass
+                if carried and not said_sent:
+                    said_sent = True
+                    sent_form = any(_request_key(request) in detailed for request in carried)
+                    try:
+                        page.evaluate(NOTE_SCRIPT, {
+                            "lines": ["The page has not said it arrived. Close this window when you are done: pressing send again may send it twice."],
+                            "seconds": max(0, int(deadline - time.monotonic())),
+                            "title": "Your press sent the form." if sent_form else
+                                     "Something left the page after your press; it may have been the form."})
+                    except Exception:  # noqa: BLE001
+                        pass
                 if not presses and len(self.held_back) > said_held:
-                    # The page asked to send something before any press (a check of a box, a lookup): say so, in case
-                    # the form now will not let them send.
                     said_held = len(self.held_back)
                     try:
-                        page.evaluate(NOTE_SCRIPT, {"lines": lines + [
-                            f"The app held back {said_held} request{'s' if said_held != 1 else ''} this page made before you pressed send. "
-                            "If the form will not let you send, that is why: close this window."],
-                            "seconds": max(0, int(deadline - time.monotonic()))})
+                        page.evaluate(NOTE_SCRIPT, {"lines": lines + held_line(), "seconds": max(0, int(deadline - time.monotonic()))})
                     except Exception:  # noqa: BLE001
                         pass
                 if time.monotonic() >= deadline:
@@ -1742,16 +1806,18 @@ class FormSubmitter:
         self._gate = "closed"
         if result["outcome"] in {"submitted", "unconfirmed"}:
             pass
-        elif (carried := [request for request in went if not refused(request)]) or (presses and thanks):
-            result.update(outcome="unconfirmed", confirmation="", note=_left_note(any(id(r) in detailed for r in carried)) if carried else (
-                "After you pressed send, the page said thanks, but the app saw nothing carrying the form leave. "
-                "Check whether it arrived"))
+        elif carried := carried_now():
+            result.update(outcome="unconfirmed", confirmation="", note=_left_note(any(_request_key(r) in detailed for r in carried)))
         else:
             minutes = max(1, round(self.person_wait / 60))
             parts = ["You closed the window before the form was sent. Nothing was sent" if closed else
                      f"The window waited {minutes} minute{'s' if minutes != 1 else ''} and the form was not sent. Nothing was sent"]
             if notes:
                 parts.append("Left for you: " + "; ".join(notes))
+            hosts = sorted({entry.split(" ", 1)[1] for entry in self.held_back if " " in entry})
+            if hosts:
+                parts.append(f"The page tried to reach {', '.join(hosts)} before your press and the app held it back, "
+                             "so this form may not send from Finish in browser: send it from the page in your own browser")
             result.update(outcome="needs_you", note=". ".join(parts))
         if presses and result["outcome"] in {"submitted", "unconfirmed"}:
             self._note_students_part(result, plan, held, presses[-1])
@@ -1762,6 +1828,14 @@ class FormSubmitter:
             except Exception:  # noqa: BLE001
                 pass
         return bool(presses)
+
+    @staticmethod
+    def _form_shown(frame: Any) -> bool | None:
+        """Whether the app's marked form is on screen; None when the frame cannot be asked (closed)."""
+        try:
+            return bool(frame.locator("[data-pipeline-form]").first.is_visible())
+        except Exception:  # noqa: BLE001
+            return None
 
     def _page_text(self, page: Any, frame: Any) -> str:
         """What the form's frame and the page show, one after the other (the same text once when they are one)."""
@@ -1893,7 +1967,7 @@ class FormSubmitter:
             return {"outcome": "failed", "note": "The form did not send" + (f": {errors[0][:200]}" if errors else ""), "confirmation": ""}
         if rejected and len(rejected) == len(sent):
             return {"outcome": "failed", "note": f"The site refused the form (HTTP {_response(rejected[0]).status})", "confirmation": ""}
-        what = "The form was sent and the page moved on" if form_gone else "The form was sent"
+        what = "After the app pressed send, the page moved on" if form_gone else "After the app pressed send, something left the page"
         return {"outcome": "unconfirmed", "note": f"{what}, but the page did not say it arrived. Look for a confirmation email from them", "confirmation": ""}
 
     def _screenshot(self, page: Any, name: str, element: Any = None) -> str:
@@ -1968,13 +2042,35 @@ def _needles(identity: dict[str, str], subject: str, body: str) -> list[str]:
 
 
 def _carries(request: Any, needles: list[str]) -> bool:
-    """Whether a request carries any of ``needles``, as typed or form-encoded, in its body or its address."""
+    """Whether a request carries any of ``needles``, as typed or form-encoded, in its body or its address.
+
+    The body is read as bytes, so one with a file in it (a résumé) is still searched; a body the browser does not
+    show (a multipart upload it keeps back) is taken as carrying them, since it may.
+    """
+    if not needles:
+        return False
+    texts = [unquote_plus(str(getattr(request, "url", "") or ""))]
     try:
-        data = request.post_data or ""
-    except Exception:  # noqa: BLE001 - a body that is not text
-        data = ""
-    seen = " ".join((data, unquote_plus(data), unquote_plus(request.url))).casefold()
+        body = request.post_data_buffer
+    except Exception:  # noqa: BLE001 - a request with no body to give
+        body = None
+    if body:
+        raw = body.decode("utf-8", "replace")
+        texts += [raw, unquote_plus(raw)]
+    elif getattr(request, "method", "GET") not in {"GET", "HEAD"}:
+        try:
+            kind = str((request.headers or {}).get("content-type", "")).lower()
+        except Exception:  # noqa: BLE001
+            kind = ""
+        if kind.startswith("multipart/"):
+            return True
+    seen = " ".join(texts).casefold()
     return any(needle in seen for needle in needles)
+
+
+def _request_key(request: Any) -> int:
+    """One request's identity, the same whichever event or route handed it over."""
+    return id(getattr(request, "_impl_obj", request))
 
 
 def _refused(request: Any) -> bool:
@@ -2041,7 +2137,7 @@ def form_ready(target: dict[str, Any], *, fingerprint: str | None = None, retry:
         raise ValueError("This message already went through their contact form")
     if form["state"] == "unconfirmed" and not retry:
         raise SendNeedsCheckError(
-            "The form was sent before but the page did not say it arrived. Look for a confirmation email from them: "
+            "The form may have been sent before, but the page did not say it arrived. Look for a confirmation email from them: "
             "if it went, use \"I sent it\"; if not, send it again.",
             "form-unconfirmed",
         )

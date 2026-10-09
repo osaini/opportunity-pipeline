@@ -167,7 +167,7 @@
       const form = item.contact_form;
       if (form.state === "needs_you") return { label: "Finish the contact form", hint: form.note || "The form needs you before it can go.", tab: null, tone: "is-warning" };
       if (form.state === "failed") return { label: "Contact form did not send", hint: form.note || "Nothing was sent. Try again.", tab: null, tone: "is-warning" };
-      if (form.state === "unconfirmed") return { label: "Check the form arrived", hint: "It was sent, but their page did not confirm it. Look for a confirmation email.", tab: null, tone: "is-warning" };
+      if (form.state === "unconfirmed") return { label: "Check the form arrived", hint: "It may have been sent: their page did not confirm it. Look for a confirmation email.", tab: null, tone: "is-warning" };
       return { label: "Send through their contact form", hint: "They publish no email. The approved draft goes in through the form on their site, as you.", tab: null, tone: "is-region" };
     }
     return { label: "Send it from your email", hint: "Open the approved draft in your email, send it, then mark it sent here.", tab: null, tone: "is-region" };
