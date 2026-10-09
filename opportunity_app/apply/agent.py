@@ -190,6 +190,7 @@ MAX_TELEMETRY_RECORDED = 20
 MAX_REQUESTS = 300
 CODE_PATTERN = re.compile(r"[A-Za-z0-9]{8}")
 CODE_SETTLE_S = 0.3      # after typing the code: time for a widget that sends by itself to try, before the student is told what to do
+STUDENT_FILE_WINDOW_S = 10.0   # a file the student chose may be read by the page for this long; a choice no read has used by then is forgotten
 PRESS_GRACE_S = 0.15     # a code POST refused for want of a press waits this long for the press to be reported (it is reported first, by a few ms)
 TURN_POLL_MS = 250
 OUTCOME_POLL_MS = 500
@@ -320,34 +321,44 @@ PRESS_LISTENER_TEMPLATE = """(() => {
     const target = event.target;
     if (target && typeof target.closest === 'function' && target.closest(submit)) window.__BINDING__('1');
   }, true);
-  // The student choosing a file in the form's file box (a page that reads a file the moment it is attached, Lever's, sends it then; only those boards' pages
-  // are listened to, so a Greenhouse page's files are never opened here). Only a trusted 'change' counts, so a script that sets a file box's files and fires
-  // its own event does not.
-  // The choice is reported at once (the page's read of the file follows it by moments); the file's SHA-256 follows when it is worked out. The bytes
-  // of a file the student picks from their disk do not pass through the request rules (the browser sends them itself), so this is the only way to
-  // know which file it was.
+  // The student choosing a file in the box the page reads at once (Lever's resume box: the adapter's ``file_selector``), and only one the page will
+  // read: a file over the page's own limit is not sent, so no read follows it. A page that reads a file the moment it is attached sends it then; only
+  // those boards' pages are listened to, so a Greenhouse page's files are never opened here. Only a trusted 'change' counts, so a script that sets
+  // a file box's files and fires its own event does not. Other file boxes of the form (a cover letter) are not reported: the page does not read them.
+  // Each choice gets a number, and is reported at once with it (the page's read of the file follows it by moments); the file's SHA-256 follows, with the
+  // same number, when it is worked out. The bytes of a file the student picks from their disk do not pass through the request rules (the browser sends
+  // them itself, and the route sees an empty part), so this is the only way to know which file it was, and the number is how a hash finds its choice.
+  const fileBox = __FILE_BOX__;
+  const fileLimit = __FILE_LIMIT__;
+  let chosen = 0;
   window.addEventListener('change', (event) => {
-    if (!event.isTrusted || !filesRead) return;
+    if (!event.isTrusted || !filesRead || !fileBox) return;
     const box = event.target;
-    if (!(box && box.tagName === 'INPUT' && box.type === 'file' && box.files && box.files.length && typeof box.closest === 'function' && box.closest('form#application-form'))) return;
-    window.__BINDING__('file');
+    if (!(box && box.tagName === 'INPUT' && box.type === 'file' && box.files && box.files.length && typeof box.closest === 'function' && box.closest('form#application-form') && box.matches(fileBox))) return;
+    const file = box.files[0];
+    if (!(fileLimit > 0 && file.size <= fileLimit)) return;
+    const id = ++chosen;
+    window.__BINDING__('file:' + id);
     try {
-      box.files[0].arrayBuffer().then((data) => crypto.subtle.digest('SHA-256', data)).then((hash) => {
-        window.__BINDING__('sha:' + Array.from(new Uint8Array(hash)).map((byte) => byte.toString(16).padStart(2, '0')).join(''));
-      }).catch(() => window.__BINDING__('sha:'));
-    } catch (error) { window.__BINDING__('sha:'); }
+      file.arrayBuffer().then((data) => crypto.subtle.digest('SHA-256', data)).then((hash) => {
+        window.__BINDING__('sha:' + id + ':' + Array.from(new Uint8Array(hash)).map((byte) => byte.toString(16).padStart(2, '0')).join(''));
+      }).catch(() => window.__BINDING__('sha:' + id + ':'));
+    } catch (error) { window.__BINDING__('sha:' + id + ':'); }
   }, true);
 })();"""
 
 
-def press_listener(hosts: Iterable[str], submit_selector: str, file_hosts: Iterable[str] = ()) -> str:
+def press_listener(hosts: Iterable[str], submit_selector: str, file_hosts: Iterable[str] = (), file_selector: str = "", file_limit: int = 0) -> str:
     """The press listener's source for one ATS: only its board hosts count, and only a trusted click inside ``submit_selector`` is reported.
 
-    ``file_hosts`` are the hosts whose page reads a file the moment it is attached (Lever's): only there is the student's choice of a file reported.
-    ``json.dumps`` writes all three as JavaScript literals. An empty selector reports nothing (an adapter that names no Submit control).
+    ``file_hosts`` are the hosts whose page reads a file the moment it is attached (Lever's): only there is the student's choice of a file reported,
+    and only in the box ``file_selector`` names (the one the page reads) and for a file of at most ``file_limit`` bytes (the page's own limit; the page
+    sends nothing for a larger one). ``json.dumps`` writes them as JavaScript literals. An empty selector reports nothing (an adapter that names no
+    Submit control, or no file box); a limit of 0 reports no file.
     """
     return (PRESS_LISTENER_TEMPLATE.replace("__HOSTS__", json.dumps(sorted(hosts))).replace("__FILE_HOSTS__", json.dumps(sorted(file_hosts)))
-            .replace("__SUBMIT__", json.dumps(submit_selector)).replace("__BINDING__", PRESS_BINDING))
+            .replace("__SUBMIT__", json.dumps(submit_selector)).replace("__FILE_BOX__", json.dumps(file_selector))
+            .replace("__FILE_LIMIT__", json.dumps(int(file_limit))).replace("__BINDING__", PRESS_BINDING))
 
 
 # The only DevTools calls the agent makes, and nothing else (tests/test_apply_agent_static.py reads the syntax tree for it).
@@ -1040,7 +1051,9 @@ class ApplyAgent:
         self._resume_digest = ""                   # the SHA-256 of the file in the one that passed (never the file)
         # The student's own: files they chose in the window during their turn, and the reads of them the route let through (spec 6.12 step 7).
         self._student_reads: list[Any] = []        # the requests (the page's read of each file the student chose)
-        self._chosen_digests: list[str | None] = []   # the SHA-256 of each file the student chose, as the page's own file box reported it (None until worked out)
+        self._open_choices: list[tuple[int, float]] = []   # (number, time.monotonic()) of each file the student chose that no read has used yet, oldest first
+        self._choice_digests: dict[int, str] = {}  # the SHA-256 of each file the student chose, by the listener's number for it ("" when the page could not work it out)
+        self._read_choices: list[int | None] = []  # the choice each of the reads above used up (None when none was open)
         self._student_changed: list[str] = []      # the keys of the fields the page's reader changed after those reads (names, never values)
         self._student_noticed = 0                  # how many of the reads above the turn's loop has looked at
         self._student_baseline: dict[str, str] | None = None   # what the reader's fields held before the read being waited for
@@ -1122,7 +1135,8 @@ class ApplyAgent:
             cdp.send("Runtime.enable")
             cdp.send("Runtime.addBinding", {"name": PRESS_BINDING, "executionContextName": PRESS_WORLD})
             listener = press_listener(self._policy.navigation_hosts, self.adapter.press_selector,
-                                      self._policy.navigation_hosts if self._policy.resume_post_path else ())
+                                      self._policy.navigation_hosts if self._policy.resume_post_path else (),
+                                      self.adapter.file_selector, self.adapter.file_limit_bytes)
             cdp.send("Page.addScriptToEvaluateOnNewDocument", {"source": listener, "worldName": PRESS_WORLD, "runImmediately": True})
         except Exception:  # noqa: BLE001 - a browser without DevTools sessions: no press can be seen
             return
@@ -1131,21 +1145,30 @@ class ApplyAgent:
 
     def _on_binding(self, event: Mapping[str, Any]) -> None:
         """The press listener called its binding. The binding exists only in the listener's world, and the listener calls it with "1" (a trusted press of
-        Submit), "file" (a trusted choice of a file) and "sha:" and a file's SHA-256 only."""
+        Submit), "file:<n>" (a trusted choice of a file in the box the page reads, within the page's limit) and "sha:<n>:<hex>" (that file's SHA-256) only."""
         if event.get("name") != PRESS_BINDING:
             return
         if event.get("payload") == "1":
             self._state.note_student_press()
-        elif event.get("payload") == "file" and self._policy.resume_post_path and self._phase == PHASE_STUDENT and not self._handed_over:
-            # The student chose a file in the form's file box: the page's read of it may pass, once (``RouteState.student_files_chosen``).
-            self._state.student_files_chosen += 1
-            self._chosen_digests.append(None)
-        elif isinstance(event.get("payload"), str) and re.fullmatch(r"sha:(?:[0-9a-f]{64})?", event["payload"]):
-            # That file's SHA-256 (or nothing, when the page could not work it out), for the oldest choice that has none yet.
-            for index, known in enumerate(self._chosen_digests):
-                if known is None:
-                    self._chosen_digests[index] = event["payload"][4:]
-                    break
+        elif isinstance(event.get("payload"), str) and re.fullmatch(r"file:[0-9]{1,9}", event["payload"]):
+            if self._policy.resume_post_path and self._phase == PHASE_STUDENT and not self._handed_over:
+                # The student chose a file in the page's file box: the page's read of it may pass, once, and only for a moment (``RouteState.student_files_chosen``).
+                self._expire_student_choices()
+                self._open_choices.append((int(event["payload"][5:]), time.monotonic()))
+                self._state.student_files_chosen += 1
+        elif isinstance(event.get("payload"), str) and re.fullmatch(r"sha:[0-9]{1,9}:(?:[0-9a-f]{64})?", event["payload"]):
+            # That file's SHA-256 (or nothing, when the page could not work it out), for the choice with that number.
+            _, number, digest = event["payload"].split(":")
+            if int(number) in self._read_choices or any(int(number) == known for known, _ in self._open_choices):
+                self._choice_digests[int(number)] = digest
+
+    def _expire_student_choices(self) -> None:
+        """Forget the choices no read used within ``STUDENT_FILE_WINDOW_S``: the page reads a file at once, so a choice still unused after that is not
+        followed by a read, and its allowance must not wait for a script's."""
+        now = time.monotonic()
+        while self._open_choices and now - self._open_choices[0][1] > STUDENT_FILE_WINDOW_S:
+            self._open_choices.pop(0)
+            self._state.student_files_chosen -= 1
 
     # --- the request policy -----------------------------------------------------------------------------------
 
@@ -1174,6 +1197,7 @@ class ApplyAgent:
                 method=request.method, url=request.url, resource_type=request.resource_type, is_navigation=navigation,
                 public=True, headers=request.headers, body=body,
             )
+            self._expire_student_choices()
             decision = route_decision(self.mode, self._phase, facts, self._state, self._policy)
             if isinstance(decision, Abort) and decision.rule == "code_post_before_press" and self._press_arrives():
                 decision = route_decision(self.mode, self._phase, facts, self._state, self._policy)   # the press was reported a moment after the request
@@ -1200,6 +1224,8 @@ class ApplyAgent:
             if getattr(decision, "resume_post", False):
                 if getattr(decision, "student_file", False):
                     self._student_reads.append(request)
+                    # The read uses up the oldest choice that is still open, as ``RouteState.record`` counts it: that choice's file is the one Lever received.
+                    self._read_choices.append(self._open_choices.pop(0)[0] if self._open_choices else None)
                 else:
                     self._resume_requests.append(request)
                     self._resume_digest = str(getattr(decision, "digest", "") or "")
@@ -1242,6 +1268,7 @@ class ApplyAgent:
             return False
         deadline = time.monotonic() + PRESS_GRACE_S
         while time.monotonic() < deadline:
+            self._expire_student_choices()
             if self._state.student_files_chosen > self._state.student_file_reads_passed:
                 return True
             try:
@@ -3209,7 +3236,7 @@ class ApplyAgent:
                 # values) of the fields the page's reader then changed.
                 evidence["student_attached_resume"] = {
                     "count": len(self._student_reads),
-                    "sha256": (self._chosen_digests[len(self._student_reads) - 1] if len(self._chosen_digests) >= len(self._student_reads) else "") or "",
+                    "sha256": (self._choice_digests.get(self._read_choices[-1], "") if self._read_choices[-1] is not None else "") if self._read_choices else "",
                     "changed": sorted(set(self._student_changed)),
                 }
         return evidence

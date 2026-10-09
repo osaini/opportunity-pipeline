@@ -306,6 +306,8 @@ class AdapterBase:
     required_from_load = False            # which controls are required is read from the page as it loaded (its script drops ``required`` from every box once one is ticked)
     page_sentences: dict[str, str] = {}   # a kind of page ``detect_page`` answers -> the sentence a run ends with (needs_you) when it finds it
     press_selector = ""                   # the CSS selector of the form's Submit control: the press listener reports a trusted click inside it ("" reports none)
+    file_selector = ""                    # the CSS selector of the file box the page reads as it is attached (the press listener reports the student's choice in it; "" reports none)
+    file_limit_bytes = 0                  # the largest file that box's page reads (it sends nothing for a larger one; 0 reports no file)
 
     def scan(self, frame: Any) -> list[dict[str, Any]]:
         raise NotImplementedError("this adapter reads its form with the shared engine")

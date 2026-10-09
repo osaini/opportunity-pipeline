@@ -17,6 +17,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -28,6 +29,7 @@ from apply_fake_ats import LEVER_APPLY_URL, FakeLever
 from browser_support import requires_chromium
 from test_apply_lever_browser import FORM_VALUES_JS, TIMEOUTS, LeverAgent, lever_sources, planner, resume_payload
 
+from opportunity_app.apply import agent as apply_agent
 from opportunity_app.apply.agent_types import HANDOFF_NOT_SUBMITTED
 from opportunity_app.apply.checks import UNCONFIRMED_NOTE
 from opportunity_app.apply.lever_adapter import LeverAdapter
@@ -95,11 +97,17 @@ class LeverHandoffCase(unittest.TestCase):
         path.write_bytes(STUDENTS_FILE)
         return path
 
+    def file_named(self, name, data):
+        """A file on disk: a path, not an in-memory payload, so the browser's events for it are trusted ones, as a picked file's are."""
+        path = self.dir / name
+        path.write_bytes(data)
+        return path
+
     def attach(self, page, seen):
         """The student chooses a file in the form's file box (a path, so the browser's own events are trusted ones, as a picked file's are)."""
         page.set_input_files('input[name="resume"]', str(self.students_file()))
 
-    def go(self, fake=None, *, page="demo_eeo_survey.html", src=None, files="default", student=None, timeouts=None, hand_over="commit"):
+    def go(self, fake=None, *, page="demo_eeo_survey.html", src=None, files="default", student=None, timeouts=None, hand_over="commit", adapter=None):
         """One handoff run against the fake. ``student`` is a callable ``(page, step, seen)``; ``hand_over`` is "commit", "refuse", "raise" or a callable."""
         fake = fake or FakeLever(page=page)
         self.addCleanup(fake.drop_unanswered)
@@ -127,7 +135,7 @@ class LeverHandoffCase(unittest.TestCase):
             texts[step] = text
 
         agent = LeverAgent(
-            fake=fake, mode="handoff", adapter=LeverAdapter(), run_id="run-test", screenshot_dir=self.dir, timeouts=timeouts or HANDOFF,
+            fake=fake, mode="handoff", adapter=adapter or LeverAdapter(), run_id="run-test", screenshot_dir=self.dir, timeouts=timeouts or HANDOFF,
             on_progress=progress, heartbeat=lambda: None, student_hook=hook,
         )
         with agent:
@@ -260,6 +268,11 @@ class OutcomeTests(LeverHandoffCase):
 
 # --- Item 11: the student's own attach -----------------------------------------------------------------------------------------------------
 
+class SmallLimitAdapter(LeverAdapter):
+    """Lever's adapter for a page whose limit on a file is 64 bytes (the fake's setting), so a test need not make a file of a hundred megabytes."""
+    file_limit_bytes = 64
+
+
 class StudentAttachTests(LeverHandoffCase):
     def test_a_file_the_student_chooses_is_read_by_the_page_the_post_passes_and_the_app_names_the_fields_lever_changed(self):
         fake = FakeLever()
@@ -309,6 +322,58 @@ class StudentAttachTests(LeverHandoffCase):
         self.assertEqual(len(self.refused(run, rule="resume_post_unasked")), 1)
         self.assertNotIn("student_attached_resume", run.result.evidence)
         self.assertEqual(run.result.evidence["resume_sent_to_lever"], False)
+
+    FORGED = """() => { const data = new FormData(); data.append('resume', new Blob(['answers: ' + document.querySelector('[name=email]').value]), 'x.pdf');
+      data.append('accountId', document.querySelector('[name=accountId]').value); return fetch('/parseResume', {method: 'POST', body: data}).catch(() => 0); }"""
+
+    def test_a_file_chosen_in_another_file_box_opens_no_read_for_a_script_to_use(self):
+        """The cover letter box (a card on the page) is not read by Lever's reader: choosing a file there must not leave an allowance behind."""
+        def cover_letter_then_forged(page, seen):
+            page.set_input_files('input[name^="cards["][type=file]', str(self.file_named("letter.pdf", b"%PDF-1.4 a fictional cover letter")))
+            page.evaluate(self.FORGED)
+
+        run = self.go(page="cards_files_consent.html", src=lever_sources(upload=False), files={}, student=Student(("handoff", cover_letter_then_forged)))
+        self.assertEqual(run.fake.parse_posts(), [], "a script's file reached Lever after the student chose a cover letter")
+        self.assertEqual(len(self.refused(run, rule="resume_post_unasked")), 1)
+        self.assertNotIn("student_attached_resume", run.result.evidence)
+
+    def test_a_resume_over_the_pages_limit_opens_no_read_for_a_script_to_use(self):
+        """The page shows 'too big' and sends nothing for it; the choice must not leave an allowance behind."""
+        fake = FakeLever()
+        fake.max_upload_bytes = 64
+
+        def too_big_then_forged(page, seen):
+            page.set_input_files('input[name="resume"]', str(self.file_named("big.pdf", b"%PDF-1.4 " + b"x" * 200)))
+            page.evaluate(self.FORGED)
+
+        run = self.go(fake, src=lever_sources(upload=False), files={}, adapter=SmallLimitAdapter(), student=Student(("handoff", too_big_then_forged)))
+        self.assertEqual(fake.parse_posts(), [], "a script's file reached Lever after the student chose a file the page refused")
+        self.assertEqual(len(self.refused(run, rule="resume_post_unasked")), 1)
+
+    def test_a_choice_no_read_used_runs_out_so_a_later_script_cannot_use_it(self):
+        fake = FakeLever()
+        # A page whose reader never runs for this file box: the choice is then one no read will use.
+        fake.inject.append("window.addEventListener('change', function (e) { if (e.target && e.target.name === 'resume') e.stopImmediatePropagation(); }, true);")
+
+        def chosen_then_later_forged(page, seen):
+            page.set_input_files('input[name="resume"]', str(self.students_file()))
+            page.wait_for_timeout(900)
+            page.evaluate(self.FORGED)
+
+        with mock.patch.object(apply_agent, "STUDENT_FILE_WINDOW_S", 0.3):
+            run = self.go(fake, src=lever_sources(upload=False), files={}, student=Student(("handoff", chosen_then_later_forged)))
+        self.assertEqual(fake.parse_posts(), [], "a script's file reached Lever after the student's choice had run out")
+        self.assertEqual(len(self.refused(run, rule="resume_post_unasked")), 1)
+
+    def test_after_a_cover_letter_the_record_names_the_resume_lever_received(self):
+        """A cover letter, then a résumé: the record names the résumé (the file Lever read), not the first file chosen."""
+        def cover_letter_then_resume(page, seen):
+            page.set_input_files('input[name^="cards["][type=file]', str(self.file_named("letter.pdf", b"%PDF-1.4 a fictional cover letter")))
+            page.set_input_files('input[name="resume"]', str(self.students_file()))
+
+        run = self.go(page="cards_files_consent.html", src=lever_sources(upload=False), files={}, student=Student(("handoff", cover_letter_then_resume), ("handoff", completes_and_presses)))
+        self.assertEqual(len(run.fake.parse_posts()), 1)
+        self.assertEqual(run.result.evidence["student_attached_resume"]["sha256"], STUDENTS_SHA)
 
     def test_a_change_event_a_script_fires_is_not_the_students_choice(self):
         def scripted(page, seen):

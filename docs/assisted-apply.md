@@ -245,11 +245,12 @@ applied?**. What differs:
    received your résumé." because nothing recorded whether the attach happened. If the setting changed in another tab since the page
    was loaded, pressing Finish in browser shows the new words and starts nothing.
    A file the student attaches in the window goes to Lever the same way. The app lets that one request through, once for each file
-   the student chose in the form's own file box (the browser's own event says so; a script that sets a file and fires its own event
-   does not count), and then names, by question and never by value, the fields Lever filled from it: "Lever filled Current company
+   the student chose in the form's résumé box, the one Lever's page reads, and only for a moment after the choice (the browser's own
+   event says so; a script that sets a file and fires its own event does not count, and neither does a file chosen in another box, such
+   as a cover letter, or one too big for the page to send), and then names, by question and never by value, the fields Lever filled from it: "Lever filled Current company
    and Current location from the résumé you attached. Check them before you press Submit application." The app does not put them
    back, because that would mean typing in the window while the student works in it. The run records how many files and the
-   SHA-256 of the last one, so a stop or a restart afterwards still says Lever received it.
+   SHA-256 of the last one Lever received, so a stop or a restart afterwards still says Lever received it.
 3. **Lever's guesses are cleared.** Once the file is attached, Lever fills your name, company, location and links from it, and some of
    those are wrong. The app overwrites each with a confirmed fact; where it has none, it clears the field and lists it under **Left for
    you**.

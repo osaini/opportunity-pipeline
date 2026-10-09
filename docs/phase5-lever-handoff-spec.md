@@ -1142,11 +1142,14 @@ not connected). The hand-over interception, the outcome table and the record are
 Where the build differs from, or adds to, the text above:
 
 - **The student's own attach (6.12 step 7, 10.4 item 11).** The agent's press listener (an isolated world the page cannot reach) also reports a *trusted*
-  `change` on a file box of `form#application-form` (`file`) and, a moment later, that file's SHA-256 worked out in the page (`sha:<hex>`). The first
-  raises `RouteState.student_files_chosen`, which is what lets one `/parseResume` through in the student's turn (`resume_post_decision`); the request
-  can be judged before the report arrives, so a refusal for "unasked" waits `PRESS_GRACE_S` for it, as a code POST does for a press. The hash cannot
-  come from the request: the bytes of a file picked from the disk are sent by the browser itself and the route never sees them (measured: an empty
-  `resume` part). After the page applies its answer (the "working" sign gone and the reply seen), the agent compares the reader's fields with what
+  `change` in the résumé box of `form#application-form` (`file`), and only for a file within the page's own limit (100 MB: the page sends nothing for a
+  larger one). A file chosen in another file box of the form (a cover letter card, which Lever's page does not read) is not reported, and nor is one the
+  page will refuse as too big, so neither leaves an allowance behind. A reported choice raises `RouteState.student_files_chosen`, which is what lets one
+  `/parseResume` through in the student's turn (`resume_post_decision`); each choice is good for one read and for `STUDENT_FILE_WINDOW_S` (10 seconds), after
+  which the agent forgets it. The request can be judged before the report arrives, so a refusal for "unasked" waits `PRESS_GRACE_S` for it, as a code POST
+  does for a press. The hash cannot come from the request (the bytes of a file picked from the disk are sent by the browser itself and the route sees an empty `resume`
+  part), so the listener numbers each choice (`file:<n>`) and sends the file's SHA-256 with the same number (`sha:<n>:<hex>`); a read that passes uses up
+  the oldest choice still open, and the record names that choice's hash, never a guess (empty when it has not arrived). After the page applies its answer (the "working" sign gone and the reply seen), the agent compares the reader's fields with what
   they held at the last look before the read (`parser_values`) and says, by question, which changed: progress steps `resume_attached` (the file went; the
   parent records `student_attached_resume` at once, so a stop or a restart afterwards reads "Lever received your résumé") and `resume_changed` (the
   sentence, a student's-turn phase). The same fields join the "left for you" list in the final evidence. A field the student typed in the same quarter

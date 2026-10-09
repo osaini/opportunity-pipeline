@@ -187,6 +187,10 @@ class LeverAdapter(AdapterBase):
     form_page_kind = "application_form"   # what ``detect_page`` answers for a form the app fills
     # The student's Submit, for the press listener: a trusted click on the page's own button (the hidden one is only ever clicked by the page's script, which is not trusted).
     press_selector = ", ".join(f"#{name}" for name in DENYLIST)
+    # The résumé box is the one file box Lever's page reads as a file is attached, and it sends nothing for a file over 100 MB (the page says so). The cover
+    # letter box of a card is not read, so a file the student chooses there opens no read.
+    file_selector = 'input[name="resume"]'
+    file_limit_bytes = 100 * 1024 * 1024
     uses_engine = False
     closed_on_404 = True
     waits_for_challenge = True

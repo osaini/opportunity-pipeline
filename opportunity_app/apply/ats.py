@@ -238,7 +238,7 @@ class AtsAdapter(Protocol):
     read of the form, when ``uses_engine`` is False), ``page_facts`` and ``page_managed`` (what the page carries for itself),
     ``is_typeahead`` (a list chosen from by typing), ``parse_state``, ``guessed_fields``, ``parser_values`` and ``cleared`` (a file reader's guesses, what
     they hold, and whether one is gone), ``owns`` and ``refuses`` (what the app never writes or presses). ``closed_on_404``, ``waits_for_challenge``,
-    ``required_from_load``, ``page_sentences`` and ``press_selector`` (the form's Submit control, which the press listener watches) are its attributes.
+    ``required_from_load``, ``page_sentences``, ``press_selector`` (the form's Submit control, which the press listener watches), ``file_selector`` and ``file_limit_bytes`` (the file box the page reads at once, and the largest file it reads) are its attributes.
     """
 
     ats: str

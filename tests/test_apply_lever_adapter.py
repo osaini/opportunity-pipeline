@@ -425,15 +425,21 @@ class StudentFileSignalTests(unittest.TestCase):
     def call(agent, payload):
         agent._on_binding({"name": apply_agent.PRESS_BINDING, "payload": payload})
 
-    def test_a_choice_in_the_students_turn_lets_one_read_pass_and_its_hash_follows(self):
+    def test_a_choice_in_the_students_turn_lets_one_read_pass_and_its_hash_follows_under_its_own_number(self):
         agent = self.agent(phase=apply_agent.PHASE_STUDENT)
-        self.call(agent, "file")
-        self.assertEqual((agent._state.student_files_chosen, agent._chosen_digests), (1, [None]))
-        self.call(agent, f"sha:{self.SHA}")
-        self.assertEqual(agent._chosen_digests, [self.SHA])
-        self.call(agent, "file")
-        self.call(agent, "sha:")
-        self.assertEqual((agent._state.student_files_chosen, agent._chosen_digests), (2, [self.SHA, ""]))
+        self.call(agent, "file:1")
+        self.assertEqual((agent._state.student_files_chosen, [number for number, _ in agent._open_choices]), (1, [1]))
+        self.call(agent, "file:2")
+        self.assertEqual((agent._state.student_files_chosen, [number for number, _ in agent._open_choices]), (2, [1, 2]))
+        self.call(agent, f"sha:2:{self.SHA}")   # the second one's hash first: it still finds its own choice
+        self.call(agent, "sha:1:")
+        self.assertEqual(agent._choice_digests, {2: self.SHA, 1: ""})
+
+    def test_a_hash_for_a_choice_nobody_made_is_ignored(self):
+        agent = self.agent(phase=apply_agent.PHASE_STUDENT)
+        self.call(agent, "file:1")
+        self.call(agent, f"sha:7:{self.SHA}")
+        self.assertEqual(agent._choice_digests, {})
 
     def test_a_choice_before_the_turn_or_after_the_hand_over_or_on_another_ats_counts_for_nothing(self):
         for label, agent in (
@@ -442,19 +448,34 @@ class StudentFileSignalTests(unittest.TestCase):
             ("Greenhouse", self.agent(GreenhouseAdapter(), phase=apply_agent.PHASE_STUDENT)),
         ):
             with self.subTest(case=label):
-                self.call(agent, "file")
-                self.assertEqual((agent._state.student_files_chosen, agent._chosen_digests), (0, []))
+                self.call(agent, "file:1")
+                self.call(agent, f"sha:1:{self.SHA}")
+                self.assertEqual((agent._state.student_files_chosen, agent._open_choices, agent._choice_digests), (0, [], {}))
 
-    def test_anything_but_the_listeners_three_words_is_ignored(self):
+    def test_anything_but_the_listeners_words_is_ignored(self):
         agent = self.agent(phase=apply_agent.PHASE_STUDENT)
-        for payload in ("", "File", "file ", "sha:xyz", f"sha:{self.SHA.upper()}", f"sha:{self.SHA}0", 1, None, {"file": 1}):
+        for payload in ("", "File", "file", "file:", "file:x", "file:1 ", "file:1234567890", "sha:", "sha:1", "sha:1:xyz", f"sha:1:{self.SHA.upper()}", f"sha:1:{self.SHA}0", 1, None, {"file": 1}):
             self.call(agent, payload)
-        self.assertEqual((agent._state.student_files_chosen, agent._chosen_digests), (0, []))
-        agent._on_binding({"name": "somebodyElse", "payload": "file"})
+        self.assertEqual((agent._state.student_files_chosen, agent._open_choices, agent._choice_digests), (0, [], {}))
+        agent._on_binding({"name": "somebodyElse", "payload": "file:1"})
         self.assertEqual(agent._state.student_files_chosen, 0)
 
-    def test_the_listener_counts_only_a_trusted_change_of_a_file_box_in_the_application_form_and_only_on_a_board_whose_page_reads_a_file_at_once(self):
-        source = apply_agent.press_listener(LEVER_ROUTE_POLICY.navigation_hosts, LeverAdapter.press_selector, LEVER_ROUTE_POLICY.navigation_hosts)
+    def test_a_choice_no_read_used_runs_out_and_takes_its_allowance_with_it(self):
+        agent = self.agent(phase=apply_agent.PHASE_STUDENT)
+        self.call(agent, "file:1")
+        self.call(agent, "file:2")
+        with mock.patch.object(apply_agent, "STUDENT_FILE_WINDOW_S", 0.05):
+            time.sleep(0.15)
+            self.call(agent, "file:3")   # a new one: the two before it have run out
+            self.assertEqual((agent._state.student_files_chosen, [number for number, _ in agent._open_choices]), (1, [3]))
+            time.sleep(0.15)
+            agent._expire_student_choices()
+        self.assertEqual((agent._state.student_files_chosen, agent._open_choices), (0, []))
+        self.assertFalse(agent._file_choice_arrives(), "an expired choice still let a read through")
+
+    def test_the_listener_counts_only_a_trusted_change_of_the_pages_file_box_in_the_application_form_within_its_limit_and_only_on_a_board_whose_page_reads_a_file_at_once(self):
+        source = apply_agent.press_listener(LEVER_ROUTE_POLICY.navigation_hosts, LeverAdapter.press_selector, LEVER_ROUTE_POLICY.navigation_hosts,
+                                            LeverAdapter.file_selector, LeverAdapter.file_limit_bytes)
         for host in lever.LEVER_HOSTS:
             self.assertIn(f'"{host}"', source)
         self.assertEqual(source.count("isTrusted"), 2, "each of the two kinds of event is checked for the browser's own mark")
@@ -462,12 +483,25 @@ class StudentFileSignalTests(unittest.TestCase):
         self.assertEqual(sorted(json.loads(reads.group(1))), sorted(lever.LEVER_HOSTS), "only a board whose page reads a file at once has its files looked at")
         self.assertIn("box.type === 'file'", source)
         self.assertIn("form#application-form", source)
+        self.assertIn('const fileBox = "input[name=\\"resume\\"]";', source, "only the box the page reads is listened to")
+        self.assertIn("const fileLimit = 104857600;", source, "a file the page refuses as too big is not a choice")
+        self.assertIn("box.matches(fileBox)", source)
+        self.assertIn("'file:' + id", source)
+        self.assertIn("'sha:' + id + ':'", source, "a hash carries the number of its choice")
         greenhouse = apply_agent.press_listener(GREENHOUSE_ROUTE_POLICY.navigation_hosts, GreenhouseAdapter.press_selector)
         self.assertEqual(json.loads(re.search(r"const filesRead = (\[[^\]]*\])\.indexOf", greenhouse).group(1)), [], "a Greenhouse page's files are never opened")
 
-    def test_the_agent_names_file_hosts_only_when_its_policy_has_a_resume_post_path(self):
+    def test_the_agent_names_file_hosts_only_when_its_policy_has_a_resume_post_path_and_the_adapters_box_and_limit(self):
         text = helpers_source.apply_modules()["apply/agent.py"]
         self.assertIn("self._policy.navigation_hosts if self._policy.resume_post_path else ()", text)
+        self.assertIn("self.adapter.file_selector, self.adapter.file_limit_bytes", text)
+
+    def test_only_levers_adapter_names_a_file_box_and_it_is_the_resume_box(self):
+        self.assertEqual((agent_types.AdapterBase.file_selector, agent_types.AdapterBase.file_limit_bytes), ("", 0))
+        self.assertEqual((GreenhouseAdapter.file_selector, GreenhouseAdapter.file_limit_bytes), ("", 0))
+        self.assertEqual((LeverAdapter.file_selector, LeverAdapter.file_limit_bytes), ('input[name="resume"]', 100 * 1024 * 1024))
+        self.assertIn('const fileBox = "";', apply_agent.press_listener(["jobs.lever.co"], "#x", ["jobs.lever.co"]))
+        self.assertIn("if (!event.isTrusted || !filesRead || !fileBox) return;", apply_agent.press_listener(["jobs.lever.co"], "#x", ["jobs.lever.co"]))
 
     def test_an_unasked_read_waits_no_grace_when_it_cannot_be_the_students(self):
         for agent in (self.agent(phase=apply_agent.PHASE_FILL), self.agent(GreenhouseAdapter(), phase=apply_agent.PHASE_STUDENT)):
