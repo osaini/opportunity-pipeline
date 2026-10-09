@@ -50,8 +50,9 @@
     { id: "bounced", label: "Bounced", group: "Before sending", tone: "is-alert", test: (item) => Boolean(item.bounced_at) },
     { id: "needs-location", label: "Needs a location", group: "Before sending", tone: "is-soon", test: (item) => outreachToContact(item) && !item.location_verified },
     { id: "from-search", label: "From deep search", group: "Before sending", test: (item) => item.origin === "discovery" && outreachToContact(item) },
-    // Picking it in the rail opens each company on its Follow-up tab (paneTab).
-    { id: "follow-ups-due", label: "Follow-ups due", group: "Contacted", tone: "is-alert", paneTab: "follow-up", test: (item) => item.follow_up_due },
+    // Picking it in the rail opens each company on its Follow-up tab (paneTab); its rows can be ticked and their
+    // follow-ups queued or sent together (batch).
+    { id: "follow-ups-due", label: "Follow-ups due", group: "Contacted", tone: "is-alert", paneTab: "follow-up", batch: true, test: (item) => item.follow_up_due },
     { id: "revisits-due", label: "Revisits due", group: "Contacted", tone: "is-alert", test: (item) => item.revisit_due },
     { id: "awaiting", label: "Awaiting reply", group: "Contacted", test: (item) => item.status === "sent" || item.status === "followed_up" },
     { id: "replied", label: "Replied", group: "Contacted", tone: "is-good", test: (item) => ["replied", "call_scheduled", "offer"].includes(item.status) },
