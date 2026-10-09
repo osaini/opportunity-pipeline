@@ -500,6 +500,35 @@ class StoredContactTests(DatabaseCase):
         sam = [item for item in list_candidates(self.conn, target["id"], user_id=USER) if item["email"] == "sam.lee@acme.test"]
         self.assertEqual([(item["method"], item["confidence"]) for item in sam], [("site_published", "confirmed")])
 
+    def history(self, target_id, event_type):
+        return [row[0] for row in self.conn.execute(
+            "SELECT detail FROM outreach_events WHERE target_id=? AND event_type=? ORDER BY created_at", (target_id, event_type),
+        )]
+
+    def test_the_history_counts_one_candidate_and_one_page_in_the_singular(self):
+        target = create_target(self.conn, {"company": "Acme", "website": "https://acme.test"}, user_id=USER)
+        self.find(target["id"], {"acme.test": {"/robots.txt": "", "/": "<p>hello@acme.test</p>"}})
+        self.assertEqual(self.history(target["id"], "contacts_searched"), ["1 candidate from 1 page"])
+
+    def test_the_history_says_when_the_email_search_proposed_no_addresses(self):
+        target = create_target(self.conn, {"company": "Acme", "website": "https://acme.test"}, user_id=USER)
+        reply = json.dumps({"companies": [{"company": "Acme", "people": []}]})
+        transport, _ = site_transport(copy.deepcopy(self.SITE))
+        with httpx.Client(transport=transport) as client:
+            search_emails(self.conn, user_id=USER, runner=lambda prompt: reply, fetcher=safe_fetcher(client), target_ids=[target["id"]])
+        self.assertEqual(self.history(target["id"], "email_search"), ["No addresses proposed"])
+
+    def test_the_history_counts_proposed_addresses_in_the_singular(self):
+        target = create_target(self.conn, {"company": "Acme", "website": "https://acme.test"}, user_id=USER)
+        sites = {**copy.deepcopy(self.SITE), "news.test": {"/robots.txt": "", "/a": "<p>Sam Lee, sam.lee@acme.test</p>"}}
+        reply = json.dumps({"companies": [{"company": "Acme", "people": [
+            {"name": "Sam Lee", "role": "CEO", "email": "sam.lee@acme.test", "source_url": "https://news.test/a"},
+        ]}]})
+        transport, _ = site_transport(sites)
+        with httpx.Client(transport=transport) as client:
+            search_emails(self.conn, user_id=USER, runner=lambda prompt: reply, fetcher=safe_fetcher(client), target_ids=[target["id"]])
+        self.assertEqual(self.history(target["id"], "email_search"), ["1 of 1 proposed address printed on their pages"])
+
     def test_an_address_added_by_hand_with_no_name_greets_the_team_and_stays_unverified(self):
         target = create_target(self.conn, {
             "company": "Acme Robotics Inc", "website": "https://acme.test", "contact_name": "Sam Lee",

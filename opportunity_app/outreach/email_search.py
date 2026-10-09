@@ -214,8 +214,9 @@ def search_batch(
         with conn:
             for item in kept:
                 store_candidate(conn, target["id"], user_id, item, timestamp)
+            proposed = f"proposed address{'' if len(checked) == 1 else 'es'}"
             log_event(conn, target["id"], user_id, "email_search",
-                 detail=f"{len(kept)} of {len(checked)} proposed addresses printed on their pages"[:2_000])
+                 detail=f"{len(kept)} of {len(checked)} {proposed} printed on their pages" if checked else "No addresses proposed")
         results.append({
             "target_id": target["id"], "company": target["company"],
             "kept": [item["email"] for item in kept],
