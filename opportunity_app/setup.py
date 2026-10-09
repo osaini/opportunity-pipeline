@@ -170,7 +170,7 @@ def set_env_values(path: Path, updates: dict[str, str], *, overwrite: bool = Fal
         if re.search(r"[\r\n]", f"{key}{value}"):
             raise ValueError(f"The value for {key or 'a setting'} cannot contain a line break")
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
     except OSError:
         lines = []
     current = read_env(path)
@@ -533,12 +533,27 @@ def programs_report(paths: Paths) -> dict[str, Any]:
     }
 
 
+def _read_piped_line() -> str:
+    """One piped line, read as bytes so a UTF-8 byte-order mark is dropped whatever the console code page.
+
+    Windows PowerShell 5.1 starts what it pipes to a program with EF BB BF, and a default Windows
+    Python decodes a pipe as cp1252, which turns the mark into "ï»¿" that no strip() removes.
+    """
+    stream = getattr(sys.stdin, "buffer", None)
+    if stream is None:
+        return sys.stdin.readline()
+    line = stream.readline()
+    try:
+        return line.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return line.decode(sys.stdin.encoding or "utf-8")
+
+
 def set_key(paths: Paths, name: str, value: str | None = None) -> str:
     if not KEY_NAME.match(name):
         raise SystemExit(f"{name!r} is not an environment variable name")
     if value is None:
-        value = getpass.getpass(f"{name} (input hidden): ") if sys.stdin.isatty() else sys.stdin.readline()
-    # Windows PowerShell 5.1 starts what it pipes to a program with a byte-order mark, which strip() keeps.
+        value = getpass.getpass(f"{name} (input hidden): ") if sys.stdin.isatty() else _read_piped_line()
     value = value.lstrip("﻿").strip()
     if not value:
         raise SystemExit("No value given; nothing changed.")

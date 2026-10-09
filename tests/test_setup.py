@@ -128,13 +128,32 @@ class SetupTests(unittest.TestCase):
             setup.set_key(self.paths, "ADZUNA_APP_KEY", "   ")
 
     def test_set_key_drops_the_byte_order_mark_windows_powershell_pipes_in(self):
-        # `'1' | python -m opportunity_app.setup set-key NAME` in Windows PowerShell 5.1 sends a BOM first.
+        # `echo 1 | python -m opportunity_app.setup set-key NAME` (SETUP.md) in Windows PowerShell 5.1 sends
+        # the bytes EF BB BF 31 0D 0A. A default Windows Python decodes a pipe as cp1252, so the mark arrives
+        # as "\u00ef\u00bb\u00bf"; with PYTHONIOENCODING=utf-8 it arrives as U+FEFF. Both must store "1".
         setup.init(self.paths, migrate=False)
+        for encoding in ("cp1252", "utf-8"):
+            for piped, stored in ((b"\xef\xbb\xbf1\r\n", "1"), (b"\xef\xbb\xbfcaf\xc3\xa9\r\n", "caf\u00e9")):
+                stdin = io.TextIOWrapper(io.BytesIO(piped), encoding=encoding)
+                with self.subTest(encoding=encoding, piped=piped), mock.patch("sys.stdin", stdin):
+                    setup.set_key(self.paths, "PIPELINE_SKIP_SIGN_IN")
+                    self.assertEqual(setup.read_env(self.paths.env)["PIPELINE_SKIP_SIGN_IN"], stored)
+        # A pipe with no mark (PowerShell 7, cmd, a POSIX shell) and a stream with no byte layer still work.
+        with mock.patch("sys.stdin", io.TextIOWrapper(io.BytesIO(b"plain\n"), encoding="cp1252")):
+            setup.set_key(self.paths, "PIPELINE_SKIP_SIGN_IN")
+        self.assertEqual(setup.read_env(self.paths.env)["PIPELINE_SKIP_SIGN_IN"], "plain")
         with mock.patch("sys.stdin", io.StringIO("\ufeff1\r\n")):
             setup.set_key(self.paths, "PIPELINE_SKIP_SIGN_IN")
         self.assertEqual(setup.read_env(self.paths.env)["PIPELINE_SKIP_SIGN_IN"], "1")
         with self.assertRaises(SystemExit):
             setup.set_key(self.paths, "PIPELINE_SKIP_SIGN_IN", "\ufeff ")
+
+    def test_a_dot_env_saved_with_a_byte_order_mark_keeps_its_first_setting(self):
+        # Windows PowerShell 5.1's `Set-Content -Encoding utf8` and Out-File write one; it must not hide the first key.
+        self.paths.env.write_bytes(b"\xef\xbb\xbfPIPELINE_SKIP_SIGN_IN=1\nADZUNA_APP_KEY=adzuna\n")
+        self.assertEqual(setup.read_env(self.paths.env), {"PIPELINE_SKIP_SIGN_IN": "1", "ADZUNA_APP_KEY": "adzuna"})
+        setup.set_env_values(self.paths.env, {"PIPELINE_SKIP_SIGN_IN": "0"}, overwrite=True)
+        self.assertEqual(self.paths.env.read_text(encoding="utf-8"), "PIPELINE_SKIP_SIGN_IN=0\nADZUNA_APP_KEY=adzuna\n")
 
     def test_status_reports_integrations_without_values(self):
         setup.init(self.paths, migrate=False)
