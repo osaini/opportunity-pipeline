@@ -70,6 +70,28 @@ class QuietReadyFactory(FakeApplyAgentFactory):
         return quiet
 
 
+class NoFileReadyAgent(CannedAgent):
+    """A canned Lever agent whose window says, when it is ready, that no file went to Lever (the plan meant to attach one, and the window left it)."""
+
+    def run(self, *args, link=None, **kwargs):
+        class Says:
+            def ready(self, message):
+                link.ready({**message, "resume_sent_to_lever": False})
+
+            def __getattr__(self, name):
+                return getattr(link, name)
+
+        return super().run(*args, link=Says() if link is not None else None, **kwargs)
+
+
+class NoFileReadyFactory(FakeApplyAgentFactory):
+    def __call__(self, **kwargs):
+        canned = super().__call__(**kwargs)
+        says = NoFileReadyAgent.__new__(NoFileReadyAgent)
+        says.__dict__.update(canned.__dict__)
+        return says
+
+
 class LeverRunCase(runner_tests.RunnerCase):
     def setUp(self):
         super().setUp()
@@ -170,6 +192,38 @@ class ReadyWithoutTheKeyTests(LeverRunCase):
         claim = self.conn.execute("SELECT note FROM application_submit_claims WHERE run_id=?", (run_id,)).fetchone()
         self.assertIn(MAYBE, claim["note"])
         self.assertNotIn("Nothing was sent", claim["note"])
+        self.runner.shutdown(30)
+
+
+class ReadyThatSaidNoTests(LeverRunCase):
+    def ready_with_no_file(self):
+        run_id = self.lever(NoFileReadyFactory(step_delay=0.0, handoff={"wait": 20, "outcome": "submitted"}))
+        deadline = time.monotonic() + 30
+        evidence = {}
+        while time.monotonic() < deadline and "handoff_until" not in evidence:
+            time.sleep(0.05)
+            evidence = json.loads(self.row(run_id)["evidence_json"] or "{}")
+        self.assertIn("handoff_until", evidence, "the window never got ready")
+        self.assertIs(evidence.get("resume_sent_to_lever"), False)
+        return run_id
+
+    def test_a_window_that_said_no_file_went_is_believed_when_the_server_stops_and_the_claim_is_settled(self):
+        run_id = self.ready_with_no_file()
+        self.runner.shutdown(30)
+        self.finish(run_id)
+        claim = self.conn.execute("SELECT note FROM application_submit_claims WHERE run_id=?", (run_id,)).fetchone()
+        self.assertNotIn("may have received", claim["note"], "the window said no file went, and the note hedged anyway")
+        self.assertNotIn("received your résumé", claim["note"])
+
+    def test_a_window_that_said_no_file_went_is_believed_when_recovery_settles_the_claim(self):
+        run_id = self.ready_with_no_file()
+        stale = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(timespec="microseconds")
+        with self.conn:
+            self.conn.execute("UPDATE application_submit_claims SET instance='another-process', heartbeat_at=? WHERE run_id=?", (stale, run_id))
+        apply_runs.recover_stale(self.conn, datetime.now(timezone.utc), user_id=USER)
+        claim = self.conn.execute("SELECT note FROM application_submit_claims WHERE run_id=?", (run_id,)).fetchone()
+        self.assertNotIn("may have received", claim["note"])
+        self.assertNotIn("received your résumé", claim["note"])
         self.runner.shutdown(30)
 
 

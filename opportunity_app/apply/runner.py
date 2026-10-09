@@ -1370,6 +1370,8 @@ class ApplyRunner:
                     said = message.get("resume_sent_to_lever")
                     resume_sent = said is True
                     work.resume_sent_seen = work.resume_sent_seen or resume_sent
+                    if said is False and not work.resume_sent_seen:
+                        work.resume_planned = False   # the window says no file went: that is believed over the plan, in every note written from here
                     kept: dict[str, Any] = {}
                     if isinstance(said, bool):
                         kept["resume_sent_to_lever"] = said

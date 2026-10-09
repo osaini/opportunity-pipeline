@@ -152,8 +152,10 @@ def resume_with_ats(evidence: Any) -> bool:
 
 
 def resume_may_be_with_ats(evidence: Any) -> bool:
-    """Whether the run was going to have the app attach the résumé and nothing yet says whether the file got there."""
-    return isinstance(evidence, dict) and evidence.get(RESUME_PLANNED_KEY) is True and not resume_with_ats(evidence)
+    """Whether the run was going to have the app attach the résumé and nothing yet says whether the file got there. A window that said no file went
+    ("resume_sent_to_lever": false) is believed over the plan."""
+    return (isinstance(evidence, dict) and evidence.get(RESUME_PLANNED_KEY) is True and evidence.get("resume_sent_to_lever") is not False
+            and not resume_with_ats(evidence))
 
 
 def with_resume_note(sentence: str, ats_name: str, *, sure: bool = True) -> str:

@@ -68,6 +68,7 @@ class WordsTests(unittest.TestCase):
     def test_a_planned_attach_is_a_maybe_until_something_confirms_it(self):
         self.assertTrue(resume_may_be_with_ats({RESUME_PLANNED_KEY: True}))
         self.assertFalse(resume_may_be_with_ats({RESUME_PLANNED_KEY: True, "resume_sent_to_lever": True}), "confirmed is not a maybe")
+        self.assertFalse(resume_may_be_with_ats({RESUME_PLANNED_KEY: True, "resume_sent_to_lever": False}), "the window said no file went")
         for evidence in ({}, {RESUME_PLANNED_KEY: False}, None, "x"):
             with self.subTest(evidence=evidence):
                 self.assertFalse(resume_may_be_with_ats(evidence))
