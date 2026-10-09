@@ -7,7 +7,8 @@ lives (``canonical_url``), the client that reads its listing, how that listing b
 (``parse_schema``), whether a mail sender is its own (``is_confirmation_sender``), and its request policy
 (``route_policy``: which hosts a page may reach, what counts as the submit POST and as the confirmation page; the rules in
 ``checks`` read it as an argument). Greenhouse and Lever are registered (docs/phase5-lever-handoff-spec.md, 5.2). Lever is read-only
-so far: its form can be read and planned, and its Finish in browser driver does not exist yet (``adapter_built``).
+so far: its form can be read and planned, and its Finish in browser driver (``lever_adapter.LeverAdapter``) is built but reachable only in
+tests, so no run of it starts in the app (``adapter_built``, which LV4 turns on).
 
 ``AtsAdapter`` is the set of methods ``ApplyAgent`` calls on a site's form, so the agent is typed to a shape and not to
 Greenhouse. The adapters themselves live beside the agent (``agent.py``), which is a higher layer than this file.
@@ -65,7 +66,8 @@ class AtsSpec:
     claim_modes: tuple[str, ...] = ("one_click", "handoff", "unattended")
     # The setting (an automation feature) that must be on before Apply for me reads this ATS's roles, besides apply_agent. "" for none.
     switch: str = ""
-    # Whether the agent has a driver for this ATS's form. False means the form can be read and planned and nothing can be filled.
+    # Whether the app starts a browser run for this ATS's form. False means the form can be read and planned and no window opens, in the app: the driver may
+    # exist (Lever's, in ``lever_adapter``) and be exercised by the tests until the milestone that connects it.
     adapter_built: bool = True
 
 
@@ -220,7 +222,7 @@ def identify(conn: sqlite3.Connection, opportunity_id: str) -> tuple[AtsSpec, tu
 class AtsAdapter(Protocol):
     """The methods ``ApplyAgent`` calls on a site's form. Reads only: whatever changes the page goes through the agent (``ops``).
 
-    ``frame`` is a Playwright frame, ``page`` a Playwright page. ``loader_paths`` is a static method on the real adapters.
+    ``frame`` is a Playwright frame, ``page`` a Playwright page. ``loader_paths`` is a static method on the real adapters (it reads the page's HTML and its address).
     The agent also calls ``fill_react_select`` and ``react_values`` when ``is_react_select`` says a control is one; those
     two are an optional capability of an adapter, not part of this shape, and the agent does not yet check for them.
     There is no ``submit_control``: the student presses Submit, and nothing ever called one.
@@ -231,14 +233,26 @@ class AtsAdapter(Protocol):
     confirmation rule). ``uploads_on_attach`` means the board uploads a file to a storage address as it is attached (the app cannot
     tell that upload from the application, so a handoff on such a board is refused); ``reads_on_attach`` means the page reads the
     file as it is attached (it leaves at once, and the student's setting governs whether the app attaches one).
+
+    The rest is what ``AdapterBase`` (``agent_types``) answers for an ATS that needs nothing special, and Lever overrides: ``scan`` (the
+    read of the form, when ``uses_engine`` is False), ``page_facts`` and ``page_managed`` (what the page carries for itself),
+    ``is_typeahead`` (a list chosen from by typing), ``parse_state``, ``guessed_fields`` and ``cleared`` (a file reader's guesses, and
+    whether one is gone), ``owns`` and ``refuses`` (what the app never writes or presses). ``closed_on_404``, ``waits_for_challenge``,
+    ``required_from_load``, ``page_sentences`` and ``press_selector`` (the form's Submit control, which the press listener watches) are its attributes.
     """
 
     ats: str
     form_page_kind: str
+    uses_engine: bool
+    closed_on_404: bool
+    waits_for_challenge: bool
+    required_from_load: bool
+    page_sentences: dict[str, str]
+    press_selector: str
 
     def form_frame(self, page: Any) -> Any: ...
     def detect_page(self, page: Any) -> str: ...
-    def loader_paths(self, html: str) -> tuple[str, str, str]: ...
+    def loader_paths(self, html: str, url: str = "") -> tuple[str, str, str]: ...
     def uploads_on_attach(self, frame: Any) -> bool: ...
     def reads_on_attach(self, frame: Any) -> bool: ...
     def posting_ids(self, url: str) -> tuple[str, str]: ...
@@ -254,3 +268,14 @@ class AtsAdapter(Protocol):
     def choices(self, frame: Any, key: str) -> list[dict[str, Any]]: ...
     def fill_location(self, ops: Any, frame: Any, key: str, label: str) -> str: ...
     def read_options(self, ops: Any, frame: Any, key: str, *, typed: str | None = None, limit: int = ...) -> list[str]: ...
+    def scan(self, frame: Any) -> list[dict[str, Any]]: ...
+    def page_facts(self, frame: Any) -> dict[str, str]: ...
+    def page_managed(self, frame: Any) -> dict[str, str]: ...
+    def owns(self, name: str) -> bool: ...
+    def plan_key(self, name: str) -> str: ...
+    def hidden_mismatch(self, frame: Any) -> list[str]: ...
+    def is_typeahead(self, frame: Any, key: str) -> bool: ...
+    def parse_state(self, frame: Any) -> str: ...
+    def guessed_fields(self, frame: Any) -> list[str]: ...
+    def cleared(self, frame: Any, key: str) -> bool: ...
+    def refuses(self, locator: Any) -> bool: ...

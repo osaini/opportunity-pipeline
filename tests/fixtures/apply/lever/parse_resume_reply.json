@@ -1,0 +1,17 @@
+{
+  "_note": "Invented: what POST /parseResume answers was not seen on any board (docs/phase5-lever-handoff-spec.md 3.8). Every value is a fictional guess about a fictional person, and position is deliberately wrong, as are org and the location: a test that sees any of them in a field the student's plan filled has found the parser's guess beating the student's fact.",
+  "name": "Parse Guess",
+  "email": "parse.guess@example.test",
+  "phone": "+1 555 0100",
+  "org": "Wrongco Staffing",
+  "position": "Night Shift Supervisor",
+  "location": {"name": "Guessville, Example State, United States", "id": "fake-place-guessville"},
+  "urls": {
+    "LinkedIn": "https://www.example.test/in/parse-guess",
+    "GitHub": "https://code.example.test/parse-guess",
+    "Twitter": "https://social.example.test/parse_guess",
+    "Other": "https://parse-guess.example.test"
+  },
+  "residentialLocation": {"street": "1 Guess Street", "city": "Guessville", "state": "Example State", "postalCode": "00000", "country": "United States"},
+  "resumeStorageId": "fake-resume-storage-0001"
+}

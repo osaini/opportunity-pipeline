@@ -33,7 +33,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import parse_qs, urlsplit
 
 from .. import ROOT
@@ -42,6 +42,7 @@ from ..outreach.forms import CAPTCHA_WIDGETS, formatting_problem
 from ..outreach.render import request_allowed
 from .agent_types import (
     BUILT_MODES,
+    AdapterBase,
     HANDOFF_EARLY,
     HANDOFF_ELSEWHERE,
     HANDOFF_HIDDEN,
@@ -49,6 +50,8 @@ from .agent_types import (
     HANDOFF_CRASHED,
     HANDOFF_NOT_SUBMITTED,
     HANDOFF_S3,
+    HANDOFF_UNPLANNED_FILE,
+    HANDOFF_UNPLANNED_SEND,
     HANDOFF_UNRECORDED,
     HANDOFF_UPLOAD,
     LEFT_CAPTCHA,
@@ -127,6 +130,15 @@ NO_CONTROL = 'The form has no field for "{question}"'
 NO_OPTIONS = "No options came back for what you typed"
 NO_ENDPOINT = "The app has not confirmed {ats}'s lookup service for this list yet, so it did not ask it"
 PLAN_FAILED = "The app could not plan this form"
+# Lever: the page reads an attached file at once, and its bot check or hCaptcha can stop the fill (docs/phase5-lever-handoff-spec.md 6.3, 6.5, 6.7).
+PARSE_TIMEOUT = "{ats} did not finish reading your résumé. Nothing was filled. {ats} may still have the file."
+CHALLENGE_UNFINISHED = "{ats} showed a check that was not finished in time, so the app stopped before it filled the form. Nothing was sent."
+CLEARED_GUESS = "{ats} filled this from your résumé and the app did not have a confirmed value, so it cleared it"
+RESUME_SENT = "Your résumé was sent to {ats} when the app attached it."
+PAGE_CHANGED = 'The page changed "{question}" itself, which the app never writes. Check it before you press Submit application.'
+# After a file went to the ATS (a page that reads it as it is attached), "Nothing was sent" is no longer true of the file. Each tail below is a sentence's end.
+SENT_TAILS = ("Nothing was sent.", "No application was sent.", "Your application was not sent.")
+NOT_SENT_RESUME = "Your application was not sent. {ats} received your résumé."
 # Not in the shared list: what the agent says when a whole step, not one field, went wrong.
 MORE_PAGES = "This form has more than one page, and the app read only the first"
 OPEN_FAILED = "The app could not open the {ats} form"
@@ -161,7 +173,7 @@ ENGINE_SOURCE: str = _read_engine()
 DENYLIST: tuple[str, ...] = (
     "autofill my application", "apply with seek", "apply with linkedin", "locate me", "dropbox", "google drive", "enter manually",
 )
-CLICK_PURPOSES = ("select_open", "select_option", "select_close", "submit", "captcha_checkbox")
+CLICK_PURPOSES = ("select_open", "select_option", "select_close", "option_pick", "submit", "captcha_checkbox")
 LEGACY_ENABLED = False
 SCREENSHOT_MASK_COLOR = "#000000"
 JOIN_KINDS = frozenset({"listing_mismatch", "wording_mismatch", "hidden_control", "unlisted_required"})
@@ -289,16 +301,29 @@ NO_SIDE_CHANNELS = """(() => {
 # Only a board's own page counts, so a frame the page makes up (about:blank, srcdoc) with a form of that name in it does not.
 PRESS_WORLD = "apply-student-press"
 PRESS_BINDING = "applyStudentPress"
-PRESS_LISTENER = """(() => {
+# The page script is a template: ``press_listener`` fills in the run's ATS's board hosts (``RoutePolicy.navigation_hosts``) and the selector of its
+# Submit control (the adapter's ``press_selector``: Greenhouse's form submit, Lever's visible Submit button), so each ATS's student press is seen on its own page.
+PRESS_LISTENER_TEMPLATE = """(() => {
   const hosts = __HOSTS__;
-  if (hosts.indexOf(location.hostname) < 0) return;
-  const submit = "form#application-form button[type='submit'], form#application-form input[type='submit'], #application_form #submit_app";
+  const submit = __SUBMIT__;
+  if (!submit || hosts.indexOf(location.hostname) < 0) return;
   window.addEventListener('click', (event) => {
     if (!event.isTrusted) return;
     const target = event.target;
     if (target && typeof target.closest === 'function' && target.closest(submit)) window.__BINDING__('1');
   }, true);
-})();""".replace("__HOSTS__", json.dumps(sorted(BOARD_HOSTS))).replace("__BINDING__", PRESS_BINDING)
+})();"""
+
+
+def press_listener(hosts: Iterable[str], submit_selector: str) -> str:
+    """The press listener's source for one ATS: only its board hosts count, and only a trusted click inside ``submit_selector`` is reported.
+
+    ``json.dumps`` writes both values as JavaScript literals. An empty selector reports nothing (an adapter that names no Submit control).
+    """
+    return (PRESS_LISTENER_TEMPLATE.replace("__HOSTS__", json.dumps(sorted(hosts))).replace("__SUBMIT__", json.dumps(submit_selector))
+            .replace("__BINDING__", PRESS_BINDING))
+
+
 # The only DevTools calls the agent makes, and nothing else (tests/test_apply_agent_static.py reads the syntax tree for it).
 PRESS_CDP_CALLS = ("Page.enable", "Runtime.enable", "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument")
 
@@ -307,8 +332,9 @@ PRESS_CDP_CALLS = ("Page.enable", "Runtime.enable", "Runtime.addBinding", "Page.
 # (measured on Playwright 1.62's Chromium: neither a feature flag nor --disable-quic stops its packets), so it, and every worker that could
 # reach one, is closed by the init script alone, in every realm a page can make (tests/test_apply_agent_browser.py names each one).
 #
-# The resolver rule is the catch-all: the browser can look up only the hosts a registered ATS's form and its lookups, static files and
-# CAPTCHA use (each spec's ``route_policy.resolvable_hosts``, joined here) and the fonts every page loads (``RESOLVABLE_HOSTS``), and any other name, an IP address included, fails inside Chromium with no query leaving the machine
+# The resolver rule is the catch-all: the browser can look up only the hosts its own ATS's form and its lookups, static files and
+# CAPTCHA use (that spec's ``route_policy.resolvable_hosts``) and the fonts every page loads (``ApplyAgent.run_launch_options``; ``RESOLVABLE_HOSTS``
+# is the union over every registered ATS, which a launch without a run in hand and the registry-coverage test use), and any other name, an IP address included, fails inside Chromium with no query leaving the machine
 # (WebRTC to an ICE server given as an IP address is not a name lookup: the init script is the only thing that stops it. Measured on
 # Playwright 1.62's Chromium, the resolver rule left ten packets reaching a loopback listener, and no switch silenced both STUN over UDP
 # and TURN over TCP: ``--force-webrtc-ip-handling-policy=disable_non_proxied_udp`` stops the UDP and not the TCP, and the blink and
@@ -345,9 +371,11 @@ PLAYWRIGHT_DISABLED_FEATURES: tuple[str, ...] = (
     "BlockOriginHeaderModificationOnRedirect", "Translate", "AutoDeElevate", "OptimizationHints", "msForceBrowserSignIn",
     "msEdgeUpdateLaunchServicesPreferredVersion",
 )
-LAUNCH_ARGS = (
-    "--disable-blink-features=FetchLaterAPI,WebSocketStream", "--disable-features=" + ",".join((*PLAYWRIGHT_DISABLED_FEATURES, "FedCm")), resolver_rule(),
+LAUNCH_SWITCHES = (
+    "--disable-blink-features=FetchLaterAPI,WebSocketStream", "--disable-features=" + ",".join((*PLAYWRIGHT_DISABLED_FEATURES, "FedCm")),
 )
+# The switches with the resolver rule of the union over every registered ATS. A run launches with its own ATS's names only (``ApplyAgent.run_launch_options``).
+LAUNCH_ARGS = (*LAUNCH_SWITCHES, resolver_rule())
 
 _SCAN = "(a) => OpportunityApplyEngine.scan(a.profile, a.answers, {tag: true})"
 _CONTAINS = "(c, e) => c.contains(e)"
@@ -456,7 +484,7 @@ def bind_endpoints(endpoints: Sequence[Endpoint], token: str) -> tuple[Endpoint,
         if "{token}" in endpoint.path_prefix:
             if not token:
                 continue
-            endpoint = Endpoint(endpoint.host, endpoint.path_prefix.replace("{token}", token), endpoint.kind)
+            endpoint = endpoint._replace(path_prefix=endpoint.path_prefix.replace("{token}", token))
         bound.append(endpoint)
     return tuple(bound)
 
@@ -539,13 +567,14 @@ class _Observer:
 
     def __init__(
         self, page: Any, active: Callable[[], bool], values: Callable[[], Mapping[str, Any]] = lambda: {},
-        submit_path: Callable[[], str] = lambda: "", *, policy: RoutePolicy,
+        submit_path: Callable[[], str] = lambda: "", *, policy: RoutePolicy, board_host: Callable[[], str] = lambda: "",
     ) -> None:
         self.page = page
         self._active = active
         self._policy = policy
         self._values = values
         self._submit_path = submit_path
+        self._board_host = board_host
         self.tracked: list[tuple[Any, str, str, str, bool]] = []
         self.statuses: dict[int, int] = {}
         self.navigated = False
@@ -586,7 +615,7 @@ class _Observer:
         records = []
         for request, method, host, path, passed in self.tracked:
             shown = safe_host(host, values)
-            if self._policy.is_submit_request(host, path, submit_path):
+            if self._policy.is_submit_request(host, path, submit_path, self._board_host()):
                 kept = path
             elif host in (*self._policy.navigation_hosts, *self._policy.submit_hosts) or _captcha_path(host, path, self._policy):
                 kept = path if passed and not (values and leaked_field(RouteRequest(method="GET", url=path), values)) else PATH_WITHHELD
@@ -598,7 +627,7 @@ class _Observer:
 
 # --- The Greenhouse adapter -------------------------------------------------------------------------------------------
 
-class GreenhouseAdapter:
+class GreenhouseAdapter(AdapterBase):
     """Deterministic selectors and reads for Greenhouse's job-boards form. Page text never chooses an action.
 
     Everything that changes the page goes through the agent (``ops``): this class reads, and asks ``ops`` to act.
@@ -606,6 +635,8 @@ class GreenhouseAdapter:
 
     ats = ATS_GREENHOUSE
     form_page_kind = "application_form_new"   # what ``detect_page`` answers for a form the app fills
+    # The student's Submit, for the press listener: a trusted click on the form's submit control (Enter in the form makes one too).
+    press_selector = "form#application-form button[type='submit'], form#application-form input[type='submit'], #application_form #submit_app"
 
     # --- the posting's address ----------------------------------------------------------------------------------
 
@@ -665,8 +696,8 @@ class GreenhouseAdapter:
         return "unknown"
 
     @staticmethod
-    def loader_paths(html: str) -> tuple[str, str, str]:
-        """(the submit host, "submitPath", "confirmationPath") from the served HTML; "" for one that is absent or on another host.
+    def loader_paths(html: str, url: str = "") -> tuple[str, str, str]:
+        """(the submit host, "submitPath", "confirmationPath") from the served HTML; "" for one that is absent or on another host. The address is not read.
 
         The host is the one the submit path names (``job-boards.greenhouse.io`` is a board host the request rules do not accept
         as the submit host), or the submit host itself for a relative path, which is how the board's own script posts it.
@@ -876,7 +907,9 @@ class ApplyAgent:
     ) -> None:
         self.mode = mode
         self.adapter = adapter
-        self._policy: RoutePolicy = spec_for(adapter.ats).route_policy
+        spec = spec_for(adapter.ats)
+        self._policy: RoutePolicy = spec.route_policy
+        self._modes: tuple[str, ...] = spec.supported_modes
         self.run_id = run_id
         self.screenshot_dir = Path(screenshot_dir) if screenshot_dir else None
         self.timeouts = timeouts
@@ -974,6 +1007,18 @@ class ApplyAgent:
         self._captcha_widget_seen = False
         self._page_url = ""
         self._confirmation_path = ""
+        # A page that reads an attached file at once (``AdapterBase.parse_state``; Lever): what the app sent, and what the page then did.
+        self._reads = False
+        self._resume_requests: list[Any] = []      # the requests the route let through to the page's file read
+        self._resume_status: dict[int, int] = {}   # id(request) -> the status the page got
+        self._resume_digest = ""                   # the SHA-256 of the file in the one that passed (never the file)
+        self._parse_result = ""                    # success, failure, oversize or timeout
+        self._resume_stored = False                # the page holds a storage id for the file after a read (it is the page's own, and only read)
+        self._guesses_cleared: list[str] = []      # the keys of fields the page's reader filled and the app cleared
+        self._managed_before: dict[str, str] = {}  # the fields the page keeps for itself, before the app touched anything
+        self._managed_changed: list[str] = []      # the names of those that are not what they were
+        self._last_host = ""                       # the host the main frame was last seen on (the outcome table's ``main_host``)
+        self._items_at_load: list[dict[str, Any]] = []   # the required items the independent check found before the app touched anything
 
     def __enter__(self) -> "ApplyAgent":
         return self
@@ -989,6 +1034,15 @@ class ApplyAgent:
         No channel, no flag that changes how the browser presents itself, nothing that disguises it."""
         return {"headless": headless, "args": list(LAUNCH_ARGS)}
 
+    def run_launch_options(self) -> dict[str, Any]:
+        """``launch_options`` for this run: the same switches, with a resolver rule that names only this run's ATS (its policy's hosts and the fonts) and a test's own lookup hosts.
+
+        Every run launches a browser of its own, so what the resolver rule bounds (a request that skips the route handler: a prerender, a request in
+        flight as the window closes) reaches only the names this run's form uses, not those of another ATS.
+        """
+        hosts = (*self._policy.resolvable_hosts, *FONT_HOSTS, *(endpoint.host for endpoint in self._endpoints))
+        return {"headless": self.headless, "args": [*LAUNCH_SWITCHES, resolver_rule(hosts=tuple(dict.fromkeys(hosts)))]}
+
     @staticmethod
     def context_options() -> dict[str, Any]:
         """No service workers, no downloads, no permissions (so "Locate me" is never granted), and the window's natural size."""
@@ -1000,11 +1054,12 @@ class ApplyAgent:
         from playwright.sync_api import sync_playwright
 
         self._playwright = sync_playwright().start()
-        self._browser = _launch_browser(self._playwright, **self.launch_options(self.headless))
+        self._browser = _launch_browser(self._playwright, **self.run_launch_options())
         self._context = _new_context(self._browser, **self.context_options())
         self._context.on("request", lambda request: self._inflight.add(id(request)))
         self._context.on("requestfinished", lambda request: self._inflight.discard(id(request)))
         self._context.on("requestfailed", lambda request: self._inflight.discard(id(request)))
+        self._context.on("response", self._note_response)
         self._context.add_init_script(NO_SIDE_CHANNELS)
         self._context.route("**/*", self._route)
         self._context.route_web_socket("**/*", self._refuse_socket)
@@ -1012,8 +1067,16 @@ class ApplyAgent:
         if self.mode == "handoff":
             self._watch_presses()
 
+    def _note_response(self, response: Any) -> None:
+        """The status the page got for a file read the route let through (the request is the one the route kept, so no other response counts)."""
+        try:
+            if any(response.request is sent for sent in self._resume_requests):
+                self._resume_status[id(response.request)] = int(response.status)
+        except Exception:  # noqa: BLE001 - a response of a page that is going away
+            pass
+
     def _watch_presses(self) -> None:
-        """Have the browser report the student's own presses of Submit, from a world the page's scripts cannot reach (``PRESS_LISTENER``).
+        """Have the browser report the student's own presses of Submit, from a world the page's scripts cannot reach (``press_listener``).
 
         A failure leaves ``_press_channel`` False: the app then does not type the emailed code, since it could not tell the student's press
         from the widget's own send. This is the one DevTools session the agent opens, and it makes the four calls in ``PRESS_CDP_CALLS``.
@@ -1024,7 +1087,8 @@ class ApplyAgent:
             cdp.send("Page.enable")
             cdp.send("Runtime.enable")
             cdp.send("Runtime.addBinding", {"name": PRESS_BINDING, "executionContextName": PRESS_WORLD})
-            cdp.send("Page.addScriptToEvaluateOnNewDocument", {"source": PRESS_LISTENER, "worldName": PRESS_WORLD, "runImmediately": True})
+            listener = press_listener(self._policy.navigation_hosts, self.adapter.press_selector)
+            cdp.send("Page.addScriptToEvaluateOnNewDocument", {"source": listener, "worldName": PRESS_WORLD, "runImmediately": True})
         except Exception:  # noqa: BLE001 - a browser without DevTools sessions: no press can be seen
             return
         self._cdp = cdp
@@ -1083,6 +1147,9 @@ class ApplyAgent:
                 self._hand_over_and_continue(route, request, decision)
                 return
             self._state.record(decision)
+            if getattr(decision, "resume_post", False):
+                self._resume_requests.append(request)
+                self._resume_digest = str(getattr(decision, "digest", "") or "")
             if self._phase == PHASE_AFTER_HAND_OVER and method not in SAFE_METHODS and self._observer is not None:
                 self._observer.track(request, passed=True)
             if decision.rule == "lookup" and self._state.typing_key:
@@ -1121,10 +1188,14 @@ class ApplyAgent:
         return self._press_arrives(after=before) and looks_like_a_send(facts, self._state, self._policy)
 
     def _resolvable(self, host: str) -> bool:
-        """Whether this host is one of the names the browser may look up (``RESOLVABLE_HOSTS`` and a test's own lookup endpoints)."""
+        """Whether this host is one of the names this run's ATS needs the browser to look up (its policy's, and the fonts) or a test's own lookup endpoints.
+
+        The same names the run's browser was launched with (``run_launch_options``): the route handler checks them too, so a name is refused here before
+        anything resolves it.
+        """
         if not host:
             return False
-        patterns = (*RESOLVABLE_HOSTS, *(endpoint.host for endpoint in self._endpoints))
+        patterns = (*self._policy.resolvable_hosts, *FONT_HOSTS, *(endpoint.host for endpoint in self._endpoints))
         return any(fnmatch.fnmatchcase(host, pattern) for pattern in patterns)
 
     def _abort_request(self, route: Any, request: Any, facts: RouteRequest, decision: Abort, *, own_page: bool = False) -> None:
@@ -1149,10 +1220,13 @@ class ApplyAgent:
             if unsafe and self._phase == PHASE_FILL:
                 if decision.rule == "before_hand_over":
                     self._early = True
-                elif _host_of(request.url) not in self._policy.telemetry_hosts and (is_upload(facts) or _host_of(request.url) in self._policy.form_post_hosts):
+                elif (
+                    _host_of(request.url) not in self._policy.telemetry_hosts
+                    and (is_upload(facts) or decision.rule == "upload_elsewhere" or (_host_of(request.url) in self._policy.form_post_hosts and not self._policy.is_challenge_request(_host_of(request.url), urlsplit(request.url).path)))
+                ):
                     # During the fill either one is fatal: a page that uploads or posts as it is filled is not one the app can leave alone.
                     # (The page's own usage reporting is neither: it is refused, recorded a few times, and the fill goes on.)
-                    self._upload_refused = {"host": safe_host(_host_of(request.url), self._state.values), "rule": decision.rule}
+                    self._upload_refused = {"host": safe_host(_host_of(request.url), self._state.values), "rule": decision.rule, "file": is_upload(facts) or decision.rule == "upload_elsewhere"}
             elif unsafe and self._phase == PHASE_STUDENT:
                 # A POST to a form address (with or without a file in it) is the form sending somewhere the app did not agree to;
                 # an upload to any other address is a file leaving. Either ends the turn: the window is closed, nothing was sent.
@@ -1160,7 +1234,7 @@ class ApplyAgent:
                 # the app did not agree to. A file going to any other address (a résumé or cover-letter parse on a board's API, a
                 # storage host) is a file leaving, whatever the address: that one is an upload, and gets the upload sentence.
                 host = _host_of(request.url)
-                file_leaving = is_upload(facts) and host not in self._policy.telemetry_hosts
+                file_leaving = (is_upload(facts) or decision.rule == "upload_elsewhere") and host not in self._policy.telemetry_hosts
                 if file_leaving and host not in self._policy.submit_hosts:
                     self._closing, self._why_closing = True, "upload"
                 elif student_submit_elsewhere(facts, self._state, self._policy):
@@ -1257,8 +1331,11 @@ class ApplyAgent:
         self._state.typing_key = ""
         self._state.typing_lookup = ""
 
-    def _type(self, locator: Any, value: str, key: str, *, search: bool = False) -> None:
+    def _type(self, locator: Any, value: str, key: str, *, search: bool = False, keys: bool = False) -> None:
         """fill() (trusted input events); then change and blur, except into a search box, whose menu a blur would close.
+
+        ``keys`` (a search box only) empties the box and then presses the text key by key: a list that starts its search on a key event
+        (Lever's location) never sees the input event ``fill`` sends.
 
         The one key that is not a plan field is ``security_code``, accepted only while the agent is typing the emailed code
         (``RouteState.code_typing``), one character to a box.
@@ -1271,7 +1348,11 @@ class ApplyAgent:
             self._refresh_values()
         self._begin(key)
         try:
-            locator.fill(value, timeout=ACTION_TIMEOUT_MS)
+            if keys and search:
+                locator.fill("", timeout=ACTION_TIMEOUT_MS)
+                locator.press_sequentially(value, timeout=ACTION_TIMEOUT_MS)
+            else:
+                locator.fill(value, timeout=ACTION_TIMEOUT_MS)
             if not search:
                 locator.dispatch_event("change")
                 locator.blur()
@@ -1328,7 +1409,7 @@ class ApplyAgent:
             # Finish in browser: the student presses Submit, D1 B. The agent never does, in any mode, not even the second
             # Submit after a security code.
             raise ClickRefused("This kind of run does not press Submit")
-        if purpose not in ("select_open", "select_option", "select_close"):
+        if purpose not in ("select_open", "select_option", "select_close", "option_pick"):
             raise ClickRefused("The app does not press that")
         if not self._clickable_key(key):
             raise ClickRefused("The app does not press a field it did not plan")
@@ -1336,7 +1417,7 @@ class ApplyAgent:
         if not container.evaluate(_CONTAINS, locator.element_handle()):
             raise ClickRefused("The app does not press outside the field it is filling")
         text = _normalize(locator.evaluate(_ACCESSIBLE_TEXT))
-        if any(word in text for word in DENYLIST):
+        if any(word in text for word in DENYLIST) or self.adapter.refuses(locator):
             raise ClickRefused("The app never presses that control")
         self._begin(key)
         if purpose == "select_close":
@@ -1504,19 +1585,48 @@ class ApplyAgent:
         """Between fields: a heartbeat, and the chance to stop.
 
         In a handoff this is also where a press of Submit during the fill, an upload the route refused, a window the student
-        closed and a Stop end the run. The browser is closed first (``_on_stop``), then the result is returned.
+        closed and a Stop end the run. The browser is closed first (``_on_stop``), then the result is returned. On a page whose
+        CAPTCHA can show a challenge while the app fills, it is also where the app stops, touches nothing and waits for the student.
         """
         self._beat()
+        self._stop_checks()
+        if self.mode == "handoff" and self.adapter.waits_for_challenge:
+            self._wait_out_challenge()
+
+    def _stop_checks(self) -> None:
         if self.mode == "handoff":
             if self._early:
                 raise _Stop("needs_you", HANDOFF_EARLY, "early")
             if self._upload_refused:
-                raise _Stop("needs_you", HANDOFF_S3, "board")
+                raise _Stop("needs_you", self._refused_send_sentence(), "board")
             if self._closed():
                 raise _Stop("failed", WINDOW_CLOSED, "closed")
         if self._cancel_requested():
             raise _Stop("failed", STOPPED, self._end())
         self._check_left_site()
+
+    def _refused_send_sentence(self) -> str:
+        """Why the fill ended on a write the request rules refused: a board that uploads as a file is attached (Greenhouse's), or, on a page whose one
+        planned file read is allowed, the form sending something the app did not plan."""
+        if not self._reads:
+            return HANDOFF_S3
+        return HANDOFF_UNPLANNED_FILE if (self._upload_refused or {}).get("file") else HANDOFF_UNPLANNED_SEND
+
+    def _wait_out_challenge(self) -> None:
+        """A challenge frame is up while the app fills (docs/phase5-lever-handoff-spec.md 6.6): stop, touch nothing, bring the window forward
+        and wait for the student to finish it. Gone within ``person_s`` the fill goes on; not, the run ends needs_you with nothing sent."""
+        if not self._challenge_frame():
+            return
+        self._challenge = True
+        self._progress("challenge")
+        self._to_front()
+        until = self._cap(time.monotonic() + self.timeouts.person_s)
+        while self._challenge_frame():
+            if time.monotonic() >= until:
+                raise _Stop("needs_you", self._say(CHALLENGE_UNFINISHED), "challenge")
+            if not self._poll(OUTCOME_POLL_MS, "challenge"):
+                raise _Stop("failed", WINDOW_CLOSED, "closed")
+            self._stop_checks()
 
     def _check_left_site(self) -> None:
         """The page's own main frame was sent to another host after it loaded (a refused navigation): the form is gone, so the run ends here."""
@@ -1576,8 +1686,8 @@ class ApplyAgent:
         if self._phase == PHASE_FILL:
             reason = self._left_site_reason(outcome, reason)
         # No picture once the window is the student's: it would be taken while they may be pressing Submit.
-        if outcome == "needs_you" and self._loaded and self._page is not None and self._phase == PHASE_FILL and not self._closed():
-            self._screenshot("needs-you")
+        if outcome == "needs_you" and self._loaded and self._page is not None and self._phase == PHASE_FILL and not self._closed() and end != "parse":
+            self._screenshot("needs-you")   # (not while a file read is pending: its late answer must land on a closed window, not under a picture)
         if self._handed_over:        # defence in depth: whatever ran during that call, a continued POST is never called "not sent"
             return self._stopped_after_hand_over()
         self._close_browser()
@@ -1664,12 +1774,14 @@ class ApplyAgent:
         return {"open": self._say(OPEN_FAILED), "read": READ_FAILED, "check": CHECK_FAILED}.get(self._step, PLAN_FAILED)
 
     def _run(self, page_url: str, replan: Callable[[list[dict[str, Any]], bool], Any] | None) -> RunResult:
-        if self.mode not in BUILT_MODES:
+        if self.mode not in BUILT_MODES or self.mode not in self._modes:
             return self._finish("failed", [NOT_BUILT])
         if (urlsplit(page_url).hostname or "").lower().rstrip(".") not in self._policy.navigation_hosts:
             return self._finish("failed", [self._say(NOT_BOARD)])
         if self.mode == "lookup" and self._lookup is None:
             return self._finish("failed", [PLAN_FAILED])
+        # The posting's own host, from the address the run was asked to open (its host is a navigation host, checked above): from the first request of the page.
+        self._state.board_host = (urlsplit(page_url).hostname or "").lower().rstrip(".")
         self._endpoints = (
             self._lookup_endpoints_override if self._lookup_endpoints_override is not None
             else bind_endpoints(self._policy.lookup_endpoints, self.adapter.lookup_token(page_url))
@@ -1691,6 +1803,10 @@ class ApplyAgent:
         # 3: what kind of page it is.
         frame = self._frame = self.adapter.form_frame(self._page)
         kind = self._offsite_kind() or self.adapter.detect_page(self._page)
+        if kind == "challenge":
+            # The ATS's bot check, not its form (Cloudflare's interstitial): touch nothing, wait for the student to finish it, and look again.
+            kind = self._wait_for_form()
+            frame = self._frame = self.adapter.form_frame(self._page)
         self._evidence_bits["page"] = kind
         if kind == "application_form_legacy" and not LEGACY_ENABLED:
             raise _Stop("needs_you", self._say(LEGACY))
@@ -1700,14 +1816,17 @@ class ApplyAgent:
             raise _Stop("needs_you", OFFSITE.format(host=self._offsite_host() or (urlsplit(self._page.url).hostname or "another site")))
         if self._popup_refused():
             raise _Stop("needs_you", POPUP)
+        if kind in self.adapter.page_sentences:
+            raise _Stop("needs_you", self.adapter.page_sentences[kind])
         asked, landed = self.adapter.posting_ids(page_url), self.adapter.posting_ids(self._page.url)
         if asked != ("", "") and landed != ("", "") and landed != asked:
             # A board that redirects a posting to another one: what is filled and checked here would be that other posting.
             raise _Stop("needs_you", self._say(DIFFERENT_POSTING))
         if kind != self.adapter.form_page_kind:
             raise _Stop("needs_you", self._say(UNKNOWN_PAGE))
-        submit_host, submit_path, confirmation_path = self.adapter.loader_paths(html)
+        submit_host, submit_path, confirmation_path = self.adapter.loader_paths(html, self._page.url)
         self._state.submit_path = submit_path
+        self._state.board_host = (urlsplit(self._page.url).hostname or "").lower().rstrip(".")
         self._confirmation_path = confirmation_path
         self._evidence_bits["loader"] = {"submit_path": bool(submit_path), "confirmation_path": bool(confirmation_path)}
         uploads = self.adapter.uploads_on_attach(frame)
@@ -1716,6 +1835,7 @@ class ApplyAgent:
             # The page reads a file as it is attached (the file leaves at once, to the ATS's own parser). Noted, never a reason to refuse the board:
             # whether the app may attach a file to such a page is the student's setting, decided where the file is planned.
             self._evidence_bits["reads_on_attach"] = True
+            self._reads = True
         if self.mode == "handoff":
             # Before any input. On a board whose submit address is not the one the request rules know, every Submit would be
             # stopped: safe, and useless.
@@ -1737,6 +1857,28 @@ class ApplyAgent:
         if self._cancel_requested():
             raise _Stop("failed", STOPPED, self._end())
 
+    def _wait_for_form(self) -> str:
+        """The page is the ATS's bot check: bring the window forward, touch nothing, and look again until it is gone (spec 6.3).
+
+        Returns what ``detect_page`` then says. Past ``person_s`` the run ends needs_you, nothing filled and nothing sent.
+        """
+        self._challenge = True
+        self._progress("challenge")
+        self._to_front()
+        until = self._cap(time.monotonic() + self.timeouts.person_s)
+        while True:
+            self._check_stopped()
+            try:
+                kind = self.adapter.detect_page(self._page)
+            except Exception:  # noqa: BLE001 - a page in the middle of reloading is still the check
+                kind = "challenge"
+            if kind != "challenge":
+                return kind
+            if time.monotonic() >= until:
+                raise _Stop("needs_you", self._say(CHALLENGE_UNFINISHED), "challenge")
+            if not self._poll(TURN_POLL_MS, "challenge"):
+                raise _Stop("failed", WINDOW_CLOSED, "closed")
+
     def _open(self, page_url: str) -> str:
         """goto, the status, the settle, and the served HTML (for the loader's paths)."""
         page = self._page
@@ -1748,7 +1890,11 @@ class ApplyAgent:
                 raise _Stop("needs_you", OFFSITE.format(host=host))
             raise _Stop("failed", self._say(OPEN_FAILED))
         if response is not None and response.status >= 400:
-            raise _Stop("failed", self._say(HTTP_STATUS, status=response.status))
+            if response.status == 404 and self.adapter.closed_on_404:
+                raise _Stop("failed", CLOSED)
+            if not (self.adapter.waits_for_challenge and response.status in (403, 503) and self._cloudflare_check(response)):
+                raise _Stop("failed", self._say(HTTP_STATUS, status=response.status))
+            # Cloudflare's check, served with the status it answers a browser it is unsure of with: the student's to pass, waited for like a 200 with no form.
         try:
             page.wait_for_load_state("networkidle", timeout=8_000)
         except Exception:  # noqa: BLE001 - a busy page is read as it stands
@@ -1757,6 +1903,15 @@ class ApplyAgent:
             return str(response.text()) if response is not None else ""
         except Exception:  # noqa: BLE001 - a body the browser no longer holds
             return ""
+
+    def _cloudflare_check(self, response: Any) -> bool:
+        """Whether this error response is Cloudflare's "checking your browser" page: its ``cf-mitigated: challenge`` header, or its title."""
+        try:
+            if str(response.headers.get("cf-mitigated", "")).strip().lower() == "challenge":
+                return True
+            return str(self._page.title()).strip().lower().startswith("just a moment")
+        except Exception:  # noqa: BLE001 - a response or page that cannot be asked is an error page
+            return False
 
     def _offsite_host(self) -> str:
         """The host the run's own page was sent to, from the first refused navigation of that page (a popup's is not it). Not read from
@@ -1795,9 +1950,10 @@ class ApplyAgent:
         # 4: inject, scan (structure only: no student value ever enters the page's JavaScript), snapshot.
         self._step = "read"
         self._progress("read")
-        if not ENGINE_SOURCE:
-            raise _Stop("failed", READ_FAILED)
-        frame.evaluate(ENGINE_SOURCE)
+        if self.adapter.uses_engine:
+            if not ENGINE_SOURCE:
+                raise _Stop("failed", READ_FAILED)
+            frame.evaluate(ENGINE_SOURCE)
         scan = self._scan(frame)
         initial = self._initial = self._snapshot(frame)
         self._check_stopped()
@@ -1812,9 +1968,15 @@ class ApplyAgent:
         # 6: fill. Choices first, because a choice can redraw the form.
         self._beat()
         self._wait(self.timeouts.settle_s)
+        self._bind_page(frame)
         self._step = "fill"
         entries = self._fill_entries()
         self._progress("fill", n=len(entries))
+        if handoff and self._reads:
+            # A page that reads an attached file at once fills fields from it, and overwrites only what the student has not made their own (a
+            # field changed or pasted into that holds a value). So the file goes in first, the app waits until the page has finished with it, and
+            # only then is anything typed: nothing the page's reader does can come after the app's own values (spec 6.5).
+            self._attach_first(frame)
         done: set[str] = set()
         self._fill_choices(frame, done)
 
@@ -1831,6 +1993,8 @@ class ApplyAgent:
         self._fill_ticks(frame)
         self._fill_text(frame)
         self._check_left_site()
+        if handoff and self._reads and self._state.resume_posts_passed:
+            self._clear_guesses(frame)
         if not handoff:
             self._deferred_checks(frame)
 
@@ -1859,13 +2023,17 @@ class ApplyAgent:
         self._step = "check"
         self._progress("check")
         self._check_stopped()
-        seen = frame.evaluate(REQUIRED_CHECK_SCRIPT)
+        seen = self._read_form(frame)
+        # What the page keeps for itself (hidden fields the app never writes) is not an answer: it is compared with what it was, apart from this.
+        controls = [control for control in seen.get("controls", []) if not self.adapter.owns(str(control.get("key") or ""))]
         problems = check_required(
-            seen.get("items", []), self._check_view(), self._schema, initial, controls=seen.get("controls", []), invalid=seen.get("invalid", []),
+            self._items_to_check(seen), self._check_view(), self._schema, initial, controls=controls, invalid=seen.get("invalid", []),
             ats_name=self._policy.display_name,
         )
         if handoff:
             self._resolve_check(frame, problems)
+            self._check_managed(frame)
+            self._check_hidden(frame)
         else:
             self._check_problems.extend(problem_dict(problem) for problem in problems)
         self._page_defaults = self._defaults(seen, initial)
@@ -1888,6 +2056,25 @@ class ApplyAgent:
         more = bool(frame.evaluate(MORE_PAGES_SCRIPT))   # a page that cannot be asked ends the run as "could not check", the step it is in
         self._evidence_bits["more_pages"] = more
         return more
+
+    def _items_to_check(self, seen: Mapping[str, Any]) -> list[Any]:
+        """The required items the check reads. Normally what the form says now. A page whose script drops ``required`` from a box once any box is
+        ticked (Lever's) no longer marks a ticked question required, so the question is read from the page as it loaded and its value from now (spec 3.11, 6.10)."""
+        items = list(seen.get("items", []))
+        if not self.adapter.required_from_load:
+            return items
+        present = {str(item.get("key") or "") for item in items}
+        for loaded in self._items_at_load:
+            key = str(loaded.get("key") or "")
+            if key in present:
+                continue
+            held = [control for control in seen.get("controls", []) if str(control.get("key") or "") == key]
+            if loaded.get("kind") in ("radio", "checkbox"):
+                value: Any = [text for control in held if control.get("checked") for text in _texts(control.get("value_text"))]
+            else:
+                value = held[0].get("value_text") if held else ""
+            items.append({**loaded, "value_text": value, "empty": not _texts(value)})
+        return items
 
     def _check_view(self) -> Any:
         """The plan as the check should read it: the agent's own changes included (a field it left for the student is skipped)."""
@@ -1912,6 +2099,102 @@ class ApplyAgent:
         for problem in self._join_problems:
             if problem["key"] not in raw and problem["kind"] != "hidden_control":
                 self._add_left(problem["key"], problem["question"] or problem["key"], LEFT_FIELD.format(question=problem["question"] or "a field"))
+
+    # --- a page that reads an attached file at once (Lever, docs/phase5-lever-handoff-spec.md 6.5 to 6.8) -------------------------------
+
+    def _bind_page(self, frame: Any) -> None:
+        """Before the first input: what the page carries for itself that the request rules compare a request with, and a record of its own fields."""
+        facts = self.adapter.page_facts(frame)
+        self._state.page_account_id = str(facts.get("account_id") or "")
+        self._managed_before = dict(self.adapter.page_managed(frame))
+
+    def _field_took(self, key: str) -> str:
+        return FIELD_TOOK.format(question=self._question(key))
+
+    def _attach_first(self, frame: Any) -> None:
+        """Attach the planned file before any field is touched, and wait for the page to finish reading it (spec 6.5).
+
+        Only a plan that fills the file does this: while the student has not let the app attach it, the plan leaves it to them. The request
+        rules let exactly one such read pass, of exactly this file (``RouteState.resume_*``), and the page's answer is waited for: ``success``,
+        ``failure`` and ``oversize`` all end it and the fill goes on, a timeout does not (``_wait_for_parse``).
+        """
+        entry = next((item for item in self._fields() if _attr(item, "disposition") == "fill" and _source_kind(item) == "resume"), None)
+        if entry is None:
+            return
+
+        def allow(payload: FilePayload) -> None:
+            self._state.resume_upload_allowed = True
+            self._state.resume_sha256 = hashlib.sha256(payload.buffer).hexdigest()
+            self._state.resume_file_name = payload.name
+
+        def read(control: Any) -> None:
+            # The file is with the page the moment it is in the input: its change handler sends it on. So the read is waited for here, before the app looks
+            # at the input at all, whatever that look finds (a check that fails would otherwise go on to fill while the page's reply is still to come).
+            if int(control.evaluate(_FILE_STATE).get("count") or 0) == 1:
+                self._parse_result = self._wait_for_parse(frame)
+                self._resume_stored = bool(self.adapter.page_facts(frame).get("resume_storage_id"))   # the page's own id for the file: only read
+
+        try:
+            self._attach_entry(frame, entry, before=allow, after=read)
+        finally:
+            self._state.resume_upload_allowed = False
+
+    def _wait_for_parse(self, frame: Any) -> str:
+        """Until the page says it has read the file (success, failure or oversize). A page that does not within ``parse_s`` is still reading it, and a late
+        answer would rewrite fields after the app had filled them, so the run stops before anything is touched, with the window closed first."""
+        until = self._cap(time.monotonic() + self.timeouts.parse_s)
+        while True:
+            try:
+                state = self.adapter.parse_state(frame)
+            except Exception:  # noqa: BLE001 - a page in the middle of a change has not said yet
+                state = ""
+            if state in ("success", "failure", "oversize"):
+                return state
+            if time.monotonic() >= until:
+                self._parse_result = "timeout"
+                raise _Stop("needs_you", self._say(PARSE_TIMEOUT), "parse")
+            if not self._poll(TURN_POLL_MS, "parse"):
+                raise _Stop("failed", WINDOW_CLOSED, "closed")
+            self._stop_checks()
+
+    def _clear_guesses(self, frame: Any) -> None:
+        """The page's reader filled fields from the file. Each one the plan did not fill is emptied, read back empty, and left for the student (spec 6.7).
+
+        A field that cannot be emptied stops the run: the form would hold a value nobody confirmed.
+        """
+        for key in self.adapter.guessed_fields(frame):
+            entry = self._entry(key)
+            if entry is not None and _attr(entry, "disposition") == "fill":
+                continue   # the plan's own value is in it, and the read-back checks that
+            if self.adapter.cleared(frame, key):
+                continue
+            self._between()
+            self._doing = self._question(key)
+            self._type(self.adapter.control(frame, key).first, "", key)
+            if not self.adapter.cleared(frame, key):
+                raise _Stop("needs_you", self._field_took(key))
+            self._guesses_cleared.append(key)
+            reason = self._say(CLEARED_GUESS)
+            if entry is not None:
+                self._leave(key, "left_for_you", reason)
+            else:
+                self._add_left(key, self._question(key), reason)
+
+    def _check_hidden(self, frame: Any) -> None:
+        """Handoff: a field and the hidden field the page keeps beside it agree (Lever's location, spec 6.8). One that does not leaves a value nobody confirmed in
+        what the form submits, so the run stops before the student's turn."""
+        for key in self.adapter.hidden_mismatch(frame):
+            raise _Stop("needs_you", self._field_took(key))
+
+    def _check_managed(self, frame: Any) -> None:
+        """Handoff: the fields the page keeps for itself are what they were before the app began (spec 6.10). A change is for the student to look at."""
+        now = self.adapter.page_managed(frame)
+        for name, was in self._managed_before.items():
+            if name in now and now[name] == was:
+                continue
+            self._managed_changed.append(name)
+            self._check_problems.append(problem_dict(Problem("page_managed", name, PAGE_CHANGED.format(question=name), name, False)))
+            self._add_left(f"page:{name}", name, PAGE_CHANGED.format(question=name))
 
     def _add_left(self, key: str, question: str, reason: str) -> None:
         if not any(item["key"] == key for item in self._extra_left):
@@ -2027,6 +2310,8 @@ class ApplyAgent:
     # --- fill steps --------------------------------------------------------------------------------------------------
 
     def _scan(self, frame: Any) -> list[dict[str, Any]]:
+        if not self.adapter.uses_engine:
+            return [field for field in self.adapter.scan(frame) if isinstance(field, dict)]   # the adapter's own read-only scan
         found = frame.evaluate(_SCAN, {"profile": {}, "answers": []})
         fields = found.get("fields", []) if isinstance(found, dict) else found
         return [field for field in (fields or []) if isinstance(field, dict)]
@@ -2035,9 +2320,18 @@ class ApplyAgent:
     def _scan_keys(fields: list[dict[str, Any]]) -> frozenset[str]:
         return frozenset(str(field.get("id") or field.get("name")) for field in fields if field.get("id") or field.get("name"))
 
+    def _read_form(self, frame: Any) -> dict[str, Any]:
+        """REQUIRED_CHECK_SCRIPT's read of the form, with every item, control and invalid mark under the plan's key for it (``AdapterBase.plan_key``)."""
+        seen = frame.evaluate(REQUIRED_CHECK_SCRIPT)
+        mapped: dict[str, Any] = dict(seen)
+        for name in ("items", "controls", "invalid"):
+            mapped[name] = [{**item, "key": self.adapter.plan_key(str(item.get("key") or ""))} if item.get("key") else item for item in seen.get(name, [])]
+        return mapped
+
     def _snapshot(self, frame: Any) -> dict[str, Any]:
         """Each control's value before anything is typed: {key: value text, or the labels of what is checked}."""
-        seen = frame.evaluate(REQUIRED_CHECK_SCRIPT)
+        seen = self._read_form(frame)
+        self._items_at_load = [dict(item) for item in seen.get("items", [])]
         initial: dict[str, Any] = {}
         for control in seen.get("controls", []):
             key = control.get("key") or ""
@@ -2119,6 +2413,7 @@ class ApplyAgent:
             self._do(frame, entry, tick)
 
     def _fill_text(self, frame: Any) -> None:
+        typeaheads = []
         for entry in self._fill_entries():
             key = str(_attr(entry, "key"))
             if not self._permitted(entry):
@@ -2126,8 +2421,22 @@ class ApplyAgent:
             kind, control = self._control_of(frame, entry)
             if kind not in ("text", "textarea"):
                 continue
+            if self.adapter.is_typeahead(frame, key):
+                typeaheads.append(entry)   # a field that empties itself when it is left with no option chosen: typed after the others
+                continue
             self._between()
             self._do(frame, entry, lambda control=control, key=key, entry=entry: self._type(control.first, str(_attr(entry, "value")), key))
+        for entry in typeaheads:
+            key = str(_attr(entry, "key"))
+            self._between()
+            self._doing = str(_attr(entry, "question") or key)
+            self._do(frame, entry, lambda key=key, entry=entry: self._choose_typed(frame, key, str(_attr(entry, "value"))))
+
+    def _choose_typed(self, frame: Any, key: str, label: str) -> None:
+        """Type the city of the confirmed label, key by key, and choose the option that is the whole label. A field left with no option is emptied."""
+        problem = self.adapter.fill_location(self, frame, key, label)
+        if problem:
+            raise self._took_not(self._question(key))
 
     def _deferred_checks(self, frame: Any) -> None:
         """A deferred field is checked against the page and never put in it: the page must offer exactly what the plan would give."""
@@ -2225,60 +2534,83 @@ class ApplyAgent:
                 self._between()
 
     def _attach_files(self, frame: Any) -> None:
-        handoff = self.mode == "handoff"
         for entry in self._fields():
             source = _attr(entry, "source")
             source_kind = _attr(source, "kind") if source is not None else ""
             if _attr(entry, "disposition") != "fill" or source_kind not in ("resume", "cover_letter"):
                 continue
-            key = str(_attr(entry, "key"))
-            question = str(_attr(entry, "question") or key)
-            letter = source_kind == "cover_letter"
-            self._doing = question
-            payload = self._files.get("cover_letter" if letter else "resume")
-            if payload is None:
-                # A missing file is a gap, not a stop.
-                if handoff:
-                    self._leave(key, "left_for_you", NO_FILE.format(question=question))
-                    continue
-                self._check_problems.append(problem_dict(Problem("file", key, NO_FILE.format(question=question), question, bool(_attr(entry, "required")))))
-                continue
-            self._between()
-            if not self._file_matches(entry, payload, letter):
-                # Nothing is attached; the student can attach their own.
-                if handoff:
-                    self._leave(key, "left_for_you", LEFT_COVER_LETTER_CHANGED if letter else FILE_CHANGED)
-                    continue
-                if letter:
-                    self._left_letter(key, question, entry)
-                    continue
-                raise _Stop("needs_you", FILE_CHANGED)
-            if letter and not self._letter_current(key, entry):
-                # Asked again just before the file goes in: the letter was edited, replaced by a newer draft or unapproved since the run started.
-                if handoff:
-                    self._leave(key, "left_for_you", LEFT_COVER_LETTER_CHANGED)
-                else:
-                    self._left_letter(key, question, entry)
-                continue
-            control = self.adapter.control(frame, key)
-            if not control.count():
-                raise _Stop("needs_you", NO_CONTROL.format(question=question))
-            accept = str(control.first.evaluate(_FILE_STATE).get("accept") or "")
-            if accept and not self._accepts(accept, payload):
-                if handoff:
-                    self._leave(key, "left_for_you", FILE_TYPE.format(question=question))
-                    continue
-                raise _Stop("needs_you", FILE_TYPE.format(question=question))
-            self._attach(control.first, payload, key)
-            state = control.first.evaluate(_FILE_STATE)
-            group_text = self.adapter.field_container(frame, key).inner_text(timeout=ACTION_TIMEOUT_MS)
-            if not (state["count"] == 1 and state["name"] == payload.name and state["size"] == len(payload.buffer) and payload.name in group_text):
-                if handoff:
-                    self._leave_field(frame, entry)   # clears the input
-                    continue
-                raise _Stop("needs_you", FIELD_TOOK.format(question=question))
-            self._done.add(key)
-            self._filled.add(key)
+            if str(_attr(entry, "key")) in self._done:
+                continue   # already attached: a page that reads a file as it is attached takes it before anything else (``_attach_first``)
+            self._attach_entry(frame, entry)
+
+    def _attach_entry(
+        self, frame: Any, entry: Any, *, before: Callable[[FilePayload], None] | None = None, after: Callable[[Any], None] | None = None,
+    ) -> bool:
+        """Attach the file one plan entry names and check the input holds it. True when it does; False when the file was left for the student.
+
+        ``before`` is called with the payload just before it goes in (Lever: the request rules are told which file the page may read). ``after`` is
+        called with the input right after the file is in it and before anything is read back (Lever: the page has begun reading it, and the app waits).
+        """
+        handoff = self.mode == "handoff"
+        source = _attr(entry, "source")
+        source_kind = _attr(source, "kind") if source is not None else ""
+        key = str(_attr(entry, "key"))
+        question = str(_attr(entry, "question") or key)
+        letter = source_kind == "cover_letter"
+        self._doing = question
+        payload = self._files.get("cover_letter" if letter else "resume")
+        if payload is None:
+            # A missing file is a gap, not a stop.
+            if handoff:
+                self._leave(key, "left_for_you", NO_FILE.format(question=question))
+                return False
+            self._check_problems.append(problem_dict(Problem("file", key, NO_FILE.format(question=question), question, bool(_attr(entry, "required")))))
+            return False
+        self._between()
+        if not self._file_matches(entry, payload, letter):
+            # Nothing is attached; the student can attach their own.
+            if handoff:
+                self._leave(key, "left_for_you", LEFT_COVER_LETTER_CHANGED if letter else FILE_CHANGED)
+                return False
+            if letter:
+                self._left_letter(key, question, entry)
+                return False
+            raise _Stop("needs_you", FILE_CHANGED)
+        if letter and not self._letter_current(key, entry):
+            # Asked again just before the file goes in: the letter was edited, replaced by a newer draft or unapproved since the run started.
+            if handoff:
+                self._leave(key, "left_for_you", LEFT_COVER_LETTER_CHANGED)
+            else:
+                self._left_letter(key, question, entry)
+            return False
+        control = self.adapter.control(frame, key)
+        if not control.count():
+            raise _Stop("needs_you", NO_CONTROL.format(question=question))
+        accept = str(control.first.evaluate(_FILE_STATE).get("accept") or "")
+        if accept and not self._accepts(accept, payload):
+            if handoff:
+                self._leave(key, "left_for_you", FILE_TYPE.format(question=question))
+                return False
+            raise _Stop("needs_you", FILE_TYPE.format(question=question))
+        if before is not None:
+            before(payload)
+        self._attach(control.first, payload, key)
+        if after is not None:
+            after(control.first)
+        state = control.first.evaluate(_FILE_STATE)
+        group_text = self.adapter.field_container(frame, key).inner_text(timeout=ACTION_TIMEOUT_MS)
+        # The page shows the name as text, where a run of spaces is one: both sides are read the way text is.
+        if not (
+            state["count"] == 1 and state["name"] == payload.name and state["size"] == len(payload.buffer)
+            and " ".join(payload.name.split()) in " ".join(group_text.split())
+        ):
+            if handoff:
+                self._leave_field(frame, entry)   # clears the input
+                return False
+            raise _Stop("needs_you", FIELD_TOOK.format(question=question))
+        self._done.add(key)
+        self._filled.add(key)
+        return True
 
     @staticmethod
     def _file_matches(entry: Any, payload: FilePayload, letter: bool) -> bool:
@@ -2321,6 +2653,8 @@ class ApplyAgent:
     def _left_items(self) -> list[dict[str, str]]:
         """What the student has to do in the window: plan entries left for them, anything else the check found, the CAPTCHA last."""
         items: list[dict[str, str]] = []
+        if self._reads and self._state.resume_posts_passed:
+            items.append({"key": "resume_sent", "question": "Your résumé", "reason": self._say(RESUME_SENT)})
         for entry in self._plan_entries()[0]:
             if entry["disposition"] != "left_for_you":
                 continue
@@ -2337,7 +2671,10 @@ class ApplyAgent:
         self._step = "turn"
         entries, plan_hash = self._plan_entries()
         shot = next((item for item in reversed(self._screenshots) if item["step"] == "filled"), None)
-        self._observer = _Observer(self._page, lambda: self._handed_over, lambda: self._state.values, lambda: self._state.submit_path, policy=self._policy)
+        self._observer = _Observer(
+            self._page, lambda: self._handed_over, lambda: self._state.values, lambda: self._state.submit_path, policy=self._policy,
+            board_host=lambda: self._state.board_host,
+        )
         self._observer.start()
         # One last look before the turn: a press in the gap after the check is caught here, with the observer already listening.
         self._between()
@@ -2459,9 +2796,11 @@ class ApplyAgent:
         path, query, form_present = self._last_seen
         code_visible = challenge = False
         frame = None
+        main_host = self._last_host
         try:
             page = self._page
             parts = urlsplit(page.url)
+            main_host = self._last_host = (parts.hostname or "").lower().rstrip(".")
             frame = self.adapter.form_frame(page)
             present = frame.locator("form#application-form").count() > 0
             code_visible = self.adapter.security_code_prompt(frame)
@@ -2478,14 +2817,14 @@ class ApplyAgent:
         return Observation(
             main_path=path, main_query=query, form_present=form_present, requests=seen, security_code_visible=code_visible,
             challenge_frame=challenge, submit_path=self._state.submit_path, confirmation_path=self._confirmation_path,
-            board_token=token, job_id=job_id,
+            board_token=token, job_id=job_id, board_host=self._state.board_host, main_host=main_host,
             navigated=bool(self._observer is not None and self._observer.navigated), first_field_error=error,
         )
 
     def _first_error_question(self, frame: Any) -> str:
         """The QUESTION of the first field the form marks as wrong. Never the page's error text: it may quote what the student typed."""
         try:
-            seen = frame.evaluate(REQUIRED_CHECK_SCRIPT)
+            seen = self._read_form(frame)
             for item in seen.get("invalid", []):
                 key = str(item.get("key") or "")
                 entry = self._entry(key) if key else None
@@ -2618,6 +2957,7 @@ class ApplyAgent:
             token, job_id = self.adapter.confirmation_ids(self._page_url)
             return self._policy.confirmation_reached(Observation(
                 main_path=parts.path, main_query=parts.query, confirmation_path=self._confirmation_path, board_token=token, job_id=job_id,
+                board_host=self._state.board_host, main_host=(parts.hostname or "").lower().rstrip("."),
             ))
         except Exception:  # noqa: BLE001 - a page that cannot answer is not on the confirmation page
             return False
@@ -2728,7 +3068,8 @@ class ApplyAgent:
             "submit_status": outcome.get("submit_status"),
             "confirmation_path": str(outcome.get("confirmation_path") or ""),
             "form_absent": bool(outcome.get("form_absent", False)),
-            "upload_refused": dict(self._upload_refused) if self._upload_refused else None,
+            # (whether it was a file is the agent's own note, for the sentence; a Greenhouse run's record is as it always was)
+            "upload_refused": {name: value for name, value in self._upload_refused.items() if name != "file" or self._reads} if self._upload_refused else None,
             # Only for a turn that did not go on to the board: after a hand-over the refused request was a tracker beside the submission.
             **({"elsewhere_seen": dict(self._elsewhere_seen)} if self._elsewhere_seen and not self._handed_over else {}),
             "security_code": {**self._evidence_code, "posted": self._state.code_posts_passed > 0},
@@ -2736,6 +3077,22 @@ class ApplyAgent:
             "browser_closed": self._browser_closed,
             "parent_gone": self._parent_is_gone(),
         })
+        if self._reads:
+            # A page that reads an attached file at once (Lever): what the app sent, what the page did with it, and what the app took back.
+            # Never the file or anything the page read from it. The one request is kept here, not with the submit's (``RunResult.requests``).
+            sent = self._resume_requests[0] if self._resume_requests else None
+            evidence.update({
+                "resume_sent_to_lever": bool(self._state.resume_posts_passed),
+                "resume_parse": self._parse_result,
+                "resume_stored": self._resume_stored,
+                "resume_post": (
+                    {"method": "POST", "host": self._state.board_host, "path": self._policy.resume_post_path,
+                     "status": self._resume_status.get(id(sent)) if sent is not None else None, "sha256": self._resume_digest}
+                    if sent is not None else None
+                ),
+                "guesses_cleared": sorted(self._guesses_cleared),
+                "page_changed": sorted(self._managed_changed),
+            })
         return evidence
 
     def _plan_entries(self) -> tuple[list[dict[str, Any]], str]:
@@ -2773,16 +3130,27 @@ class ApplyAgent:
                 entry["note"] = TYPED_NOT_CHECKED if str(entry["key"]) in self._typed else NOT_FILLED
         return entries, str(_attr(self._plan, "plan_hash") or "")
 
+    def _once_the_file_has_gone(self, sentence: str) -> str:
+        """A sentence that ends "Nothing was sent" is false of the file once the page has read it (spec 6.9): it says the application was not sent, and the ATS has the file."""
+        said = self._say(NOT_SENT_RESUME)
+        if not (self._reads and self._state.resume_posts_passed) or said in sentence:
+            return sentence
+        for tail in SENT_TAILS:
+            if tail in sentence:
+                return sentence.replace(tail, said, 1)
+        return sentence
+
     def _finish(
         self, outcome: str, first: Sequence[str] = (), *, handed_over: bool | None = None, after_click: bool | None = None,
         confirmation_seen: bool = False,
     ) -> RunResult:
         reasons: list[str] = []
+        handed = self._handed_over if handed_over is None else handed_over
         for sentence in [*first, *self._reasons]:
+            sentence = sentence if handed else self._once_the_file_has_gone(sentence)
             if sentence and sentence not in reasons:
                 reasons.append(sentence)
         entries, plan_hash = self._plan_entries()
-        handed = self._handed_over if handed_over is None else handed_over
         clicked = handed if after_click is None else after_click
         return RunResult(
             outcome=outcome, reasons=reasons, plan=entries, plan_hash=plan_hash, join_problems=list(self._join_problems),

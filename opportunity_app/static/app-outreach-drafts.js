@@ -149,7 +149,8 @@
     }
   }
 
-  function draftAssistant(group, item, kind, subjectControl, bodyControl) {
+  // `extra` buttons join the row after Approve.
+  function draftAssistant(group, item, kind, subjectControl, bodyControl, { extra = [] } = {}) {
     const status = kind === "follow_up" ? item.follow_up_status : item.draft_status;
     const fingerprint = kind === "follow_up" ? item.follow_up_fingerprint : item.draft_fingerprint;
     const claimsForKind = kind === "follow_up" ? item.follow_up_claims : item.draft_claims;
@@ -193,7 +194,9 @@
       if (unsaved() && !window.confirm("Replace your unsaved edits with a newly generated draft?")) return;
       const asked = comments ? comments.value.trim() : "";
       generate.disabled = true;
-      approve.disabled = true;
+      // Only what was usable comes back: an extra button may be off for its own reason.
+      const held = [approve, ...extra].filter((button) => !button.disabled);
+      held.forEach((button) => { button.disabled = true; });
       message.textContent = asked
         ? "Rewriting the draft with your comments, from your confirmed profile and this research. This can take a minute…"
         : "Writing a draft from your confirmed profile and this research. This can take a minute…";
@@ -210,7 +213,7 @@
       } catch (error) {
         message.textContent = error.message;
         generate.disabled = false;
-        approve.disabled = false;
+        held.forEach((button) => { button.disabled = false; });
       }
     });
 
@@ -285,7 +288,7 @@
       });
       buttons.appendChild(addLine);
     }
-    buttons.append(generate, approve);
+    buttons.append(generate, approve, ...extra);
     // Right under the buttons: a message pushed below the claims and the
     // provenance note reads as nothing having happened at all.
     panel.append(buttons, message);

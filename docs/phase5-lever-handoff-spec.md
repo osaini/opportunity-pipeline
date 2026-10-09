@@ -142,7 +142,7 @@ Read on 2026-10-04 from six public boards. Each item is something the design rel
    100 characters), and choosing an option writes its JSON into `selectedLocation`. Leaving the field without
    choosing one **empties both fields**. A plain GET of that path from outside a browser session answers **403**, so
    the lookup is reachable only from the page itself; the app does not try to get around that, and what the
-   endpoint returns is **[unseen]**.
+   endpoint returns was recorded on 2026-10-08 (11, Q4).
 10. **hCaptcha is wired to Submit.** The visible button is `#btn-submit` (`type=button`). It runs `hcaptcha.execute()`
     (the sitekey is on the page), and when the token arrives the page clicks a hidden `#hcaptchaSubmitBtn`
     (`type=submit`) so the browser's own `required` checks run first. Pressing Enter in a text field is guarded the
@@ -196,6 +196,12 @@ pages say a little more than section 3 did:
   the no-split check in 5.4 item 8.
 - **`GET {hostedUrl}/thanks`** answered 200 with no application form and no `form#application-form`; a posting that does
   not exist answered 404 with a short page and no form. Neither parses as a form.
+
+**Note, 2026-10-08 (the load recorded: Q3 and Q4).** Two public apply pages were opened with headless Chromium that aborted
+every request but GET, and the Location field was typed into (nothing else was typed, pressed or attached). Item 9 held; items 10 and
+14 were not contradicted (nothing was pressed, and the Submit handler was not read). These are the places where the load says more: hCaptcha and Cloudflare each make POSTs at load, before
+Submit; the location lookup answers a JSON array of `{name, id}`; and one board also loads a LinkedIn "Apply with" widget.
+The lists are in Q3 and Q4 (section 11) and in `tests/fixtures/apply/lever/endpoints.json`.
 
 ---
 
@@ -348,8 +354,8 @@ behavior pinned (section 12, LV1). It does these things and nothing else:
   when it is true and refuses nothing; what L1 decides is decided where Lever's file is planned (LV3).
 - `CLICK_PURPOSES` did not gain `option_pick`: nothing in today's code presses an option the adapter picked itself, so the entry
   would be a click the allowlist permits and nothing makes. It goes in with `LeverAdapter` (LV3), with the test that uses it.
-- `PRESS_LISTENER` (the page script that reports the student's own press of Submit) still names Greenhouse's board hosts and
-  its submit control; LV3 and LV4 give it a per-ATS form with the Lever adapter.
+- The page script that reports the student's own press of Submit named Greenhouse's board hosts and its submit control at LV1; LV3 gave it a
+  per-ATS form (`press_listener(hosts, selector)`, below).
 - Sentences that name the ATS take its display name from the spec (`apply.ats.name_of`, `AtsSpec.display_name`); the pages read the
   payload's `ats_name` (the check, the claim and watch card, an attempt's first event, the automation lists). A record from before
   the name was kept is Greenhouse's, which the pages say. The sentences of `security_code.py` and `schema_client.py` are
@@ -371,7 +377,7 @@ behavior pinned (section 12, LV1). It does these things and nothing else:
   new parameters.
 - `RoutePolicy` for Lever carries the hosts, the one lookup (`/searchLocations`), the two hCaptcha hosts the list already had and the `/{site}/{job}/thanks`
   rule. The résumé POST, the telemetry and Cloudflare paths and the hCaptcha hosts the page loads are LV3's, pinned from the recording (Q3).
-  `RESOLVABLE_HOSTS` is now the union with Lever's two hosts, so a Greenhouse run's browser can resolve them too; its request rules still refuse them.
+  `RESOLVABLE_HOSTS` is now the union with Lever's two hosts; a run's own browser can look up only its own ATS's names (`ApplyAgent.run_launch_options`, see "As built in LV3, the driver").
 - A required `multiple-select` is left to the student. The shared broad net (Phase 5 7.1 "As built") has never ticked a box from the answer library, and
   6.6's "ticks only the chosen boxes" would loosen it, so the stricter rule is kept here until the student decides otherwise.
 - `inbox._job_link` already kept a Lever or Ashby posting's uuid (it is in the path; only Greenhouse's `gh_jid` lives in the query), so it needed no
@@ -379,13 +385,98 @@ behavior pinned (section 12, LV1). It does these things and nothing else:
 - The parser's scanner took time in proportion to the controls times the label text when many controls shared one long `label[for]`; a label now works
   out its words once.
 
+**As built in LV3, the request policy** (`checks.LEVER_ROUTE_POLICY`, `checks.lever_outcome`; pure rules, no browser; the adapter and the hand-over are built on top):
+
+- `RoutePolicy` gained five fields Greenhouse leaves at their defaults: `challenge_path_prefixes` (Cloudflare's bot check), `resume_post_path` (`/parseResume`),
+  `submit_content_types` (the apply POST must be multipart), `bind_submit_host` (the apply POST must go to the posting's own host, `RouteState.board_host`; with none bound
+  nothing is one) and `outcome_table` (`decide_outcome` hands over to `lever_outcome`). Its telemetry list is a `DomainSet`, so `googletagmanager.com`, `google-analytics.com`
+  and `bugsnag.com` cover every subdomain. `RouteState` gained `board_host`, `resume_upload_allowed`, `resume_sha256`, `page_account_id` and `resume_posts_passed`; `Allow` gained
+  `resume_post` and `digest`; `Observation` gained `board_host` and `main_host`.
+- The resume POST is `checks.resume_post_decision`, reached from `route_decision` for a handoff POST to `/parseResume` on the posting's own host, in the fill or the student's
+  turn. Each condition of section 7 is its own rule: `resume_post_off`, `resume_post_second`, `resume_post_content_type`, `resume_post_parts` (not exactly the two parts, in a
+  clean multipart body), `resume_post_file` (the fill only), `resume_post_account`, and `value_guard` for a planned value in the URL, a header, or anywhere outside the `resume` part.
+  Anything else to that path or host is refused by the general rules.
+- Two places where the build is narrower than the text above, until the recording of Q3 shows otherwise: Cloudflare's allowed writes are under `/cdn-cgi/challenge-platform/`
+  and not all of `/cdn-cgi/` (`LEVER_CLOUDFLARE_PATH_PREFIXES`), and the hCaptcha hosts are the ones the load recording saw (`LEVER_CAPTCHA_ENDPOINTS`, the one tuple a recording extends).
+  They were not in `resolvable_hosts` when the request policy was built; the driver joined them (see "As built in LV3, the driver" below).
+- The outcome table has the four rows of 6.13 and the challenge rule; a challenge with no POST sent answers `challenge_wait` with detail `{"waiting": "challenge"}` until the waiting is
+  over. It is not named `waiting`: the shared loop reads that as a security-code prompt, and Lever emails no code.
+- Lever's `RoutePolicy` sets `security_code_posts=False`, so the one-more-POST rule for an emailed code does not exist there: a second POST to the apply URL is refused
+  (`second_submit_post`) whatever the shared prompt counter says.
+- The resume POST in the student's turn needs a file the student chose: `RouteState.student_files_chosen` (the driver raises it on a trusted selection in the page's file input,
+  as the press listener reports Submit) pays for one read each, counted in `student_file_reads_passed`; a read with none left is refused (`resume_post_unasked`). Without that a page
+  script could post any bytes as a "file" before Submit. The part's content type is always read for a planned value, and in the fill so is its file name unless it is exactly
+  `RouteState.resume_file_name`, the name the app attached the file under, or that name as the page rewrites it (each run of characters outside letters, digits, dot, underscore and hyphen made one underscore). The student's own file name is not read.
+- Where the build is wider than the table: the `after hand-over` row lists writes to a CAPTCHA endpoint only, and `route_decision` also allows a write to Cloudflare's challenge path
+  there, as in every other phase (the value guard still reads it). The Hosts paragraph names Cloudflare's beacons, so this follows that text; the owner decides whether the row should refuse it.
+- The value guard sees no cookies: the route handler gives `route_decision` Playwright's `request.headers`, which leaves them out (listed in `docs/known-defects.md`).
+
+**As built in LV3, the driver** (`apply/lever_adapter.py`, and the hooks it uses in `apply/agent.py`; reachable only in tests: no module of the app imports it, `ADAPTERS` and the factory
+do not hold it, and `AtsSpec.adapter_built` stays false, so the runner still answers `ats_not_built`; `tests/test_apply_lever_adapter.py` pins all of that and LV4 changes it):
+
+- The hCaptcha hosts are now in the resolver rule. `LEVER_CAPTCHA_ENDPOINTS` holds what the load recording saw (Q3): `js.hcaptcha.com`, `hcaptcha.com`, `api.hcaptcha.com`,
+  `api2.hcaptcha.com`, and `newassets.hcaptcha.com` under `/captcha/v1/`; `cdn.lever.co` and the logo bucket are static hosts; `bugs.lever.co` (exactly, never `lever.co` by suffix) and
+  `linkedin.com` are telemetry, so the "Apply with LinkedIn" widget's POST into a frame is refused silently and never ends the student's turn. `RESOLVABLE_HOSTS` stays the union over every ATS (the test that every registered host is listed somewhere reads it), but each run launches a Chromium of its own with a resolver
+  rule of its own ATS's names and the fonts (`ApplyAgent.run_launch_options`), and its request rules read the same names (`ApplyAgent._resolvable`), so a Greenhouse run's browser can look up none of the names only Lever needs, nor the reverse. The shard
+  hosts under `w.hcaptcha.com` are not in it (Q3).
+- `LeverAdapter` imports no Playwright: every call is on the frame, page and locators the agent hands in, and whatever changes the page goes through the agent's five helpers
+  (`ops._type`, `_click`), so the static scan of the helpers covers it. `AdapterBase` (`agent_types`) holds what an ATS that needs nothing special does, and Greenhouse's adapter
+  inherits it; the Protocol gained `scan`, `page_facts`, `page_managed`, `owns`, `is_typeahead`, `parse_state`, `guessed_fields`, `cleared` and `refuses`, the attributes `uses_engine`,
+  `closed_on_404`, `waits_for_challenge`, `required_from_load` and `page_sentences`, and `loader_paths(html, url)` (Lever's paths come from the address, since the form has no `action`).
+- The page is read with `LEVER_SCAN` (one read-only `frame.evaluate`; the shared engine is not injected), in the shape `checks.join` reads, and joined by name. The plan's EEO names map back
+  to the controls (`gender` to `eeo[gender]`). A control that shares a name with checkboxes (the pronouns' free-text box) is not a second question.
+- **Order.** After the plan and the page's facts (`accountId`, a snapshot of the page's own hidden fields), a plan that fills the résumé attaches it first (`_attach_first`): the request
+  rules are told the one file the page may read (`RouteState.resume_upload_allowed`, `resume_sha256`, `resume_file_name`), the file goes in through `_attach`, and the agent polls the
+  page's indicators (`parse_state`) for `parse_s` (30 s, a new `ApplyTimeouts` field). Success, failure and oversize all end the wait and the fill goes on; a timeout stops with
+  "Lever did not finish reading your résumé. Nothing was filled. Lever may still have the file." before any field is touched, the window is closed first, and no picture is taken.
+  `RouteState.resume_upload_allowed` is put back to false when the wait ends. The résumé POST is recorded in `evidence_json` (`resume_sent_to_lever`, `resume_parse`, `resume_post`
+  with its status and SHA-256, `guesses_cleared`, `page_changed`), not in `RunResult.requests`: the runner's row 8 reads a passed non-GET there as a submission, so LV4 must exempt
+  the file read before the record moves.
+- **L2 A.** After the fill, when a file read passed (a read that failed or was too large filled nothing), every control `guessed_fields` names that the plan does not fill and that
+  holds a value is emptied through `_type` (`fill("")`, change, blur: for the location that is the page's own handler, which empties `selectedLocation` too), read back empty
+  (`cleared`), and listed with "Lever filled this from your résumé and the app did not have a confirmed value, so it cleared it". A field that will not empty stops the run
+  (`The field "..." did not take the answer`). The list of fields is `PARSER_FIELDS` and the address parts; a test compares it with the stand-in script.
+- **Location.** `fill_location` empties the box, presses the city key by key (the new `keys` option of `_type`, which is where `press_sequentially` lives), waits for options, and
+  chooses the one whose text equals the stored label through `_click(..., "option_pick")`, then reads that the field shows the label and `selectedLocation` is the JSON of an option of
+  that name. No option, two options of that text, or a lookup that fails: the field is emptied again and left for the student. It is typed after the other text fields. The option
+  markup is [unseen] (Q4 recorded the reply, not the page), so an option is `.dropdown-option`, `[role=option]` or `[data-option]`.
+- **Required is read as the page loaded** (`required_from_load`): once a box is ticked the page's script drops `required` from every box, so the check reads which questions were
+  required from the first scan and what they hold from now (3.11, 6.10).
+- **The page's own fields** (`page_managed`, `owns`): a snapshot before the first input and a comparison before the student's turn; `resumeStorageId` is the one the page sets after a
+  read and is left out. A change is a check problem and a "left for you" item (`page:<name>`), never put back. Their names are kept out of the plan check.
+- **hCaptcha and Cloudflare.** A visible challenge frame while the app fills makes `_between` stop, touch nothing, bring the window forward and wait up to `person_s`; past that the run
+  ends `needs_you` with nothing touched. A Cloudflare interstitial (a 200 with no form) is waited out the same way before anything is read. A 404 is "no longer accepting applications",
+  and a `/thanks` page before any press is "This page already says the application was submitted. The app did nothing." A refused Cloudflare beacon in the fill is not the page sending.
+- **A write the rules refused in the fill** ends the run with "The form tried to send a file the app did not plan, so the app stopped it. Nothing was sent." (a file) or "...something the
+  app did not plan..." (anything else), not Greenhouse's "board uploads as you attach" sentence.
+- **Words once the file has gone.** Every sentence that ends "Nothing was sent.", "No application was sent." or "Your application was not sent." ends instead "Your application was not sent.
+  Lever received your résumé." for a run in which the file read passed. The list for the student begins with "Your résumé was sent to Lever when the app attached it." (6.12 step 1).
+- `option_pick` is a `CLICK_PURPOSES` entry. The denylist (`DENYLIST`: the two Submit controls) is the adapter's, it is the only place in `apply/` that names them, and `refuses` is a second
+  lock behind the allowlist. The agent also gained the posting's host from the address the run was asked to open (`RouteState.board_host`, from the first request), the host fields of the
+  outcome table's observation (`board_host`, `main_host`) and the observer's record of the apply path.
+- **Not built here.** The student's own attach in the window (10.4 item 11): the press listener names Lever's hosts and Submit button (see (2) below), and nothing raises
+  `RouteState.student_files_chosen`, so a file the student attaches would be refused and end their turn; the file-chosen signal is LV4. The hand-over and the four outcome rows against FakeLever (10.4
+  items 6 and 7) are LV4's; the generic hand-over path in `_route` is unchanged and its inputs for Lever are in place. Scrolling a target that the cookie banner covers and trying again
+  (6.6) is not built: a covered control is left for the student by the usual failure path. A preflight that checks the shape of Lever's pages (R1) is not built.
+- **After the first review of the driver.** (1) The wait for the read comes right after the file is in the input, before the app looks at the input at all (`_attach_entry`'s `after`): a
+  check of the input that then fails (the page shows the name with its spaces squeezed, or not at all) can no longer let the fill go on while the page's reply is still to come. The file
+  name is compared with spaces read as text reads them. After the fill a last check (`hidden_mismatch`) stops the run if the location and the hidden `selectedLocation` beside it disagree
+  (6.8). (2) A file sent to a CAPTCHA endpoint or Cloudflare's path is refused as `upload_elsewhere` and ends the run like any other refused upload (the student's turn is closed the same way). A file is: the planned file's own bytes, as the whole body under any type or none or as a part of a form with or without a file name (checked by SHA-256, in every phase); and, in the app's fill and in the student's turn until the student's first press, a multipart body with a named file part, an octet-stream body or a body of any declared type that is not text, URL-encoded or JSON (a body with no declared type is left alone). These two readings are Lever's (`RoutePolicy.no_files_before_press`); Greenhouse keeps its answers, because reCAPTCHA posts protobuf. The planned file's bytes are looked for under every policy. After the press hCaptcha is running and a false reading would close the turn in the middle of it, so only the planned file's bytes are looked for. The press is seen on Lever's page: the listener (`apply.agent.press_listener`) is built from the policy's `navigation_hosts` and the adapter's `press_selector` (Lever's is the visible Submit button, `LeverAdapter.press_selector`, taken from the denylist), and counts only a trusted click, so the page's own script click on the hidden button is not a press. `tests/test_apply_lever_browser.py` `StudentPressTests` pins it: a trusted click sets `last_press_at`, and a binary write to hCaptcha after it passes while the planned bytes are still refused. The hCaptcha
+  endpoints are written only by the methods the recording saw (`Endpoint.methods`: POST to `api`, `api2` and `hcaptcha.com`; the script and frame hosts are only read). Cloudflare's
+  allowed path stays `/cdn-cgi/challenge-platform/`, wider than the one beacon path recorded, because no interstitial has been recorded and its own requests are unseen; the file check
+  above is what closes that path to the file as itself, and not to a copy a script has re-encoded (known defects). (3) Each run launches its own browser with the resolver rule of its own ATS (`ApplyAgent.run_launch_options`). (4) The independent check reads
+  the page's `eeo[...]` controls under the plan's names (`plan_key`). (5) The file posted under the attached name rewritten by the page (each run of odd characters one underscore) is
+  not read for a planned value. (6) A Cloudflare check served with 403 or 503 (`cf-mitigated: challenge`, or the title "Just a moment...") is waited for like a 200 with no form (6.3);
+  the page is a challenge whenever a Lever host shows no form and is not `/thanks`, which is wider than 6.3's title or body test. (7) FakeLever's page makes the writes a live one makes
+  as it loads (the three `/checksiteconfig` POSTs and Cloudflare's beacon), and `non_get_requests(noise=False)` leaves out only those.
+
 ### 5.3 The Lever modules
 
 | Module | Holds | Imports |
 | --- | --- | --- |
 | `apply/lever.py` | Constants and URLs: `ATS_LEVER`, `ADAPTER_VERSION = "lever-1"`, `LEVER_HOSTS = ("jobs.lever.co", "jobs.eu.lever.co")`, `canonical_url(site, job_id, host)`, `identify`, the sender-domain check, and the `AtsSpec`/`RoutePolicy` for Lever. | Stdlib and its own siblings only, like `greenhouse.py`. |
 | `apply/lever_form.py` | The pure parser `parse_lever_form(html) -> LeverForm` (5.4). No I/O, no browser. | `html.parser`, `json`, `re`. |
-| `apply/lever_adapter.py` | `LeverAdapter` (the Playwright side, 6.4 to 6.9). Playwright is imported inside the class, as `agent.py` does. | `apply/lever.py`, `apply/checks.py`, `apply/agent_types.py`. |
+| `apply/lever_adapter.py` | `LeverAdapter` (the browser side, 6.4 to 6.9). It imports no Playwright: it reads through the frame, page and locators the agent hands in and acts through the agent's helpers. | `apply/lever.py`, `apply/lever_form.py`, `apply/checks.py`, `apply/agent_types.py`. |
 | `apply/schema_client.py` | A `LeverPageClient` beside `GreenhouseSchemaClient`: `fetch(site, job_id, host) -> str` of HTML. TLS on, 20 s timeout, the pipeline's user agent, response read capped at 4 MB. | Unchanged module, one added class and the factory. |
 
 **`identify`** works on the opportunity's `url`, then its source URLs, then `opportunity_sources` rows whose
@@ -624,6 +715,7 @@ Phase 5 6.9 for the cover letter (M7 wires it). A Lever `file-upload` card is ne
 the app's fill under L1 A, and any file the student attaches during the student's turn (section 7). Any other upload
 attempt, including a second résumé POST during the app's fill, ends the run `needs_you`,
 `after_click=0`, "The form tried to send a file the app did not plan, so the app stopped it. Nothing was sent."
+The student's turn is no different until their first press of Submit: a file sent to a CAPTCHA endpoint or to Cloudflare's path in that stretch ends the turn the same way (section 7).
 
 **Wording once the résumé has gone.** Phase 5's `needs_you`, `after_click=0` sentences end "Nothing was sent." That is
 false once `resume_sent_to_lever` or `student_attached_resume` is true, because Lever has the file. For such a run each
@@ -738,11 +830,11 @@ as-built rule (Phase 5 6.13). The exact paths are pinned after the same recordin
 be reachable by GET: on the page read, Submit does nothing without it (3.10).
 
 **Refused for every method, silently (as Greenhouse's Snowplow host is):** `googletagmanager.com`,
-`google-analytics.com`, and Bugsnag's hosts. The page works without them.
+`www.google-analytics.com`, and Bugsnag's host, which is `bugs.lever.co` (the page's own `bug-snag.js` tag names it). `bugs.lever.co` is a `lever.co` host, so no rule may let `lever.co` through by suffix; the policy lists exact hosts.
 
 | Mode and phase | Allowed | Aborted and recorded |
 | --- | --- | --- |
-| `handoff`, before hand-over | GET, HEAD, OPTIONS (subject to rule 4). `GET /searchLocations` for the field being typed. Non-GET to a CAPTCHA endpoint and to Cloudflare's challenge path (rule 4 applies, so their bodies carry no planned value). **The résumé POST** (below): once during the app's fill if L1 is A, and during the student's turn for any file the student attaches. | Every other non-GET, on any host, including every other upload, and a second résumé POST during the app's fill. |
+| `handoff`, before hand-over | GET, HEAD, OPTIONS (subject to rule 4). `GET /searchLocations` for the field being typed. Non-GET to a CAPTCHA endpoint, by the method the recording saw there (`Endpoint.methods`), and to Cloudflare's challenge path (rule 4 applies, so their bodies carry no planned value); never a file (`upload_elsewhere`; Lever's `RoutePolicy.no_files_before_press`): not in the app's fill, not in the student's turn before their first press of Submit (hCaptcha asks nothing of these addresses until then), and never the planned file's own bytes in any phase. **The résumé POST** (below): once during the app's fill if L1 is A, and during the student's turn for any file the student attaches. | Every other non-GET, on any host, including every other upload, and a second résumé POST during the app's fill. |
 | `handoff`: the student's first POST to the apply URL | The handler asks the parent for the hand-over and calls `route.continue_()` only on a committed True. | The POST, on a False reply, an error, or no reply within 10 s. |
 | `handoff`, after hand-over | One POST to the apply URL per attempt. Non-GET to a CAPTCHA endpoint. GETs. | Every other non-GET. |
 
@@ -758,7 +850,8 @@ into it); and the URL and headers carry no planned value. The multipart body is 
 
 **Navigation DNS layer.** `RESOLVABLE_HOSTS` and the Chromium resolver rule (`agent.py:299-311`) fail DNS for every host
 outside the list, independent of `route_decision`. Adding Lever means adding its hosts to that union (5.2 item 3); a test
-fails if a host in any registered `RoutePolicy` is not resolvable, and the reverse.
+fails if a host in any registered `RoutePolicy` is not resolvable, and the reverse. Each run launches its own browser, so its resolver rule is built from its own ATS's names and the fonts (`ApplyAgent.run_launch_options`); the union is
+only what that test reads, and it does not widen what a Greenhouse run's browser can look up, including the requests that skip the route handler.
 
 ---
 
@@ -829,7 +922,7 @@ survey cards, and a survey whose options carry no `optionId`. A dropdown card wh
 options is **generated by the test**, not checked in.
 
 Beside them: `thanks.html`, `closed.html` (a 404 body), `cloudflare_interstitial.html`, `parse_resume_reply.json` (a
-canned profile with a deliberately wrong `position`), `search_locations_reply.json`, and `endpoints.json` (the pinned
+canned profile with a deliberately wrong `position`), `search_locations_reply.json` (the recorded shape), `search_places.json` (the places the fake offers), and `endpoints.json` (the pinned
 lookup, CAPTCHA and Cloudflare endpoints, filled from the live recording in Q3). The shared `broad_net`, `context_keys`,
 `question_keys` and `sensitive_vectors` fixtures (neutral, run by both the Python and JS suites) gain the survey and
 EEO wordings seen on the three pages.
@@ -872,6 +965,16 @@ a copy of Lever's script; a stand-in hCaptcha script whose challenge frame can b
 `POST`, which per scenario answers 302 to `/thanks`, 200 with the form re-rendered, 4xx, or 5xx. A `FakeLeverPageClient`
 serves the fixtures to the preflight. `PIPELINE_SANDBOX_FAKE_APPLY=1` also seeds one Lever role, so the sandbox shows a
 Lever "what's missing" view and a canned handoff, with no window and nothing sent.
+
+**As built (LV3, `FakeLever` in `tests/apply_fake_ats.py`, self-tested by `tests/test_apply_fake_lever.py`).** The fixtures carry no scripts, so the fake adds the
+stand-ins in `tests/fixtures/apply/lever/` (`parseResume.js`, `application.js`, `hcaptcha_api.js`, `hcaptcha_frame.html`), each written from section 3 and not from
+Lever's code. The hCaptcha pieces are served from `js.hcaptcha.com`, `api.hcaptcha.com` (`/checksiteconfig` says whether the next `execute()` shows a challenge, so the
+switch works while a page is open) and `newassets.hcaptcha.com` (the challenge frame, titled "Main content of the hCaptcha challenge"); those hosts are the fake's
+own choice until Q3 pins the real ones. `execute()` sends what the real widget sends: a GET to `/checksiteconfig`, then a POST from the hidden checkbox frame to `api.hcaptcha.com/getcaptcha/{sitekey}` (and a POST to `/checkcaptcha/...` when a challenge is pressed), so a policy that blocks those POSTs leaves Submit doing nothing, as it would live (the switch `hcaptcha_posts_refused` aborts them). The widget also adds two hidden boxes named `h-captcha-response` and `g-recaptcha-response` to `#h-captcha`, inside the form, as hCaptcha documents; the page's own `h-captcha-response` input makes a second control of that name, and both are posted. The résumé reader's delay (`parse_delay_s`) is kept on the page, not in the route handler, so the browser stays free while "working" shows and a fill made then is overwritten by the reply. Every form page also calls Google Tag Manager and posts an error report to Bugsnag (3.14), unless `third_party_noise` is off. What the fake invents, because section 3 marks it unseen: the `/parseResume` reply (`parse_resume_reply.json`), the shape of
+`/searchLocations` places (`search_places.json`; the recorded shape is `search_locations_reply.json`), how a refused form marks its invalid field (`aria-invalid`) and the challenge frame's markup. Two things it cannot do
+on a route hook, so the scenarios stop short of them: a submit answered with a 302 (Playwright does not route the hop after a fulfilled redirect, so it would reach the
+real `jobs.lever.co`; "to_thanks" answers 200 with a page that moves the browser to `/thanks`), and a submit that never answers (a document POST held open freezes the
+page for Playwright). A `/parseResume` that never answers, or answers late, is fine.
 
 ### 10.4 Browser tests (`browser-python`, Chromium, required in CI)
 
@@ -958,13 +1061,57 @@ stay as they are.
   `unconfirmed` row is narrowed if the answer allows.
 - **Q2. Does Lever accept a Submit whose form carries the file but no `resumeStorageId`?** Matters only for L1 B and for
   a parse that failed (the run continues in that case, so a real Submit is the test).
-- **Q3. The exact hCaptcha and Cloudflare endpoint lists.** The load-time hosts (`js.hcaptcha.com`, its asset hosts,
-  Cloudflare's `/cdn-cgi/` paths) are recorded from a page load before LV3 merges and pinned in `endpoints.json`. The
-  execute-time endpoints exist only after Submit is pressed, so they are first seen at the first real handoff. Until
-  then the non-GET allowlist holds what `checks.py` already has (`hcaptcha.com` and `api.hcaptcha.com`, the hosts
-  hCaptcha posts to). If the challenge needs another, the run says "The form tried to send to an address the app doesn't
-  recognize" and nothing has left; the list is then extended from the recording.
+- **Q3. The exact hCaptcha and Cloudflare endpoint lists.** **Recorded at load 2026-10-08; the execute-time part is still
+  open.** Two public apply pages (the `leverdemo` board and one company board) were loaded with Chromium that aborted
+  every request but GET, and nothing was pressed. Pinned in `tests/fixtures/apply/lever/endpoints.json`. What the page
+  does by itself at load:
+  - **GET, hCaptcha:** `js.hcaptcha.com/1/api.js` and `/1/secure-api.js`; the widget's sub-frame documents
+    (`hcaptcha.html`, `hcaptcha-enclave.html`) from `newassets.hcaptcha.com/captcha/v1/...`; and four `GET /logo.png`
+    fetches, each to a different twelve-hex-digit host `<id>.w.hcaptcha.com` (pinned as a pattern).
+  - **POST, hCaptcha, at load, before anyone presses Submit:** `POST /checksiteconfig` to `api.hcaptcha.com`,
+    `api2.hcaptcha.com` and `hcaptcha.com`, about ten per page (twenty between the two pages). The recording aborted
+    them; the widget's frames still loaded. So the earlier assumption that hCaptcha posts only after Submit is wrong: the
+    policy sees these POSTs on every page, and the checked-in `CAPTCHA_ENDPOINTS` (`checks.py`) does not name
+    `api2.hcaptcha.com`. `api2.hcaptcha.com`, `api.hcaptcha.com` and `hcaptcha.com` received POSTs only, never a GET.
+    They need to resolve (7, "Navigation DNS layer") only if those POSTs are allowed; today they are deliberately
+    unresolvable, so an Allow for them answers `unlisted_host`. The GETs came from `js.hcaptcha.com` and
+    `newassets.hcaptcha.com`, and the static GETs from `jobs.lever.co`, `cdn.lever.co` and
+    `lever-client-logos.s3.amazonaws.com`: those hosts are the ones the resolver list has to cover. The shard GETs were
+    seen, but whether the widget works without them is **unknown**. Do not add a `*.w.hcaptcha.com` wildcard to the
+    resolver: `*` matches dots and any length, so a name under `w.hcaptcha.com` could carry a planned value in its labels
+    (the Greenhouse shard patterns stop at three characters, below `MIN_GUARDED_VALUE`). Before any shard pattern goes
+    into `RESOLVABLE_HOSTS`, a GET-only recording with the shards' DNS failing must show the hCaptcha frames still load
+    and `onLoad` still fires. If the shards turn out to be needed, state the residual DNS exposure (twelve characters
+    under `w.hcaptcha.com`) as an accepted risk. The widget's frames are sub-frame documents, not main-frame
+    navigations (rule 1 is not touched).
+  - **Cloudflare, on the Lever host itself:** `GET /cdn-cgi/challenge-platform/scripts/jsd/main.js` (script) and one
+    beacon `POST /cdn-cgi/challenge-platform/h/g/jsd/oneshot/<token>/<token>` (xhr) per page. No
+    `challenges.cloudflare.com` request, no interstitial.
+  - **Lever's own static hosts:** `jobs.lever.co` (`/js/*`, `/img/*`), `cdn.lever.co` (`/fonts/*`) and
+    `lever-client-logos.s3.amazonaws.com` (the company logo).
+  - **Third parties:** `www.googletagmanager.com/gtag/js` (refused, as listed above). No Bugsnag and no
+    `www.google-analytics.com` request at load. Lever's Bugsnag reports go to `bugs.lever.co` (the `data-endpoint` of
+    the `bug-snag.js` tag), so the adapter puts that exact host in `telemetry_hosts` and never allows `lever.co` by
+    suffix. **New:** the company board loaded the "Apply with LinkedIn" widget
+    (`awliV3.js` from the Lever host, then `platform.linkedin.com` and `www.linkedin.com`, with a POST to the latter);
+    it is not in the list above, and the page loaded with only the widget's POST refused (its GETs were let through), so
+    it goes into the refused hosts, for the adapter's builder to confirm. That POST is a **sub-frame document** request
+    (a form submitted into an iframe at every load), not an xhr. `student_submit_elsewhere` closes the student's turn on
+    any refused non-GET document request to a host that is not telemetry or CAPTCHA, so the adapter must put
+    `www.linkedin.com` (and `platform.linkedin.com`) in `telemetry_hosts`, or otherwise exclude them from that check;
+    otherwise a reload during the student's turn on a board with the widget ends the run as "elsewhere".
+  - No WebSocket on either page.
+  Still open: the endpoints hCaptcha uses after Submit is pressed (`getcaptcha`, `checkcaptcha` and the like), which exist
+  only at the first real handoff. Until then the run behaves as before: an unlisted non-GET is aborted and the run says
+  "The form tried to send to an address the app doesn't recognize", with nothing sent.
 - **Q4. The reply shape of `/searchLocations`** (and its option text), for the location label and its fixture.
+  **Answered 2026-10-08.** On both pages, typing a generic city name with real key presses made the page's own
+  `GET /searchLocations?text=...` (one query parameter, `text`) and it answered 200,
+  `application/json; charset=utf-8`, a JSON array of four objects, each `{"name": <string>, "id": <string>}`: a place
+  label of the form "city, state or region, country" and a 40-character hexadecimal id. No other keys. The page shows
+  the `name` and, on choice, writes the chosen object into `selectedLocation` (3.9). The app types the student's own
+  city and chooses by `name`. Fictional copy with the same shape: `tests/fixtures/apply/lever/search_locations_reply.json`.
+  An empty answer for text with no match was not tried.
 - **Q5. Does any Lever board show an emailed code?** None of six did. If one does, the run stops (6.9).
 
 ---

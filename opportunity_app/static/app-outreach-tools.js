@@ -44,12 +44,14 @@
     { id: "to-contact", label: "To contact", test: outreachToContact },
     { id: "ready", label: "Ready to send", group: "Before sending", tone: "is-good", test: (item) => outreachToContact(item) && item.draft_status === "approved" && outreachReachable(item) && !item.cc_bounced && item.scheduled?.initial?.state !== "scheduled" },
     { id: "scheduled", label: "Scheduled", group: "Before sending", tone: "is-region", test: (item) => ["initial", "follow_up"].some((kind) => ["scheduled", "sending", "transmitting", "failed"].includes(item.scheduled?.[kind]?.state)) || ["scheduled", "sending", "transmitting"].includes(item.scheduled?.thank_you?.state) },
-    { id: "needs-review", label: "Drafts to review", group: "Before sending", tone: "is-soon", test: (item) => outreachDraftNeedsReview(item, "initial") || outreachDraftNeedsReview(item, "follow_up") },
+    // A due follow-up is reviewed under Follow-ups due, so it is not counted here twice.
+    { id: "needs-review", label: "Drafts to review", group: "Before sending", tone: "is-soon", test: (item) => outreachDraftNeedsReview(item, "initial") || (outreachDraftNeedsReview(item, "follow_up") && !item.follow_up_due) },
     { id: "needs-contact", label: "Needs a contact", group: "Before sending", tone: "is-soon", test: (item) => outreachToContact(item) && !outreachReachable(item) },
     { id: "bounced", label: "Bounced", group: "Before sending", tone: "is-alert", test: (item) => Boolean(item.bounced_at) },
     { id: "needs-location", label: "Needs a location", group: "Before sending", tone: "is-soon", test: (item) => outreachToContact(item) && !item.location_verified },
     { id: "from-search", label: "From deep search", group: "Before sending", test: (item) => item.origin === "discovery" && outreachToContact(item) },
-    { id: "follow-ups-due", label: "Follow-ups due", group: "Contacted", tone: "is-alert", test: (item) => item.follow_up_due },
+    // Picking it in the rail opens each company on its Follow-up tab (paneTab).
+    { id: "follow-ups-due", label: "Follow-ups due", group: "Contacted", tone: "is-alert", paneTab: "follow-up", test: (item) => item.follow_up_due },
     { id: "revisits-due", label: "Revisits due", group: "Contacted", tone: "is-alert", test: (item) => item.revisit_due },
     { id: "awaiting", label: "Awaiting reply", group: "Contacted", test: (item) => item.status === "sent" || item.status === "followed_up" },
     { id: "replied", label: "Replied", group: "Contacted", tone: "is-good", test: (item) => ["replied", "call_scheduled", "offer"].includes(item.status) },

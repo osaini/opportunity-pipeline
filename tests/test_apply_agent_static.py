@@ -205,7 +205,7 @@ CDP_SESSION_OWNER = ("apply/agent.py", "_watch_presses")
 CDP_METHODS = {
     "Page.enable": None, "Runtime.enable": None,
     "Runtime.addBinding": ("name", "PRESS_BINDING"),
-    "Page.addScriptToEvaluateOnNewDocument": ("source", "PRESS_LISTENER"),
+    "Page.addScriptToEvaluateOnNewDocument": ("source", "listener"),
 }
 CDP_RECEIVERS = frozenset({"cdp", "_cdp", "session"})
 _CDP_METHOD_SHAPE = re.compile(r"^[A-Z][A-Za-z]+\.[a-z][A-Za-z]+$")
@@ -491,7 +491,7 @@ class MutationTests(unittest.TestCase):
             "def _start(self):\n    self._context.add_init_script(NO_SIDE_CHANNELS)\n",
             "def _watch_presses(self):\n    cdp = self._context.new_cdp_session(self._page)\n    cdp.send('Page.enable')\n    cdp.send('Runtime.enable')\n"
             "    cdp.send('Runtime.addBinding', {'name': PRESS_BINDING, 'executionContextName': PRESS_WORLD})\n"
-            "    cdp.send('Page.addScriptToEvaluateOnNewDocument', {'source': PRESS_LISTENER, 'worldName': PRESS_WORLD, 'runImmediately': True})\n",
+            "    cdp.send('Page.addScriptToEvaluateOnNewDocument', {'source': listener, 'worldName': PRESS_WORLD, 'runImmediately': True})\n",
             "def f(outbox, message):\n    outbox.send(message)\n",
             "def _launch_browser(playwright, **options):\n    return playwright.chromium.launch(**options)\n",
             "def _new_context(browser, **options):\n    return browser.new_context(**options)\n",
@@ -567,13 +567,16 @@ class LaunchIsPlain(unittest.TestCase):
     # hosts a Lever posting lives on, which every registered ATS adds to the one rule: the agent's request rules still refuse them on a Greenhouse run),
     # written out here so that adding a host is a decision someone reads. "s?-recruiting" stands for the numbered logo and banner shards.
     RESOLVABLE = [
-        "api-geocode-earth-proxy.greenhouse.io", "boards.greenhouse.io", "fonts.googleapis.com", "fonts.gstatic.com", "job-boards.cdn.greenhouse.io",
-        "job-boards.greenhouse.io", "jobs.eu.lever.co", "jobs.lever.co", "recruiting.cdn.greenhouse.io", "s?-recruiting.cdn.greenhouse.io",
+        "api-geocode-earth-proxy.greenhouse.io", "api.hcaptcha.com", "api2.hcaptcha.com", "boards.greenhouse.io", "cdn.lever.co", "fonts.googleapis.com",
+        "fonts.gstatic.com", "hcaptcha.com", "job-boards.cdn.greenhouse.io", "job-boards.greenhouse.io", "jobs.eu.lever.co", "jobs.lever.co", "js.hcaptcha.com",
+        "lever-client-logos.s3.amazonaws.com", "newassets.hcaptcha.com", "recruiting.cdn.greenhouse.io", "s?-recruiting.cdn.greenhouse.io",
         "s??-recruiting.cdn.greenhouse.io", "s???-recruiting.cdn.greenhouse.io", "www.gstatic.com", "www.recaptcha.net",
     ]
+    # (This is the browser's one rule, the union over every registered ATS. What a Greenhouse run's own request rules reach is narrower:
+    # tests/test_apply_lever_adapter.py ``ResolvableForARunTests``.)
     # What a closing page can send without the route handler being asked is limited by this list alone, so it holds only what a rehearsal
     # needs before Submit: not Greenhouse's analytics collector or my.greenhouse.io, and no CAPTCHA service a Greenhouse form was not seen to use.
-    LEFT_OUT = ["c.spl.greenhouse.io", "my.greenhouse.io", "www.google.com", "hcaptcha.com", "api.hcaptcha.com", "challenges.cloudflare.com"]
+    LEFT_OUT = ["c.spl.greenhouse.io", "my.greenhouse.io", "www.google.com", "challenges.cloudflare.com", "www.googletagmanager.com", "bugs.lever.co", "www.linkedin.com"]
     ARGS = [
         "--disable-blink-features=FetchLaterAPI,WebSocketStream",
         "--disable-features=" + ",".join((*apply_agent.PLAYWRIGHT_DISABLED_FEATURES, "FedCm")),
@@ -593,8 +596,10 @@ class LaunchIsPlain(unittest.TestCase):
         for host in self.LEFT_OUT:
             self.assertNotIn(host, self.RESOLVABLE)
         self.assertEqual(
-            {endpoint.host for endpoint in apply_checks.CAPTCHA_ENDPOINTS} - set(self.RESOLVABLE), {"www.google.com", "hcaptcha.com", "api.hcaptcha.com", "challenges.cloudflare.com"},
-            "the policy still allows the unconfirmed CAPTCHA hosts; only their names no longer resolve")
+            {endpoint.host for endpoint in apply_checks.CAPTCHA_ENDPOINTS} - set(self.RESOLVABLE), {"www.google.com", "challenges.cloudflare.com"},
+            "the policy still allows the unconfirmed CAPTCHA hosts; only their names no longer resolve (hCaptcha's resolve for Lever's form, below)")
+        self.assertEqual(
+            {endpoint.host for endpoint in apply_checks.LEVER_CAPTCHA_ENDPOINTS} - set(self.RESOLVABLE), set(), "every host Lever's hCaptcha is reached at resolves")
         for host in (*apply_checks.STATIC_ASSET_HOSTS, *BOARD_HOSTS):
             self.assertIn(host, self.RESOLVABLE)
 
@@ -671,7 +676,8 @@ class LaunchIsPlain(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"playwright": mock.MagicMock(), "playwright.sync_api": fake_module}), \
                 mock.patch.object(apply_agent, "_launch_browser", launch):
             agent._start()
-        self.assertEqual(calls["launch"], ApplyAgent.launch_options(True))
+        self.assertEqual(calls["launch"], agent.run_launch_options())
+        self.assertEqual(calls["launch"]["args"][:2], self.ARGS[:2])
         self.assertEqual(calls["context"], ApplyAgent.context_options())
         self.assertEqual(calls["init_script"], apply_agent.NO_SIDE_CHANNELS, "the channels that skip the route handler are removed in every frame before a page script runs")
         for name in SIDE_CHANNELS:
@@ -993,7 +999,8 @@ class PinnedRules(unittest.TestCase):
         self.assertEqual(DENYLIST, (
             "autofill my application", "apply with seek", "apply with linkedin", "locate me", "dropbox", "google drive", "enter manually",
         ))
-        self.assertEqual(CLICK_PURPOSES, ("select_open", "select_option", "select_close", "submit", "captcha_checkbox"))
+        # option_pick is a press on an option of a list the app typed into (Lever's location), inside that field's own container, and nothing else.
+        self.assertEqual(CLICK_PURPOSES, ("select_open", "select_option", "select_close", "option_pick", "submit", "captcha_checkbox"))
         self.assertFalse(apply_agent.LEGACY_ENABLED)
         self.assertEqual(apply_agent.SCREENSHOT_MASK_COLOR, "#000000")
 
