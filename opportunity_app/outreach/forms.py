@@ -1153,10 +1153,7 @@ class FormSubmitter:
                                   if read and read.get("hidden") else
                                   "No contact form on the page (it may be gone, or built in a way the app cannot read)")
                 return result
-            # The form's own words and heading, not its dropdown's options; a
-            # heading that also says contact ("Contact us / Book a demo") is a contact form.
-            heading = str(read.get("heading") or "")
-            purpose = None if CONTACT_LINK.search(heading) else SALES_FORM.search(f"{heading}\n{str(read.get('text') or '')[:400]}")
+            purpose = _sales_purpose(read)
             if purpose:
                 result.update(outcome="needs_you", note=(
                     f"This form is for sales (\"{purpose.group(0)}\"), not general contact, so the app does not use it for your email. "
@@ -1177,12 +1174,8 @@ class FormSubmitter:
             for _attempt in range(4):
                 choices = [fill for fill in plan["fills"] if fill["action"] in {"select", "check"}]
                 for fill in choices:
-                    control = frame.locator(f"[data-pipeline-field='{fill['index']}']").first
                     try:
-                        if fill["action"] == "select":
-                            control.select_option(fill["value"], timeout=FIELD_TIMEOUT_MS, force=True)
-                        else:
-                            control.check(force=True, timeout=FIELD_TIMEOUT_MS)
+                        self._apply(frame, fill)
                     except Exception:  # noqa: BLE001 - a choice the page would not take
                         result.update(outcome="needs_you", note=f"The choice \"{fill['label']}\" could not be made on the page. Nothing was sent")
                         return result
@@ -1207,20 +1200,9 @@ class FormSubmitter:
                     ))
                     return result
             for fill in plan["fills"]:
-                control = frame.locator(f"[data-pipeline-field='{fill['index']}']").first
                 try:
-                    if fill["action"] == "fill":
-                        control.fill(fill["value"], timeout=FIELD_TIMEOUT_MS)
-                        # Some sites only notice a value on change or blur, as when a person tabs away.
-                        control.dispatch_event("change")
-                        control.blur()
-                    elif fill["action"] == "check":
-                        control.check(force=True, timeout=FIELD_TIMEOUT_MS)
-                    elif fill["action"] == "select":
-                        # force: a list hidden behind the site's own dropdown is still the one that is sent.
-                        control.select_option(fill["value"], timeout=FIELD_TIMEOUT_MS, force=True)
-                    elif fill["action"] == "upload":
-                        control.set_input_files(fill["value"], timeout=FIELD_TIMEOUT_MS)
+                    self._apply(frame, fill)
+                    if fill["action"] == "upload":
                         result["attached"] = Path(fill["value"]).name
                 except Exception:  # noqa: BLE001 - a field covered by another element, or read-only
                     result.update(outcome="needs_you", note=(
@@ -1283,6 +1265,23 @@ class FormSubmitter:
                     page.close()
                 except Exception:  # noqa: BLE001
                     pass
+
+    @staticmethod
+    def _apply(frame: Any, fill: dict[str, Any]) -> None:
+        """Make one planned fill on the page. Raises when the page will not take it."""
+        control = frame.locator(f"[data-pipeline-field='{fill['index']}']").first
+        if fill["action"] == "fill":
+            control.fill(fill["value"], timeout=FIELD_TIMEOUT_MS)
+            # Some sites only notice a value on change or blur, as when a person tabs away.
+            control.dispatch_event("change")
+            control.blur()
+        elif fill["action"] == "check":
+            control.check(force=True, timeout=FIELD_TIMEOUT_MS)
+        elif fill["action"] == "select":
+            # force: a list hidden behind the site's own dropdown is still the one that is sent.
+            control.select_option(fill["value"], timeout=FIELD_TIMEOUT_MS, force=True)
+        elif fill["action"] == "upload":
+            control.set_input_files(fill["value"], timeout=FIELD_TIMEOUT_MS)
 
     def _find_form(self, page: Any) -> tuple[Any, dict[str, Any] | None]:
         """The frame holding a visible contact form and what it reads, or (None, {"hidden": True}) when one is only hidden."""
@@ -1398,6 +1397,16 @@ class FormSubmitter:
             return str(path)
         except Exception:  # noqa: BLE001 - evidence is a bonus, not the outcome
             return ""
+
+
+def _sales_purpose(read: dict[str, Any]) -> re.Match[str] | None:
+    """The words that make a form one for buying ("Request a demo"), or None for a contact form.
+
+    Read from the form's own words and heading, not its dropdown's options; a
+    heading that also says contact ("Contact us / Book a demo") is a contact form.
+    """
+    heading = str(read.get("heading") or "")
+    return None if CONTACT_LINK.search(heading) else SALES_FORM.search(f"{heading}\n{str(read.get('text') or '')[:400]}")
 
 
 def _answers_yes(question: Callable[[], bool]) -> bool:
