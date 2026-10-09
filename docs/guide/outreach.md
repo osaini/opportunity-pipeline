@@ -79,7 +79,12 @@ bounce resend check first.
    button is **Approve and schedule for their morning** instead, which queues
    the follow-up for the recipient's next weekday morning (cancellable until it
    goes, and read by the follow-up reviewer first when that is on), with
-   **Approve and send now** beside it. Paste a reply into **Log a reply** to get a suggested status
+   **Approve and send now** beside it. Under Follow-ups due each company has a
+   box to tick, with **Select all** (Shift ticks a run), and the bar above the
+   list queues the ticked follow-ups for their mornings or sends them now. It
+   asks once more before anything goes, approves any not yet approved, asks in
+   one question about any whose approval raises warnings, and lists every
+   company left out and why. Paste a reply into **Log a reply** to get a suggested status
    (call, declined, come back later); nothing changes until you click it. After
    a follow-up goes unanswered for 14 days, the card suggests No response.
 

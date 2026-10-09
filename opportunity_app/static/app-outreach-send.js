@@ -778,6 +778,94 @@
     return button;
   }
 
+  // Why a company in a batch of follow-ups is left out, or "" when it can go.
+  // `how` is "queue" or "send". The same conditions as the one-press buttons,
+  // except that a follow-up already approved goes as it stands.
+  function followUpBatchProblem(item, how) {
+    if (!item.follow_up_subject || !item.follow_up_body || !["generated", "approved"].includes(item.follow_up_status)) {
+      return "no follow-up is written yet";
+    }
+    if (item.status !== "sent") return "it is not waiting on a follow-up";
+    if (!item.contact_email) return "it has no email address";
+    if (item.contact_bounced || item.cc_bounced) return "an address bounced";
+    if (item.possible_reply_count) return "an email from them may be a reply";
+    const queued = item.scheduled?.follow_up?.state;
+    if (["sending", "transmitting"].includes(queued)) return "it is being sent now";
+    if (how === "queue" && queued === "scheduled") return "it is already scheduled";
+    return "";
+  }
+
+  // Approve each follow-up that still needs it, then queue it for the
+  // recipient's next weekday morning or send it now, one company at a time,
+  // with the same requests the one-press buttons make, so every server check
+  // still applies. A batch never accepts warnings on its own: the follow-ups
+  // whose approval asks to review warnings wait until the rest have gone, then
+  // one question lists every warning, as Approve's own question does, and only
+  // a yes approves them. Stops when the session ends. Returns
+  // { done, skipped, stopped }.
+  async function runFollowUpBatch(items, how, onProgress) {
+    const epoch = state.sessionEpoch;
+    const ended = () => state.sessionEpoch !== epoch;
+    const done = [];
+    const skipped = [];
+    const held = [];
+    const WARNINGS = "Review these warnings, then approve again to accept them: ";
+    const deliver = async (item, acknowledge) => {
+      const id = encodeURIComponent(item.id);
+      let approved = false;
+      try {
+        let print = item.follow_up_fingerprint;
+        if (item.follow_up_status !== "approved") {
+          const result = await api(`/api/v1/outreach/${id}/approve`, {
+            method: "POST",
+            body: JSON.stringify({ kind: "follow_up", fingerprint: print, acknowledge_warnings: acknowledge }),
+          });
+          approved = true;
+          print = result.follow_up_fingerprint;
+          if (ended()) return;
+        }
+        const payload = JSON.stringify({ kind: "follow_up", fingerprint: print });
+        if (how === "queue") {
+          const scheduled = await api(`/api/v1/outreach/${id}/schedule`, { method: "POST", body: payload });
+          done.push({ item, label: scheduled.label });
+        } else {
+          const sent = await api(`/api/v1/outreach/${id}/gmail-send`, { method: "POST", body: payload });
+          done.push({ item, marked: sent.marked !== false });
+        }
+      } catch (error) {
+        const message = String(error.message);
+        if (!acknowledge && error.status === 422 && message.startsWith(WARNINGS)) held.push({ item, warnings: message.slice(WARNINGS.length) });
+        else skipped.push({ item, reason: approved ? `approved, but not ${how === "queue" ? "scheduled" : "sent"}: ${message}` : message });
+      }
+    };
+    for (const [index, item] of items.entries()) {
+      if (ended()) break;
+      onProgress(index, items.length, item);
+      const problem = followUpBatchProblem(item, how);
+      if (problem) skipped.push({ item, reason: problem });
+      else await deliver(item, false);
+    }
+    if (held.length && !ended()) {
+      const one = held.length === 1;
+      const accept = window.confirm(
+        `${one ? "One follow-up has" : `${held.length} follow-ups have`} warnings to review:\n\n`
+        + `${held.map(({ item, warnings }) => `• ${item.company}: ${warnings}`).join("\n")}\n\n`
+        + `Approve ${one ? "it" : "them"} anyway and ${how === "queue" ? "queue" : "send"} ${one ? "it" : "them"}?`
+      );
+      for (const [index, { item }] of held.entries()) {
+        if (ended()) break;
+        if (!accept) {
+          skipped.push({ item, reason: "its follow-up has warnings to review, so it is not approved" });
+          continue;
+        }
+        onProgress(index, held.length, item);
+        await deliver(item, true);
+      }
+    }
+    if (how === "send" && done.length) watchForBounces();
+    return { done, skipped, stopped: ended() };
+  }
+
   function cancelScheduleButton(item, kind, text = "Cancel") {
     const button = element("button", "secondary-button", text);
     button.type = "button";
@@ -953,6 +1041,6 @@
     CONTACT_CONFIDENCE_LABELS, DRAFT_PROVIDER_LABELS, DRAFT_STATUS_LABELS, OUTREACH_EVENT_LABELS, OUTREACH_STATUS_LABELS,
     approveAndScheduleButton, approveFollowUpButtons, automaticSendWords, canApproveAndSchedule, checkForBounces, composeControl, formHost, formSendControls, installOutreachSend, outreachChoice,
     outreachContactFormSection, outreachDraftNeedsReview, outreachField, outreachReachable, outreachSendStatus, pauseWords, refocusOutreach,
-    refuseUnsavedHandOff, reloadOutreachAt, repaintPauseWords, scheduleText, scheduleWords, sentFolderCheck,
+    refuseUnsavedHandOff, reloadOutreachAt, repaintPauseWords, runFollowUpBatch, scheduleText, scheduleWords, sentFolderCheck,
   });
 })();

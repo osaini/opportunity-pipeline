@@ -1435,6 +1435,19 @@ details.apply-plan-group .reason-list .profile-help { margin: 2px 0 0; }
 
 /* Outreach tags: plain text on the row (a button), chips with x in the pane. */
 .outreach-row-tags { color: var(--ink-muted); font-size: 10px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Follow-ups due: the bar for ticked companies, and a box beside each row. */
+.outreach-batch { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: var(--space-3) var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-sunken); }
+.outreach-batch-all { display: inline-flex; align-items: center; gap: 8px; color: var(--ink); font-size: 13px; font-weight: 700; cursor: pointer; }
+.outreach-batch-count { margin-right: auto; color: var(--ink-soft); font-size: 13px; }
+.outreach-batch .primary-button { margin: 0; }
+.outreach-batch-why { flex-basis: 100%; margin: 0; }
+.outreach-batch-why:empty { display: none; }
+.outreach-batch-status { flex-basis: 100%; color: var(--ink-soft); font-size: 13px; }
+.outreach-batch-status:empty { display: none; }
+.outreach-batch-status p { margin: 0; color: var(--ink); }
+.outreach-batch-left { margin: 6px 0 0; padding-left: 18px; }
+.outreach-row-pick { display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: start; gap: 8px; }
+.outreach-row-pick > .outreach-pick { margin-top: 15px; cursor: pointer; }
 .outreach-pane .company-tags { margin-top: var(--space-4); }
 .outreach-pane .company-tags .tag-help { font-size: 11px; }
 

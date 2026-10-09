@@ -9,11 +9,14 @@
 
   // From app-ui.js.
   const {
-    announce, chip, element, optionElement, plural, profileField, revealRequested, showError, skeletons,
+    announce, armConfirm, chip, element, optionElement, plural, profileField, revealRequested, showError, skeletons,
   } = App;
 
   // From app-http.js.
   const { api } = App;
+
+  // From app-status.js.
+  const { automationPaused } = App;
 
   // From app-nav.js.
   const { renderSubnav, runViewLoad, selectSubtab } = App;
@@ -22,7 +25,7 @@
   const { createTagPicker } = App;
 
   // From app-outreach-send.js.
-  const { checkForBounces, outreachSendStatus } = App;
+  const { checkForBounces, outreachSendStatus, runFollowUpBatch } = App;
 
   // From app-outreach-drafts.js.
   const { gmailConnectPanel } = App;
@@ -217,6 +220,161 @@
     return [...(pane?.querySelectorAll("form [name]") || [])].some((control) => control.value !== control.dataset.initial);
   }
 
+  // A batch of follow-ups running now ({ how }), and what the last one did, kept
+  // until the next batch or a new pick of the rail tab.
+  let followUpBatch = null;
+  let followUpBatchResult = null;
+
+  function followUpBatchSummary({ how, done, skipped, paused }) {
+    const parts = [];
+    if (!done.length) parts.push(`Nothing was ${how === "queue" ? "queued" : "sent"}.`);
+    else if (how === "queue") {
+      parts.push(`Queued ${plural(done.length, "follow-up", "follow-ups")}${paused
+        ? ". Automation is paused, so they go out after you resume."
+        : ", each for its recipient's next weekday morning."}`);
+    } else parts.push(`Sent ${plural(done.length, "follow-up", "follow-ups")}.`);
+    const unmarked = done.filter((entry) => entry.marked === false).length;
+    if (unmarked) parts.push(`${plural(unmarked, "was", "were")} sent but could not be marked followed up; press "I sent the follow-up" on ${unmarked === 1 ? "it" : "each"}.`);
+    if (skipped.length) parts.push(`${plural(skipped.length, "company was", "companies were")} left out:`);
+    return parts.join(" ");
+  }
+
+  // Follow-ups due lists each company with a box to tick, as Gmail lists mail:
+  // tick some, or all, then queue their follow-ups for each recipient's next
+  // weekday morning or send them now. Both ask again before anything goes, and
+  // name every company left out and why (runFollowUpBatch).
+  function followUpBatchBar(pickable, context, { onSelectAll }) {
+    const bar = element("div", "outreach-batch");
+    bar.setAttribute("role", "group");
+    bar.setAttribute("aria-label", "Ticked follow-ups");
+    const allLabel = element("label", "outreach-batch-all");
+    const all = document.createElement("input");
+    all.type = "checkbox";
+    allLabel.append(all, document.createTextNode("Select all"));
+    const count = element("span", "outreach-batch-count");
+    count.setAttribute("aria-live", "polite");
+    const gmail = context.gmail || {};
+    // The check just before a scheduled send reads Gmail, so queuing needs read access.
+    const canQueue = Boolean(gmail.connected && gmail.bounce_check && context.automation?.scheduled_sending);
+    const why = element("p", "outreach-note outreach-batch-why", !gmail.connected
+      ? "Connect Gmail to queue or send follow-ups from here."
+      : !context.automation?.scheduled_sending
+        ? "Turn on Send on their weekday morning under Settings to queue follow-ups; Send now works without it."
+        : !gmail.bounce_check ? "Reconnect Gmail once to queue follow-ups: the check before a scheduled send reads Gmail." : "");
+    const queue = element("button", "primary-button outreach-batch-queue");
+    queue.type = "button";
+    const send = element("button", "secondary-button outreach-batch-send");
+    send.type = "button";
+    if (gmail.attachment_problem) send.title = gmail.attachment_problem;
+    const status = element("div", "outreach-batch-status");
+    status.setAttribute("aria-live", "polite");
+
+    const picked = () => pickable.filter((item) => state.outreachPicked.has(item.id));
+    const howMany = (n) => (n && n === pickable.length ? "all" : String(n));
+    const queueLabel = () => {
+      const n = picked().length;
+      return n ? `Queue ${howMany(n)} for their morning` : "Queue for their morning";
+    };
+    const sendLabel = () => {
+      const n = picked().length;
+      return n ? `Send ${howMany(n)} now` : "Send now";
+    };
+    // What the second press is about to do, in words.
+    const approving = () => {
+      const n = picked().filter((item) => item.follow_up_status === "generated").length;
+      return n ? ` ${plural(n, "follow-up is", "follow-ups are")} not approved yet and will be approved as written; any with warnings to review waits for you to say.` : "";
+    };
+    // The open company's follow-up would go as saved, not as typed.
+    const unsavedPick = () => {
+      const pane = els.results.querySelector(".outreach-pane[data-outreach-id]");
+      if (!pane || !state.outreachPicked.has(pane.dataset.outreachId)) return false;
+      const edited = ["follow_up_subject", "follow_up_body"].some((name) => {
+        const field = pane.querySelector(`[name="${name}"]`);
+        return Boolean(field) && field.value !== field.dataset.initial;
+      });
+      if (edited) showError(`The ${pane.querySelector("h3")?.textContent || "open"} follow-up has unsaved edits. Save them first, so what goes out is what you see.`);
+      return edited;
+    };
+
+    const update = () => {
+      const n = picked().length;
+      all.checked = n > 0 && n === pickable.length;
+      all.indeterminate = n > 0 && n < pickable.length;
+      count.textContent = `${n} of ${pickable.length} selected`;
+      const running = Boolean(followUpBatch);
+      all.disabled = running || !pickable.length;
+      queue.disabled = running || !n || !canQueue;
+      send.disabled = running || !n || !gmail.connected || Boolean(gmail.attachment_problem);
+    };
+
+    const run = async (how) => {
+      const chosen = picked();
+      if (!chosen.length) return;
+      followUpBatch = { how };
+      followUpBatchResult = null;
+      status.replaceChildren();
+      update();
+      let result;
+      try {
+        result = await runFollowUpBatch(chosen, how, (index, total, item) => {
+          // A reload meanwhile draws a new bar; write to whichever one is on the page.
+          const live = els.results.querySelector(".outreach-batch-status");
+          if (live) live.textContent = `${how === "queue" ? "Queuing" : "Sending"} ${index + 1} of ${total}: ${item.company}…`;
+        });
+      } catch (error) {
+        showError(error.message);
+        return;
+      } finally {
+        followUpBatch = null;
+        // Disarmed, so a later press asks again.
+        changed();
+      }
+      if (result.stopped) return;
+      result.done.forEach(({ item }) => state.outreachPicked.delete(item.id));
+      followUpBatchResult = { how, ...result, paused: automationPaused() };
+      announce(followUpBatchSummary(followUpBatchResult));
+      await loadOutreach();
+    };
+
+    const resetQueue = armConfirm(queue, {
+      idleLabel: queueLabel,
+      armedLabel: () => `Queue ${plural(picked().length, "follow-up", "follow-ups")}?`,
+      prompt: () => `Press again to queue the follow-ups for ${plural(picked().length, "company", "companies")}, each for its recipient's next weekday morning.${approving()} Any that cannot go is left out and named.`,
+      beforeClick: unsavedPick,
+      onConfirm: () => run("queue"),
+    });
+    const resetSend = armConfirm(send, {
+      idleLabel: sendLabel,
+      armedLabel: () => `Send ${plural(picked().length, "follow-up", "follow-ups")} now?`,
+      prompt: () => `Press again to send the follow-ups for ${plural(picked().length, "company", "companies")} now from ${gmail.account || "Gmail"}.${approving()} Any that cannot go is left out and named.`,
+      beforeClick: unsavedPick,
+      onConfirm: () => run("send"),
+    });
+    // A press armed for one set of companies never confirms another.
+    const changed = () => {
+      resetQueue();
+      resetSend();
+      update();
+    };
+    all.addEventListener("change", () => {
+      onSelectAll(all.checked);
+      changed();
+    });
+
+    if (followUpBatch) status.textContent = `${followUpBatch.how === "queue" ? "Queuing" : "Sending"} the ticked follow-ups…`;
+    else if (followUpBatchResult) {
+      status.appendChild(element("p", "", followUpBatchSummary(followUpBatchResult)));
+      if (followUpBatchResult.skipped.length) {
+        const left = element("ul", "outreach-batch-left");
+        followUpBatchResult.skipped.forEach(({ item, reason }) => left.appendChild(element("li", "", `${item.company}: ${reason}`)));
+        status.appendChild(left);
+      }
+    }
+    bar.append(allLabel, count, queue, send, why, status);
+    changed();
+    return { element: bar, changed };
+  }
+
   // The list of companies beside one company's pane. Picking a row swaps the
   // pane without refetching; the selection survives reloads after an action.
   function outreachSplitView(items, tab, context) {
@@ -234,6 +392,20 @@
     list.setAttribute("role", "group");
     list.setAttribute("aria-label", "Companies");
     const host = element("div", "outreach-pane-host");
+
+    // Ticks survive a reload; one whose company left the list goes with it.
+    const pickable = tab.batch ? items.filter(tab.test) : [];
+    const pickableIds = new Set(pickable.map((item) => item.id));
+    [...state.outreachPicked].forEach((id) => { if (!pickableIds.has(id)) state.outreachPicked.delete(id); });
+    const boxes = new Map();
+    const setPicked = (item, on) => {
+      if (on) state.outreachPicked.add(item.id);
+      else state.outreachPicked.delete(item.id);
+      const box = boxes.get(item.id);
+      if (box) box.checked = on;
+    };
+    const batch = tab.batch ? followUpBatchBar(pickable, context, { onSelectAll: (on) => pickable.forEach((item) => setPicked(item, on)) }) : null;
+    let lastPick = null;
 
     const show = (item) => {
       const pane = createOutreachCard(item, context);
@@ -264,7 +436,32 @@
         row.classList.add("is-moved");
         row.querySelector(".outreach-row-bottom")?.prepend(chip(moved(item), "is-new"));
       }
-      list.appendChild(row);
+      if (!batch) {
+        list.appendChild(row);
+        return;
+      }
+      // A box beside the row, not in it: a button cannot hold a checkbox. Shift picks the run since the last tick.
+      const wrap = element("div", "outreach-row-pick");
+      if (pickableIds.has(item.id)) {
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.className = "outreach-pick";
+        box.checked = state.outreachPicked.has(item.id);
+        box.setAttribute("aria-label", `Select ${item.company}`);
+        box.addEventListener("click", (event) => {
+          const index = pickable.indexOf(item);
+          const [from, to] = event.shiftKey && lastPick !== null ? [Math.min(lastPick, index), Math.max(lastPick, index)] : [index, index];
+          pickable.slice(from, to + 1).forEach((other) => setPicked(other, box.checked));
+          lastPick = index;
+          batch.changed();
+        });
+        boxes.set(item.id, box);
+        wrap.appendChild(box);
+      } else {
+        wrap.appendChild(element("span", "outreach-pick-spacer"));
+      }
+      wrap.appendChild(row);
+      list.appendChild(wrap);
     });
     // Up and down walk the list; each row it lands on opens.
     list.addEventListener("keydown", (event) => {
@@ -278,7 +475,7 @@
       target.click();
     });
 
-    split.append(list, host);
+    split.append(...(batch ? [batch.element] : []), list, host);
     show(items.find((item) => item.id === state.outreachSelected));
     return split;
   }
@@ -308,6 +505,11 @@
       const tab = OUTREACH_TABS.find((entry) => entry.id === state.subtabs.outreach) || OUTREACH_TABS[0];
       const railPicked = state.outreachRailPicked;
       state.outreachRailPicked = false;
+      // A new pick of the rail tab starts with nothing ticked and no batch summary.
+      if (railPicked) {
+        state.outreachPicked.clear();
+        followUpBatchResult = null;
+      }
       const running = payload.discovery.active?.state === "running";
       // A search or tag narrows every tab, so each count reads "6 of 20" and
       // matches the list it opens.
