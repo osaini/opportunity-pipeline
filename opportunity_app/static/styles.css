@@ -1130,10 +1130,39 @@ details.apply-plan-group .reason-list .profile-help { margin: 2px 0 0; }
 .outreach-form-actions .form-status { order: 2; }
 .outreach-form-actions .form-status { margin: 0; }
 .outreach-history { margin-top: 16px; }
-.outreach-timeline { display: grid; gap: 6px; margin: 0; padding-left: 18px; color: var(--ink-soft); font-size: 11px; }
-.outreach-timeline li { display: flex; flex-wrap: wrap; gap: 8px; }
-.outreach-timeline small { color: var(--ink-muted); }
-.outreach-event-detail { flex-basis: 100%; margin: 2px 0 0; color: var(--ink-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.outreach-history-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 0 0 14px; }
+.outreach-history-head h4 { margin: 0; }
+.outreach-history-count { color: var(--ink-muted); font-size: 10px; }
+/* History: one group per day; each event a dot on a line, its time to the left and what it recorded under its name. */
+.outreach-timeline { --history-time: 58px; --history-rail: 74px; display: grid; gap: 20px; }
+.outreach-history-day { display: grid; gap: 10px; }
+.outreach-history-date { margin: 0; padding-bottom: 6px; border-bottom: 1px solid var(--line); color: var(--ink-muted); font-size: 10px; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; }
+.outreach-history-events { display: grid; margin: 0; padding: 0; list-style: none; }
+.outreach-event { position: relative; display: grid; gap: 5px; justify-items: start; padding: 0 0 16px calc(var(--history-rail) + 14px); }
+.outreach-event:last-child { padding-bottom: 2px; }
+.outreach-event::before { content: ""; position: absolute; top: 6px; bottom: -6px; left: var(--history-rail); width: 1px; background: var(--line-strong); }
+.outreach-event:last-child::before { display: none; }
+.outreach-event::after { content: ""; position: absolute; top: 4px; left: calc(var(--history-rail) - 4px); box-sizing: border-box; width: 9px; height: 9px; border-radius: 50%; background: var(--line-strong); }
+.outreach-event.is-good::after { background: var(--accent); }
+.outreach-event.is-reply::after { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.outreach-event.is-soon::after { background: var(--gold); }
+.outreach-event.is-warning::after { background: var(--danger); }
+.outreach-event.is-status::after { border: 2px solid var(--accent); background: var(--surface); }
+.outreach-event-time { position: absolute; top: 1px; left: 0; width: var(--history-time); color: var(--ink-muted); font-size: 10px; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.outreach-event-title { color: var(--ink); font-size: 12px; font-weight: 650; line-height: 1.4; }
+.outreach-event-title.is-status { font-weight: 600; }
+.outreach-status-from { color: var(--ink-muted); }
+.outreach-status-to { color: var(--accent-strong); font-weight: 750; }
+.outreach-event .outreach-event-detail { margin: 0; color: var(--ink-soft); font-size: 11px; line-height: 1.5; }
+.outreach-event-address { color: var(--ink); font-weight: 650; }
+.outreach-event-link { color: var(--accent-strong); }
+.outreach-event-reply { display: grid; gap: 4px; justify-items: start; width: 100%; }
+.outreach-event-quote { box-sizing: border-box; width: 100%; max-width: 640px; margin: 0; padding: 8px 12px; border-left: 3px solid var(--accent); border-radius: 0 var(--radius-xs) var(--radius-xs) 0; color: var(--ink); background: var(--surface-sunken); font-size: 11px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.outreach-event-quote.is-folded { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 6; }
+.outreach-event-more { min-height: 24px; color: var(--accent-strong); font-size: 10px; font-weight: 750; }
+.outreach-event .outreach-claims { margin: 0; }
+@media (max-width: 720px) { .outreach-timeline { --history-time: 48px; --history-rail: 58px; } }
+.outreach-event-detail { margin: 2px 0 0; color: var(--ink-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .outreach-compose { min-height: var(--control-sm); padding: 0 var(--field-pad-x); display: inline-flex; align-items: center; text-decoration: none; }
 .outreach-gmail-connect { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0; }
 .outreach-gmail-connect .profile-help { margin: 0; flex: 1 1 260px; }
