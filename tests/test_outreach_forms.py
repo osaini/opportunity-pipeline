@@ -241,6 +241,10 @@ class FakeSubmitter:
             self.at_click()
             return {"outcome": "unconfirmed", "note": FORM_PRESSED_NOTE, "confirmation": "", "filled": ["Message"], "screenshot": "",
                     "attached": "", "by_you": [], "changed": [], "held_back": [], "pressed_at": "2026-10-09T08:00:00.000000+00:00"}
+        if outcome == "yes_then_nothing":
+            self.before_button()
+            return {"outcome": "needs_you", "note": "You closed the window before the form was sent. Nothing was sent", "confirmation": "",
+                    "filled": [], "screenshot": "", "attached": "", "held_back": []}
         if outcome == "pause_at_button":
             # As FormSubmitter does: asked just before the button, and stopped there.
             self.before_button()
@@ -811,6 +815,20 @@ class FormSendTests(unittest.TestCase):
             state = conn.execute("SELECT state FROM outreach_contact_forms").fetchone()["state"]
         self.assertEqual((said, state), ([], "unconfirmed"))
 
+    def test_a_yes_from_another_tab_during_a_no_window_closed_without_a_press_is_kept(self):
+        target = self.pressed_in_browser()
+
+        def yes_elsewhere():
+            self.client.patch(f"/api/v1/outreach/{target['id']}", headers=AUTH, json={"status": "sent"})
+
+        self.submitter.outcomes = ["yes_then_nothing"]
+        self.submitter.before_button = yes_elsewhere
+        self.send(target, in_browser=True, retry_unconfirmed=True)
+        form = self.get(target)["contact_form"]
+        self.assertEqual((self.get(target)["status"], form["state"], form["asks"]), ("sent", "submitted", False))
+        with closing(connect_product(self.platform_path)) as conn:
+            self.assertEqual([row["state"] for row in conn.execute("SELECT state FROM outreach_send_claims")], ["sent"])
+
     def test_a_yes_that_lands_before_the_press_is_recorded_is_kept(self):
         target = self.pressed_in_browser()
 
@@ -1042,6 +1060,10 @@ QUEUED_SOCKET_FORM = SCRIPT_FORM.replace('<div id="root"></div><script>', """<di
     'await fetch("/api/contact", {method: "POST", body: JSON.stringify({',
     'queue.push(document.getElementById("e").value); root.innerHTML = "<p>Thank you for your message!</p>"; return;\n'
     '    await fetch("/api/contact", {method: "POST", body: JSON.stringify({')
+
+
+# The same, without the thank-you: the form stays on the page.
+QUIET_SOCKET_FORM = QUEUED_SOCKET_FORM.replace('root.innerHTML = "<p>Thank you for your message!</p>"; ', "")
 
 
 # A page that hands the filled name to a worker, which would open a WebSocket with it.
@@ -1553,17 +1575,36 @@ class FinishInBrowserTests(unittest.TestCase):
         self.assertEqual(pressed, [1])
 
     def test_a_form_whose_way_of_sending_is_a_refused_websocket_sent_nothing(self):
-        # The page's socket, opened at load, is refused; it queues the message and thanks the student anyway. Nothing
-        # carrying the message left, so nothing was sent, and the card says why rather than ask.
-        result, site, pressed = self.submit(QUEUED_SOCKET_FORM, lambda window, site: window.get_by_role("button", name="Send").click(),
+        # The page's socket, opened at load, is refused; it queues the message, and nothing leaves and the form stays:
+        # nothing was sent, and the card says why.
+        result, site, pressed = self.submit(QUIET_SOCKET_FORM, lambda window, site: window.get_by_role("button", name="Send").click(),
                                             close=False, wait=3)
         self.assertEqual((result["outcome"], site.posts), ("needs_you", []), result)
         self.assertIn("over a connection the app does not allow (a WebSocket)", result["note"])
         self.assertIn("WEBSOCKET bovi.test", result["held_back"])
 
+    def test_a_refused_websocket_never_decides_once_the_form_went_from_the_page(self):
+        # The page thanks the student and drops the form, though its socket was refused: the card asks, with the reason,
+        # since the app cannot tell an empty thank-you from a send it could not read.
+        result, site, _pressed = self.submit(QUEUED_SOCKET_FORM, lambda window, site: window.get_by_role("button", name="Send").click(),
+                                             close=False, wait=3)
+        self.assertAsked(result)
+        self.assertIn("also tried a connection the app refused (a WebSocket)", result["note"])
+
+    def test_a_refused_socket_never_decides_once_something_left(self):
+        # The form goes as a base64 body the app cannot read, while a widget's socket (opened after the fill) is refused.
+        encoded = SCRIPT_FORM.replace(
+            'await fetch("/api/contact", {method: "POST", body: JSON.stringify({',
+            'new WebSocket("wss://widget.example/live"); await fetch("/api/contact", {method: "POST", body: btoa(JSON.stringify({').replace(
+            "message: document.getElementById(\"m\").value})});", "message: document.getElementById(\"m\").value.slice(0, 5)}))});").replace(
+            "Thank you for your message! We'll reply soon.", "Done.")
+        result, site, _pressed = self.submit(encoded, lambda window, site: window.get_by_role("button", name="Send").click(), close=False, wait=3)
+        self.assertEqual([path for path, _ in site.posts], ["/api/contact"])
+        self.assertAsked(result)
+
     def test_a_refused_websocket_is_noted_even_where_the_page_forbids_its_own_requests(self):
         # The page's content security policy forbids every connection it makes, which would also stop a report sent as a request.
-        strict = QUEUED_SOCKET_FORM.replace("<html><body>", """<html><head><meta http-equiv="Content-Security-Policy" content="connect-src 'none'"></head><body>""")
+        strict = QUIET_SOCKET_FORM.replace("<html><body>", """<html><head><meta http-equiv="Content-Security-Policy" content="connect-src 'none'"></head><body>""")
         result, site, _pressed = self.submit(strict, lambda window, site: window.get_by_role("button", name="Send").click(), close=False, wait=3)
         self.assertIn("WEBSOCKET bovi.test", result["held_back"])
         self.assertEqual(result["outcome"], "needs_you", result)

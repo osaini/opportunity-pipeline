@@ -1824,7 +1824,6 @@ class FormSubmitter:
                 self._gate = "open"  # the student pressed send: what the form sends may leave
 
         unrecorded: list[str] = []  # requests held back because the press they followed could not be recorded
-        carried: list[str] = []  # of what left after the press, what carried the student's details
 
         def gone(request: Any) -> bool:
             """Whether this request, which may carry the form, may go: only once the press is recorded."""
@@ -1837,8 +1836,6 @@ class FormSubmitter:
                         return False
                 result["pressed_at"] = utc_now()
             left.append(f"{request.method} {urlsplit(request.url).hostname or ''}")
-            if _carries(request, self._needles):
-                carried.append(left[-1])
             return True
 
         def held_line() -> list[str]:
@@ -1910,16 +1907,15 @@ class FormSubmitter:
         self._gate = "closed"
         self._left_sink = None
         refused_socket = any(entry.startswith("WEBSOCKET ") for entry in self.held_back)
-        if (left or vanished) and refused_socket and not carried:
-            # The page's way of sending was a WebSocket the app refused, and nothing carrying the student's message left:
-            # whatever the page then said, nothing was sent.
-            result.update(outcome="needs_you", confirmation="", note=(
-                "The page tried to send it over a connection the app does not allow (a WebSocket), and nothing carrying your "
-                "message left the page, so nothing was sent. Send it from their page in your own browser"))
-        elif left or vanished:
-            # The app does not judge what the page said: the student does, on the card.
+        if left or vanished:
+            # The app does not judge what the page said: the student does, on the card. A refused socket decides nothing
+            # once something left (that may have been the form, in a form the app cannot read) or the form went: the
+            # note gives the student the reason to weigh.
             result.update(outcome="unconfirmed", confirmation="", note=FORM_PRESSED_NOTE)
             self._note_students_part(result, plan, held, presses[-1] if presses else {})
+            if refused_socket:
+                result["note"] += (" Their page also tried a connection the app refused (a WebSocket), which may have been "
+                                   "its way of sending: if it showed an error, answer No.")
         else:
             minutes = max(1, round(self.person_wait / 60))
             parts = ["You closed the window before the form was sent. Nothing was sent" if closed else
@@ -1927,6 +1923,10 @@ class FormSubmitter:
             if presses:
                 parts[0] = ("You pressed send, but nothing left the page (it may have shown an error), and then "
                             + ("closed the window. Nothing was sent" if closed else "the time ran out. Nothing was sent"))
+                if refused_socket:
+                    # Nothing left and the form stayed: the page's way of sending was a socket the app refused.
+                    parts[0] = ("You pressed send, but the page tried to send it over a connection the app does not allow "
+                                "(a WebSocket), and nothing left the page, so nothing was sent. Send it from their page in your own browser")
             if notes:
                 parts.append("Left for you: " + "; ".join(notes))
             hosts = sorted({entry.split(" ", 1)[1] for entry in self.held_back if " " in entry})
