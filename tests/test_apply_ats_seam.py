@@ -22,6 +22,7 @@ import types
 import unittest
 from pathlib import Path
 from unittest import mock
+from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -279,6 +280,7 @@ class AdapterProtocolTests(unittest.TestCase):
             "form_frame", "detect_page", "loader_paths", "uploads_on_attach", "reads_on_attach", "posting_ids", "lookup_token", "confirmation_ids",
             "security_code_prompt", "security_code_inputs", "captcha_widget",
             "control", "control_kind", "is_react_select", "field_container", "choices", "fill_location", "read_options",
+            "scan", "page_facts", "page_managed", "owns", "plan_key", "hidden_mismatch", "is_typeahead", "parse_state", "guessed_fields", "cleared", "refuses",
         })
 
     def test_the_agent_calls_nothing_on_its_adapter_that_the_protocol_does_not_name(self):
@@ -479,6 +481,18 @@ class RoutePolicyValuesTests(unittest.TestCase):
 
 
 class RouteDecisionParityTests(unittest.TestCase):
+    def test_the_one_deliberate_difference_a_file_to_a_captcha_endpoint_during_the_fill_is_refused_now_and_was_allowed(self):
+        upload = request("POST", "www.recaptcha.net", "/recaptcha/enterprise/x", body=BODIES[3], headers={"Content-Type": "multipart/form-data; boundary=b"})
+        self.assertTrue(apply_checks.is_upload(upload))
+        for mode in ("submit", "handoff"):
+            old = old_route.route_decision(mode, "before_hand_over", upload, states({}, POLICY.lookup_endpoints)[0])
+            new = apply_checks.route_decision(mode, "before_hand_over", upload, states({}, POLICY.lookup_endpoints)[1], POLICY)
+            self.assertEqual((old.rule, new.rule), ("captcha", "upload_elsewhere"))
+        plain = request("POST", "www.recaptcha.net", "/recaptcha/enterprise/x", body=BODIES[2], headers={"Content-Type": "application/json"})
+        old = old_route.route_decision("submit", "before_hand_over", plain, states({}, POLICY.lookup_endpoints)[0])
+        new = apply_checks.route_decision("submit", "before_hand_over", plain, states({}, POLICY.lookup_endpoints)[1], POLICY)
+        self.assertEqual((old, new), (old, old))
+
     def same(self, mode, phase, req, fields, lookups, seen):
         before, after, written = states(fields, lookups)
         expected = old_route.route_decision(mode, phase, req, before)
@@ -487,6 +501,10 @@ class RouteDecisionParityTests(unittest.TestCase):
             apply_checks.route_decision(mode, phase, req, written, POLICY),
         )
         seen.add(type(expected).__name__ + ":" + getattr(expected, "rule", ""))
+        if phase == "before_hand_over" and getattr(expected, "rule", "") == "captcha" and apply_checks.is_upload(req):
+            # The one deliberate difference (the milestone that added Lever): a file sent to a CAPTCHA endpoint while the form is filled is an upload and is refused.
+            expected = apply_checks.Abort("upload_elsewhere", getattr(found[0], "reason", ""), urlsplit(req.url).hostname or "")
+            seen.add("deliberate:upload_elsewhere")
         if found != (expected, expected):
             return f"{mode}/{phase} {req.method} {req.url} {fields}: old {expected}, new {found}"
         return ""
@@ -580,8 +598,12 @@ class ResolvableHostsTests(unittest.TestCase):
         self.assertEqual(list(apply_agent.resolvable_hosts((GREENHOUSE,))), self.OLD)
         self.assertEqual(sorted(POLICY.resolvable_hosts), [host for host in self.OLD if not host.startswith("fonts.")])
 
-    def test_with_lever_registered_the_list_is_the_old_one_and_the_two_lever_hosts(self):
-        self.assertEqual(set(apply_agent.RESOLVABLE_HOSTS) - set(self.OLD), {"jobs.lever.co", "jobs.eu.lever.co"})
+    def test_with_lever_registered_the_list_is_the_old_one_and_the_names_lever_needs(self):
+        # Its two hosts, hCaptcha's five (the widget is how its Submit works), and the hosts of its fonts and its company's logo.
+        self.assertEqual(set(apply_agent.RESOLVABLE_HOSTS) - set(self.OLD), {
+            "jobs.lever.co", "jobs.eu.lever.co", "js.hcaptcha.com", "hcaptcha.com", "api.hcaptcha.com", "api2.hcaptcha.com", "newassets.hcaptcha.com",
+            "cdn.lever.co", "lever-client-logos.s3.amazonaws.com",
+        })
         self.assertEqual(set(self.OLD) - set(apply_agent.RESOLVABLE_HOSTS), set())
 
     def test_the_list_is_the_union_of_every_registered_policy_and_the_fonts(self):
@@ -772,7 +794,7 @@ class SecondAdapter(apply_agent.GreenhouseAdapter):
     def detect_page(self, page):
         return self.answers["kind"]
 
-    def loader_paths(self, html):
+    def loader_paths(self, html, url=""):
         return self.answers["loader"]
 
     def uploads_on_attach(self, frame):

@@ -319,7 +319,10 @@ class RoutePolicyTests(unittest.TestCase):
         self.assertEqual((set(self.policy.navigation_hosts), set(self.policy.submit_hosts), set(self.policy.form_post_hosts)), (hosts, hosts, hosts))
         self.assertEqual({(endpoint.host, endpoint.path_prefix, endpoint.kind) for endpoint in self.policy.lookup_endpoints},
                          {(host, "/searchLocations", "location") for host in hosts})
-        self.assertEqual(set(self.policy.resolvable_hosts), hosts)
+        self.assertEqual(set(self.policy.resolvable_hosts) - hosts, {
+            "js.hcaptcha.com", "hcaptcha.com", "api.hcaptcha.com", "api2.hcaptcha.com", "newassets.hcaptcha.com", "cdn.lever.co", "lever-client-logos.s3.amazonaws.com",
+        })
+        self.assertLessEqual(hosts, set(self.policy.resolvable_hosts))
         self.assertEqual(self.policy.display_name, "Lever")
 
     def test_a_main_frame_navigation_to_the_posting_is_allowed_and_to_the_companys_own_site_is_not(self):

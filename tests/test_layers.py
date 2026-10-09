@@ -152,7 +152,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
     # L4 workflows. opportunities.refresh is the manual refresh/purge workflow run in a background thread; api (L5) is its only importer.
     4: (
         _pkg("applications", "inbox mail_rules urgent monitored_events")
-        | _pkg("apply", "runs preflight watch security_code agent runner")
+        | _pkg("apply", "runs preflight watch security_code agent lever_adapter runner")
         | _pkg("automation", "background inbox_watcher internal handlers triage desktop_notify")
         | _pkg("accounts", "operations backups")
         | _pkg("opportunities", "refresh")
