@@ -348,6 +348,7 @@
       return `Sent through ${item.company}'s contact form.${said}${changed} ${item.company} is marked sent; replies are read from Gmail.`;
     }
     if (result.outcome === "unconfirmed") {
+      if (result.asked_again) return `Nothing was sent from that window, but your earlier press may still have sent ${item.company}'s form, so its card still asks.`;
       if (result.target?.contact_form?.asks) return `You pressed send in ${item.company}'s form. Say on its card whether their page said your message was sent.`;
       return `${result.note || `${item.company}'s form may have been sent`}. If ${item.company} confirms it arrived, press "It arrived".`;
     }

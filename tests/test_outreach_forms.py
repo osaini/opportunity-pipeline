@@ -238,7 +238,7 @@ class FakeSubmitter:
             kwargs["on_press"]()
             self.at_click()
             return {"outcome": "unconfirmed", "note": FORM_PRESSED_NOTE, "confirmation": "", "filled": ["Message"], "screenshot": "",
-                    "attached": "", "by_you": [], "changed": [], "held_back": []}
+                    "attached": "", "by_you": [], "changed": [], "held_back": [], "pressed_at": "2026-10-09T08:00:00.000000+00:00"}
         if outcome == "pause_at_button":
             # As FormSubmitter does: asked just before the button, and stopped there.
             self.before_button()
@@ -628,11 +628,11 @@ class FormSendTests(unittest.TestCase):
         self.assertIn("Finish in browser", refused.json()["detail"])
         self.assertEqual(len(self.submitter.calls), calls)
 
-    def test_the_warning_stays_after_a_no_window_closed_without_a_press(self):
+    def test_the_warning_stays_on_every_window_after_a_no(self):
         target = self.pressed_in_browser()
         self.submitter.outcomes = ["needs_you", "needs_you"]
-        self.send(target, in_browser=True, retry_unconfirmed=True)  # No, and the window closed with nothing pressed
-        self.send(target, in_browser=True)
+        self.send(target, in_browser=True, retry_unconfirmed=True)  # No, and the window closed with nothing sent
+        self.send(target, in_browser=True, retry_unconfirmed=True)  # still asking: No again
         self.assertEqual([call["tried_before"] for call in self.submitter.calls[-2:]], [True, True])
 
     def test_a_second_no_while_a_window_is_open_is_refused(self):
@@ -661,14 +661,15 @@ class FormSendTests(unittest.TestCase):
         self.submitter.outcomes = ["needs_you", "student_press"]
         self.send(target, in_browser=True, retry_unconfirmed=True)
         self.submitter.at_click = yes_elsewhere
-        self.send(target, in_browser=True)
+        self.send(target, in_browser=True, retry_unconfirmed=True)
         form = self.get(target)["contact_form"]
         self.assertEqual((self.get(target)["status"], form["state"]), ("sent", "submitted"))
 
     def test_no_opens_finish_in_browser_again_and_the_history_says_they_said_so(self):
         target = self.pressed_in_browser()
-        self.submitter.outcomes = ["needs_you"]
-        self.assertEqual(self.send(target, in_browser=True, retry_unconfirmed=True).json()["outcome"], "needs_you")
+        self.submitter.outcomes = ["student_press"]
+        answered = self.send(target, in_browser=True, retry_unconfirmed=True).json()
+        self.assertEqual((answered["outcome"], answered["asked_again"]), ("unconfirmed", False))
         self.assertTrue(self.submitter.calls[-1]["tried_before"], "the window warns the form may already have it")
         self.assertEqual(self.submitter.in_browser[-1], True)
         with closing(connect_product(self.platform_path)) as conn:
@@ -678,6 +679,27 @@ class FormSendTests(unittest.TestCase):
             ).fetchall()
         self.assertEqual([(row["user_id"], json.loads(row["detail"])) for row in said], [(USER, {"in_browser": True})])
         self.assertTrue(said[0]["created_at"])
+
+    def test_a_no_whose_window_sent_nothing_keeps_asking(self):
+        # The student said No, then closed the warned window without sending: their first press may still have sent it.
+        target = self.pressed_in_browser()
+        self.submitter.outcomes = ["needs_you"]
+        answered = self.send(target, in_browser=True, retry_unconfirmed=True).json()
+        self.assertEqual((answered["outcome"], answered["asked_again"]), ("unconfirmed", True))
+        after = self.get(target)
+        self.assertEqual((after["contact_form"]["state"], after["contact_form"]["asks"]), ("unconfirmed", True))
+        self.assertIn(outreach_forms.ASKED_AGAIN, after["contact_form"]["note"])
+        with closing(connect_product(self.platform_path)) as conn:
+            self.assertEqual(conn.execute("SELECT state FROM outreach_send_claims").fetchone()["state"], "unconfirmed")
+            self.assertEqual(form_due(conn, user_id=USER), [])
+        self.assertEqual(self.send(target, in_browser=True).status_code, 428, "still possibly sent")
+
+    def test_when_the_form_left_the_window_is_kept_for_reading_receipts(self):
+        target = self.pressed_in_browser()
+        with closing(connect_product(self.platform_path)) as conn:
+            detail = conn.execute("SELECT detail FROM outreach_events WHERE target_id=? AND event_type=?",
+                                  (target["id"], outreach_forms.UNCONFIRMED_EVENT)).fetchone()["detail"]
+        self.assertEqual(json.loads(detail)["pressed_at"], "2026-10-09T08:00:00.000000+00:00")
 
     def test_after_a_restart_mid_window_the_card_asks_and_answering_no_is_not_refused(self):
         # The app stopped after the student's press, before the outcome was written: the claim is left mid-click by a
@@ -696,7 +718,23 @@ class FormSendTests(unittest.TestCase):
         self.assertTrue(self.get(target)["contact_form"]["asks"])
         self.assertEqual(self.send(target, in_browser=True).status_code, 428, "an unanswered press is not sent over")
         self.submitter.outcomes = ["needs_you"]
-        self.assertEqual(self.send(target, in_browser=True, retry_unconfirmed=True).json()["outcome"], "needs_you", "No opens the window")
+        self.assertEqual(self.send(target, in_browser=True, retry_unconfirmed=True).json()["outcome"], "unconfirmed", "No opens the window")
+        self.assertEqual(self.submitter.in_browser[-1], True)
+
+    def test_within_minutes_of_a_restart_no_waits_for_the_window_that_may_still_be_open(self):
+        # Another process's claim mid-click, made a moment ago: its window may still be open, so No waits (409).
+        self.submitter.outcomes = ["needs_you"]
+        target = self.approved()
+        self.send(target)
+        with closing(connect_product(self.platform_path)) as conn:
+            conn.execute(
+                "INSERT INTO outreach_send_claims(target_id, user_id, kind, token, state, action, instance, claimed_at) "
+                "VALUES(?, ?, 'initial', 'other', 'clicking', 'form', 'another-process', ?)", (target["id"], USER, utc_now()))
+            conn.execute("UPDATE outreach_contact_forms SET state='unconfirmed', note=?", (FORM_PRESSED_NOTE,))
+            conn.commit()
+        waiting = self.send(target, in_browser=True, retry_unconfirmed=True)
+        self.assertEqual(waiting.status_code, 409)
+        self.assertIn("Finish in browser window is still open", waiting.json()["detail"])
 
     def test_a_company_with_only_a_form_gets_an_automatic_draft(self):
         target = self.target(email_body="", email_subject="", location="Austin, TX")
@@ -739,6 +777,17 @@ class FormReplyTests(ReplyCaptureFixture, unittest.TestCase):
         self.assertEqual(len(self.check()["replies"]), 1)
         self.assertEqual(self.target(target)["status"], "replied")
 
+
+    def test_a_receipt_while_the_finish_in_browser_window_was_open_is_the_forms(self):
+        target = self.form_target()
+        pressed = (datetime.now(timezone.utc) - timedelta(minutes=4)).isoformat(timespec="microseconds")
+        with closing(connect_product(self.platform_path)) as conn:
+            conn.execute("UPDATE outreach_events SET event_type='form_unconfirmed', detail=? WHERE target_id=?",
+                         (json.dumps({"pressed_at": pressed}), target["id"]))
+            conn.commit()
+        self.arrive("ack-2", mail("Thanks for contacting Bovi. We received your message.", sender="Bovi <hello@bovi.example>",
+                                  subject="We received your message"), received=now_ms(timedelta(minutes=-2)))
+        self.assertEqual(len(self.check()["automatic"]), 1)
 
     def test_a_reply_from_another_domain_the_company_mails_from_is_captured(self):
         # Persona AI: website persona.ai, email addresses at personainc.ai.
@@ -1134,6 +1183,20 @@ class FinishInBrowserTests(unittest.TestCase):
         self.assertAsked(result)
         self.assertIn("/send", [path for path, _ in site.posts])
         self.assertEqual(pressed, [1])
+
+    def test_a_press_that_sends_nothing_records_nothing(self):
+        # The page's own check stops the form (it shows an error and sends nothing): the press opened the way, but
+        # nothing left, so nothing was sent and the card does not ask.
+        stopped = BUDGET_FORM.replace("</form>", "</form><script>document.querySelector('form').addEventListener('submit', (e) => "
+                                      "{ e.preventDefault(); document.body.insertAdjacentHTML('beforeend', '<p>Please check the form.</p>'); });</script>")
+
+        def student(window, site):
+            window.locator("[name=budget]").fill("Under $10k")
+            window.locator("[name=budget]").press("Enter")
+
+        result, site, pressed = self.submit(stopped, student)
+        self.assertNothingSent(result, site, pressed)
+        self.assertIn("You pressed send, but nothing left the page", result["note"])
 
     def test_a_message_the_student_changed_or_wrote_is_named(self):
         short_box = BUDGET_FORM.replace('<textarea name="message" required>', '<textarea name="message" maxlength="60" required>')

@@ -247,11 +247,21 @@ def _watched(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict
     # A message sent through a contact form has no address to watch, only the company's domain.
     forms: dict[str, list[datetime]] = {}
     for event in conn.execute(
-        "SELECT target_id, created_at FROM outreach_events WHERE user_id=? AND event_type IN (?, ?)",
+        "SELECT target_id, created_at, detail FROM outreach_events WHERE user_id=? AND event_type IN (?, ?)",
         (user_id, FORM_SUBMITTED, FORM_UNCONFIRMED),
     ).fetchall():
-        if parse_app_instant(event["created_at"]):
-            forms.setdefault(event["target_id"], []).append(parse_app_instant(event["created_at"]))
+        at = parse_app_instant(event["created_at"])
+        # Finish in browser records when the form left the window (pressed_at), minutes before its window closed and
+        # this event was written: a receipt that came in between is after the send.
+        try:
+            detail = json.loads(event["detail"] or "{}")
+        except (TypeError, ValueError):
+            detail = {}
+        pressed = parse_app_instant(detail.get("pressed_at")) if isinstance(detail, dict) and detail.get("pressed_at") else None
+        if pressed and at:
+            at = min(at, pressed)
+        if at:
+            forms.setdefault(event["target_id"], []).append(at)
     marked: dict[str, list[datetime]] = {}
     for event in conn.execute(
         "SELECT target_id, created_at FROM outreach_events WHERE user_id=? AND event_type='status' AND to_status IN ('sent', 'followed_up')",
