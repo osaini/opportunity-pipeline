@@ -725,22 +725,36 @@ class FormSendTests(unittest.TestCase):
         self.assertEqual(self.send(target, in_browser=True, retry_unconfirmed=True).json()["outcome"], "unconfirmed", "No opens the window")
         self.assertEqual(self.submitter.in_browser[-1], True)
 
-    def test_within_minutes_of_a_restart_no_is_not_refused_for_a_window_that_died_with_it(self):
-        # Another process's claim mid-click, made a moment ago, on a form already waiting on the student's answer: only
-        # this server opens windows, so it died with that process, and No opens a new one at once.
+    def another_process_pressed(self, minutes_ago):
+        """A form waiting on the answer, with another process's mid-press claim from ``minutes_ago``."""
         self.submitter.outcomes = ["needs_you"]
         target = self.approved()
         self.send(target)
+        claimed = (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat(timespec="microseconds")
         with closing(connect_product(self.platform_path)) as conn:
             conn.execute(
                 "INSERT INTO outreach_send_claims(target_id, user_id, kind, token, state, action, instance, claimed_at) "
-                "VALUES(?, ?, 'initial', 'other', 'clicking', 'form', 'another-process', ?)", (target["id"], USER, utc_now()))
+                "VALUES(?, ?, 'initial', 'other', 'clicking', 'form', 'another-process', ?)", (target["id"], USER, claimed))
             conn.execute("UPDATE outreach_contact_forms SET state='unconfirmed', note=?", (FORM_PRESSED_NOTE,))
             conn.commit()
+        return target
+
+    def test_a_window_older_than_any_window_lives_died_with_its_process_and_no_is_not_refused(self):
+        # Older than a window can stay open (PERSON_WAIT_SECONDS, then AFTER_PRESS_SECONDS after the press), though
+        # younger than the five minutes another process's claim is otherwise held for.
+        target = self.another_process_pressed(minutes_ago=4.75)
         self.submitter.outcomes = ["needs_you"]
         answered = self.send(target, in_browser=True, retry_unconfirmed=True)
         self.assertEqual(answered.status_code, 200, answered.text)
         self.assertEqual((answered.json()["outcome"], answered.json()["asked_again"]), ("unconfirmed", True))
+
+    def test_a_window_another_server_process_may_still_have_open_is_not_taken_over(self):
+        # Two server processes on one database: the other's window, pressed a moment ago, may still be open there, so
+        # a No here waits rather than open a second window the student could press send in too.
+        target = self.another_process_pressed(minutes_ago=1)
+        waiting = self.send(target, in_browser=True, retry_unconfirmed=True)
+        self.assertEqual(waiting.status_code, 409)
+        self.assertIn("Finish in browser window is still open", waiting.json()["detail"])
 
     def test_a_window_another_process_may_still_have_open_still_waits(self):
         # A form not yet waiting on an answer, with another process's fresh mid-click claim: that window may be open.
@@ -1174,7 +1188,8 @@ class BrowserSubmitTests(unittest.TestCase):
 
     def test_a_form_sent_over_a_websocket_is_never_called_submitted(self):
         result, site = self.submit(websocket_form(9))
-        self.assertNotEqual(result["outcome"], "submitted", result)
+        self.assertEqual(result["outcome"], "needs_you", result)
+        self.assertIn("over a connection the app does not allow (a WebSocket), so nothing was sent", result["note"])
 
     def test_a_captcha_that_asks_for_a_challenge_waits_for_the_student(self):
         with mock.patch.object(outreach_forms, "CAPTCHA_WAIT_SECONDS", 1):
@@ -1348,6 +1363,42 @@ class FinishInBrowserTests(unittest.TestCase):
         self.assertNothingSent(result, site, pressed)
         with self.assertRaises(socket.timeout, msg="nothing connected"):
             listener.accept()
+
+    def test_a_fresh_frame_or_popup_has_no_socket_or_worker_either(self):
+        # A script makes an iframe (empty, or srcdoc) or a popup and reaches into it at once, before anything has loaded
+        # there: the guard is in that realm too, so its WebSocket fails and it has no workers.
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(4)
+        listener.settimeout(1)
+        self.addCleanup(listener.close)
+        seen = []
+
+        def student(window, site):
+            seen.extend(window.evaluate("""(port) => {
+              const f = document.createElement('iframe'); document.body.appendChild(f);
+              const g = document.createElement('iframe'); g.srcdoc = '<p>x</p>'; document.body.appendChild(g);
+              const w = window.open('');
+              return [f.contentWindow, g.contentWindow, w].map((realm) => {
+                let state = 'none';
+                try { state = String(new realm.WebSocket('ws://127.0.0.1:' + port + '/r?v=Sam').readyState); } catch (error) { state = 'threw'; }
+                return [typeof realm.Worker, typeof realm.SharedWorker, state];
+              });
+            }""", listener.getsockname()[1]))
+            window.wait_for_timeout(500)
+
+        result, site, pressed = self.submit(PLAIN_FORM, student)
+        self.assertEqual(seen, [["undefined", "undefined", "3"]] * 3)
+        self.assertNothingSent(result, site, pressed)
+        with self.assertRaises(socket.timeout, msg="nothing connected"):
+            listener.accept()
+
+    def test_a_chat_widgets_socket_at_load_is_not_blamed(self):
+        chatty = PLAIN_FORM.replace("<body>", "<body><script>new WebSocket('wss://chat.example/socket');</script>")
+        result, site, pressed = self.submit(chatty, lambda window, site: None)
+        self.assertNothingSent(result, site, pressed)
+        self.assertNotIn("WEBSOCKET chat.example", result["held_back"])
+        self.assertNotIn("chat.example", result["note"])
 
     def test_a_press_that_sends_nothing_records_nothing(self):
         # The page's own check stops the form (it shows an error and sends nothing): the press opened the way, but

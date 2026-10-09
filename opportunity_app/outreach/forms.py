@@ -62,6 +62,7 @@ import json
 import re
 import sqlite3
 import time
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable
@@ -85,7 +86,7 @@ from .send_claims import (
 from .render import request_allowed
 from ..student.preparation import confirmed_facts
 from ..student.profile import ADDRESS_FIELDS
-from ..core.timestamps import utc_now
+from ..core.timestamps import parse_app_instant, utc_now
 from ..integrations.web_fetch import USER_AGENT, Resolver, close_browser, resolve_host, same_site, site_robots
 
 FORM_STATES = ("found", "submitted", "unconfirmed", "needs_you", "failed")
@@ -1374,7 +1375,10 @@ class FormSubmitter:
         self._note_socket(getattr(socket, "url", "") or "")
 
     def _note_socket(self, url: str) -> None:
-        self.held_back.append(f"WEBSOCKET {urlsplit(url).hostname or ''}")
+        # Named only when it could be the form's: on the form's site, or opened once the app began filling it. A chat
+        # widget's socket at page load is no reason the form will not send.
+        if self._gate != "load" or any(same_site(url, site) for site in self._sites):
+            self.held_back.append(f"WEBSOCKET {urlsplit(url).hostname or ''}")
         if self._pressing:
             self._socket_after_press = True
 
@@ -1609,6 +1613,11 @@ class FormSubmitter:
                 outcome = {"outcome": "unconfirmed", "confirmation": "", "note": (
                     "After the app pressed send, the page tried a connection the app does not allow (a WebSocket), so the app "
                     "cannot tell whether the form arrived. Look for a confirmation email from them")}
+            elif outcome["outcome"] in {"failed", "needs_you"} and self._socket_after_press:
+                # Say why, so the student is not left with a form that silently will not go.
+                outcome = {**outcome, "outcome": "needs_you", "note": (
+                    "The page tried to send it over a connection the app does not allow (a WebSocket), so nothing was sent. "
+                    "Send it from their page in your own browser")}
             result.update(outcome)
             return result
         except Exception as exc:  # noqa: BLE001 - the outcome must still be recorded
@@ -2227,9 +2236,14 @@ def submit_contact_form(
     tried_before = False
     existing = send_claim_row(conn, target_id, user_id, "initial")
     if existing is not None:
-        # Only this server opens Finish in browser windows, so another process's mid-press claim on a form already waiting
-        # on the student's answer is a window that died with that process, not one still open.
-        dead_window = target["contact_form"]["asks"] and existing["instance"] != SERVER_INSTANCE
+        # Another process's mid-press claim on a form already waiting on the student's answer, older than any window can
+        # stay open (PERSON_WAIT_SECONDS, then AFTER_PRESS_SECONDS after a press), is a window that died with that process.
+        # A younger one may be a window another server process sharing this database still has open, so it waits.
+        claimed = parse_app_instant(existing["claimed_at"])
+        dead_window = bool(
+            target["contact_form"]["asks"] and existing["instance"] != SERVER_INSTANCE and claimed is not None
+            and datetime.now(timezone.utc) - claimed > timedelta(seconds=PERSON_WAIT_SECONDS + AFTER_PRESS_SECONDS)
+        )
         if send_claim_held(existing) or (_click_held(existing) and not dead_window):
             raise SendConflictError(FORM_IN_PROGRESS)
         if existing["state"] == "sent":

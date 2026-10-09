@@ -20,13 +20,13 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Browser extension | 0 | 1 | 0 | 1 |
 | Apply for me | 0 | 4 | 11 | 15 |
 | Mail, Gmail and inboxes | 0 | 4 | 8 | 12 |
-| Outreach drafting, research, forms and CLI | 0 | 6 | 4 | 10 |
+| Outreach drafting, research, forms and CLI | 0 | 7 | 4 | 11 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
 | Web API, auth and storage | 0 | 4 | 1 | 5 |
 | Scoring, scheduling and configuration | 1 | 2 | 8 | 11 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **29** | **39** | **69** |
+| **Total** | **1** | **30** | **39** | **70** |
 
 ## Start here: the high-severity entries
 
@@ -314,6 +314,13 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** the `company` role matches any text box whose label, name or id says company, organization, business, employer, school, university or institution, and a required one is typed with `identity["school"]`. A required "Company website", "Company address" or "Company size" box therefore gets the school's name, which answers none of those questions, and the form goes out with it when the page accepts any text. A `type="url"` box is read as a link first, so only text boxes are affected. (A box whose label is only address words, such as "Address" or "City", and whose name or id says company, school, business or the like is no longer affected: `_role` makes it unanswerable. A label that itself says company still is.)
 - **Suggested fix:** Give the `company` role only to a label that asks for the name ("Company", "Company name", "Organization", "School"). A label that also says address, website, phone, email, size or industry is unanswerable, so the form waits for the student.
 - **Regression suite:** tests/ unittest (`test_outreach_forms`: required "Company website", "Company address" and "Company size" text boxes are named as unanswerable and nothing is typed in them)
+
+### The app's own contact-form send records a thank-you that comes with nothing sent as submitted
+- **Severity:** medium, wrong visible state (named in review of PR #97, 2026-10-09; the behaviour predates it)
+- **Where:** `opportunity_app/outreach/forms.py` `FormSubmitter._await_outcome` (the "Send through contact form" and automatic paths, not Finish in browser)
+- **What happens:** after the app presses send, fresh thank-you wording on the page is taken as the form having arrived, whether or not anything left the page. A page that thanks optimistically (it shows its message before, or without, a send that then fails) is recorded as submitted, and the company is marked sent though nothing reached them. Finish in browser does not judge this way: it asks the student.
+- **Suggested fix:** take "submitted" only when a request that could carry the form left after the press, as the same check counts one; otherwise record unconfirmed and let the student look.
+- **Regression suite:** tests/ unittest under Chromium (`test_outreach_forms.BrowserSubmitTests`: a page that thanks the student and sends nothing is not submitted)
 
 ### The renderer hangs on a page that opens a WebSocket
 - **Severity:** medium, a crash (a hang) (found 2026-10-09, while closing the form submitter's WebSockets the same way)
