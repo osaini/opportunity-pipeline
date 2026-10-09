@@ -476,7 +476,8 @@ class AgentStepsTests(unittest.TestCase):
         for end in ("success", "failure", "oversize"):
             with self.subTest(end=end):
                 adapter = StandInAdapter(states=("", "working", "working", end))
-                self.assertEqual(self.agent(adapter)._wait_for_parse(mock.Mock()), end)
+                # The read ends on the fourth look; parse_s is the deadline, not what is tested here, so it has room for a slow runner.
+                self.assertEqual(self.agent(adapter, parse_s=30)._wait_for_parse(mock.Mock()), end)
                 self.assertEqual(adapter.log.count("parse_state"), 4)
 
     def test_a_read_that_does_not_end_in_time_stops_the_run_before_anything_is_touched_and_says_so(self):
@@ -495,7 +496,7 @@ class AgentStepsTests(unittest.TestCase):
                     raise RuntimeError("the page is changing")
                 return "success"
 
-        self.assertEqual(self.agent(Flaky())._wait_for_parse(mock.Mock()), "success")
+        self.assertEqual(self.agent(Flaky(), parse_s=30)._wait_for_parse(mock.Mock()), "success")
 
     def test_every_field_the_reader_may_have_filled_that_the_plan_does_not_fill_is_emptied_and_listed_and_the_rest_are_left(self):
         plan = [planned("name", "Full name", "Sam Rivera"), planned("org", "Current company", None, disposition="blank", source="none"),
