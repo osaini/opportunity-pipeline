@@ -1146,7 +1146,9 @@ def _write_target_update(
     if "status" in values and values["status"] != previous["status"]:
         log_event(conn, target_id, user_id, "status", from_status=previous["status"], to_status=values["status"], detail=status_detail)
         form = previous.get("contact_form")
-        if values["status"] == "sent" and form and form["state"] == "unconfirmed":
+        # Only the student's own change (an automatic one names itself in status_detail) about a company reached by its
+        # form: an email noticed in Gmail moving it to Sent says nothing about the form.
+        if values["status"] == "sent" and form and form["state"] == "unconfirmed" and not status_detail and not previous.get("contact_email"):
             # The student said a form that may have gone did ("Yes, it was sent", or "It arrived"): the form and its send
             # claim say so too, so nothing asks again and nothing sends it again.
             conn.execute(
@@ -1154,7 +1156,7 @@ def _write_target_update(
                 (FORM_SAID_SENT_NOTE, utc_now(), target_id, user_id),
             )
             conn.execute(
-                "UPDATE outreach_send_claims SET state='sent' WHERE target_id=? AND user_id=? AND kind='initial' AND state IN ('unconfirmed', 'clicking')",
+                "UPDATE outreach_send_claims SET state='sent' WHERE target_id=? AND user_id=? AND kind='initial' AND state IN ('drafting', 'unconfirmed', 'clicking')",
                 (target_id, user_id),
             )
             log_event(conn, target_id, user_id, "form_said_sent", detail=json.dumps({"asked": bool(form.get("asks"))}))

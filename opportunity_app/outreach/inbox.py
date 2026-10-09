@@ -104,6 +104,7 @@ from .forms import (
     ACKNOWLEDGEMENT,
     ACKNOWLEDGEMENT_WINDOW_MINUTES,
     ALWAYS_AUTOMATIC,
+    PRESSED_EVENT as FORM_PRESSED,
     SUBMITTED_EVENT as FORM_SUBMITTED,
     UNCONFIRMED_EVENT as FORM_UNCONFIRMED,
     is_acknowledgement,
@@ -247,8 +248,8 @@ def _watched(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict
     # A message sent through a contact form has no address to watch, only the company's domain.
     forms: dict[str, list[datetime]] = {}
     for event in conn.execute(
-        "SELECT target_id, created_at, detail FROM outreach_events WHERE user_id=? AND event_type IN (?, ?)",
-        (user_id, FORM_SUBMITTED, FORM_UNCONFIRMED),
+        "SELECT target_id, created_at, detail FROM outreach_events WHERE user_id=? AND event_type IN (?, ?, ?)",
+        (user_id, FORM_SUBMITTED, FORM_UNCONFIRMED, FORM_PRESSED),
     ).fetchall():
         at = parse_app_instant(event["created_at"])
         # Finish in browser records when the form left the window (pressed_at), minutes before its window closed and

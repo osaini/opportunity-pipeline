@@ -118,7 +118,7 @@ from ..core.json_values import json_dict
 from ..mail.message import FULL_TEXT_LIMIT, written_between_quotes
 from .targets import OutreachNotFoundError, log_event, get_target
 from .greeting import contact_first_name, greeting_line, greeting_style, spoken_company
-from .forms import SUBMITTED_EVENT as FORM_SUBMITTED, UNCONFIRMED_EVENT as FORM_UNCONFIRMED
+from .forms import PRESSED_EVENT as FORM_PRESSED, SUBMITTED_EVENT as FORM_SUBMITTED, UNCONFIRMED_EVENT as FORM_UNCONFIRMED
 from .replies import suggest_reply_status
 from ..student.preparation import confirmed_facts
 from ..integrations.gmail_client import GmailAuthError, GmailThrottled
@@ -295,8 +295,8 @@ def sent_since(conn: sqlite3.Connection, target_id: str, user_id: str, since: da
     """Whether anything went to the company after ``since``: an email, a thank-you, a form, "I sent it", or a send under way."""
     for row in conn.execute(
         "SELECT event_type, to_status, created_at FROM outreach_events WHERE target_id=? AND user_id=? "
-        "AND event_type IN (?, ?, ?, ?, ?, 'status')",
-        (target_id, user_id, SENT_EVENT, THANK_YOU_SENT_EVENT, THANK_YOU_DRAFT_EVENT, FORM_SUBMITTED, FORM_UNCONFIRMED),
+        "AND event_type IN (?, ?, ?, ?, ?, ?, 'status')",
+        (target_id, user_id, SENT_EVENT, THANK_YOU_SENT_EVENT, THANK_YOU_DRAFT_EVENT, FORM_SUBMITTED, FORM_UNCONFIRMED, FORM_PRESSED),
     ).fetchall():
         at = parse_app_instant(row["created_at"])
         if at is None or at <= since:

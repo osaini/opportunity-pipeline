@@ -233,8 +233,10 @@ class FakeSubmitter:
     def submit(self, page_url, *, should_continue=None, **kwargs):
         self.calls.append({"page_url": page_url, "should_continue": should_continue, **kwargs})
         outcome = self.outcomes.pop(0)
-        if outcome == "student_press":
+        if outcome in {"student_press", "yes_then_press"}:
             # Finish in browser: the student presses the form's own button, the app is told as they do, and asks them.
+            if outcome == "yes_then_press":
+                self.before_button()  # a Yes from another tab lands first
             kwargs["on_press"]()
             self.at_click()
             return {"outcome": "unconfirmed", "note": FORM_PRESSED_NOTE, "confirmation": "", "filled": ["Message"], "screenshot": "",
@@ -664,6 +666,8 @@ class FormSendTests(unittest.TestCase):
         self.send(target, in_browser=True, retry_unconfirmed=True)
         form = self.get(target)["contact_form"]
         self.assertEqual((self.get(target)["status"], form["state"]), ("sent", "submitted"))
+        with closing(connect_product(self.platform_path)) as conn:
+            self.assertEqual([row["state"] for row in conn.execute("SELECT state FROM outreach_send_claims")], ["sent"])
 
     def test_no_opens_finish_in_browser_again_and_the_history_says_they_said_so(self):
         target = self.pressed_in_browser()
@@ -721,8 +725,9 @@ class FormSendTests(unittest.TestCase):
         self.assertEqual(self.send(target, in_browser=True, retry_unconfirmed=True).json()["outcome"], "unconfirmed", "No opens the window")
         self.assertEqual(self.submitter.in_browser[-1], True)
 
-    def test_within_minutes_of_a_restart_no_waits_for_the_window_that_may_still_be_open(self):
-        # Another process's claim mid-click, made a moment ago: its window may still be open, so No waits (409).
+    def test_within_minutes_of_a_restart_no_is_not_refused_for_a_window_that_died_with_it(self):
+        # Another process's claim mid-click, made a moment ago, on a form already waiting on the student's answer: only
+        # this server opens windows, so it died with that process, and No opens a new one at once.
         self.submitter.outcomes = ["needs_you"]
         target = self.approved()
         self.send(target)
@@ -732,9 +737,56 @@ class FormSendTests(unittest.TestCase):
                 "VALUES(?, ?, 'initial', 'other', 'clicking', 'form', 'another-process', ?)", (target["id"], USER, utc_now()))
             conn.execute("UPDATE outreach_contact_forms SET state='unconfirmed', note=?", (FORM_PRESSED_NOTE,))
             conn.commit()
+        self.submitter.outcomes = ["needs_you"]
+        answered = self.send(target, in_browser=True, retry_unconfirmed=True)
+        self.assertEqual(answered.status_code, 200, answered.text)
+        self.assertEqual((answered.json()["outcome"], answered.json()["asked_again"]), ("unconfirmed", True))
+
+    def test_a_window_another_process_may_still_have_open_still_waits(self):
+        # A form not yet waiting on an answer, with another process's fresh mid-click claim: that window may be open.
+        target = self.approved()
+        with closing(connect_product(self.platform_path)) as conn:
+            conn.execute(
+                "INSERT INTO outreach_send_claims(target_id, user_id, kind, token, state, action, instance, claimed_at) "
+                "VALUES(?, ?, 'initial', 'other', 'clicking', 'form', 'another-process', ?)", (target["id"], USER, utc_now()))
+            conn.commit()
         waiting = self.send(target, in_browser=True, retry_unconfirmed=True)
         self.assertEqual(waiting.status_code, 409)
         self.assertIn("Finish in browser window is still open", waiting.json()["detail"])
+
+    def test_the_press_is_logged_where_replies_and_thank_yous_read_it(self):
+        target = self.pressed_in_browser()
+        with closing(connect_product(self.platform_path)) as conn:
+            logged = conn.execute("SELECT detail FROM outreach_events WHERE target_id=? AND event_type=?",
+                                  (target["id"], outreach_forms.PRESSED_EVENT)).fetchall()
+        self.assertEqual(len(logged), 1)
+        self.assertTrue(json.loads(logged[0]["detail"])["pressed_at"])
+
+    def test_only_the_students_own_answer_settles_the_form(self):
+        # An automatic move to Sent (one that names itself) says nothing about the form: it stays waiting on the answer.
+        from opportunity_app.outreach.targets import update_target_tx
+
+        target = self.pressed_in_browser()
+        with closing(connect_product(self.platform_path)) as conn, conn:
+            update_target_tx(conn, target["id"], {"status": "sent"}, user_id=USER, status_detail="Changed automatically")
+        with closing(connect_product(self.platform_path)) as conn:
+            said = conn.execute("SELECT 1 FROM outreach_events WHERE event_type='form_said_sent'").fetchall()
+            state = conn.execute("SELECT state FROM outreach_contact_forms").fetchone()["state"]
+        self.assertEqual((said, state), ([], "unconfirmed"))
+
+    def test_a_yes_that_lands_before_the_press_is_recorded_is_kept(self):
+        target = self.pressed_in_browser()
+
+        def yes_elsewhere():
+            self.client.patch(f"/api/v1/outreach/{target['id']}", headers=AUTH, json={"status": "sent"})
+
+        self.submitter.outcomes = ["yes_then_press"]
+        self.submitter.before_button = yes_elsewhere
+        self.send(target, in_browser=True, retry_unconfirmed=True)
+        form = self.get(target)["contact_form"]
+        self.assertEqual((form["state"], form["asks"]), ("submitted", False))
+        with closing(connect_product(self.platform_path)) as conn:
+            self.assertEqual([row["state"] for row in conn.execute("SELECT state FROM outreach_send_claims")], ["sent"])
 
     def test_a_company_with_only_a_form_gets_an_automatic_draft(self):
         target = self.target(email_body="", email_subject="", location="Austin, TX")
@@ -788,6 +840,20 @@ class FormReplyTests(ReplyCaptureFixture, unittest.TestCase):
         self.arrive("ack-2", mail("Thanks for contacting Bovi. We received your message.", sender="Bovi <hello@bovi.example>",
                                   subject="We received your message"), received=now_ms(timedelta(minutes=-2)))
         self.assertEqual(len(self.check()["automatic"]), 1)
+
+    def test_after_a_restart_mid_window_and_a_yes_their_reply_is_still_read(self):
+        # The app stopped after the student's press, before the outcome was written: only the press's own event is
+        # left. The student then says Yes, and a person at the company replies.
+        target = self.form_target()
+        pressed = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(timespec="microseconds")
+        with closing(connect_product(self.platform_path)) as conn:
+            conn.execute("UPDATE outreach_events SET event_type='form_pressed', detail=? WHERE target_id=?",
+                         (json.dumps({"pressed_at": pressed}), target["id"]))
+            conn.commit()
+        self.arrive("ana-3", mail("Thank you for reaching out! Could you talk Tuesday?", sender="Ana <ana@bovi.example>",
+                                  subject="Internship"), received=now_ms(timedelta(hours=3)))
+        self.assertEqual(len(self.check()["replies"]), 1)
+        self.assertEqual(self.target(target)["status"], "replied")
 
     def test_a_reply_from_another_domain_the_company_mails_from_is_captured(self):
         # Persona AI: website persona.ai, email addresses at personainc.ai.
@@ -920,6 +986,30 @@ REDRAWN_FORM = BUDGET_FORM.replace('action="/send"', 'action="https://forms.exam
 </script>""")
 # A form that posts by script and then shows nothing at all: the form stays as it was.
 STILL_FORM = SCRIPT_FORM.replace("""root.innerHTML = "<p>Thank you for your message! We'll reply soon.</p>";""", "")
+# A script-built form sent over a WebSocket, thanking the student once the socket opens.
+def websocket_form(port):
+    return SCRIPT_FORM.replace(
+        'await fetch("/api/contact", {method: "POST", body: JSON.stringify({',
+        f'const ws = new WebSocket("ws://127.0.0.1:{port}/send");\n'
+        '    ws.onopen = () => { ws.send(document.getElementById("e").value); root.innerHTML = "<p>Thank you for your message!</p>"; };\n'
+        '    ws.onerror = () => { root.insertAdjacentHTML("beforeend", "<p>Could not send.</p>"); }; return;\n'
+        '    await fetch("/api/contact", {method: "POST", body: JSON.stringify({')
+
+
+# A page that hands the filled name to a worker, which would open a WebSocket with it.
+def worker_relay(port):
+    return BUDGET_FORM.replace("</form>", f"""</form><script>
+  setTimeout(() => {{
+    try {{
+      const code = "onmessage = (e) => {{ new WebSocket('ws://127.0.0.1:{port}/w?v=' + encodeURIComponent(e.data)); }};";
+      const worker = new Worker(URL.createObjectURL(new Blob([code], {{type: 'text/javascript'}})));
+      worker.postMessage(document.querySelector('[name=name]').value);
+      document.body.dataset.relay = 'started';
+    }} catch (error) {{ document.body.dataset.relay = 'refused'; }}
+  }}, 200);
+</script>""")
+
+
 # A page that posts each box's value as it changes: the app's own fills carry the student's details.
 EARLY_POST_FORM = BUDGET_FORM.replace("</form>", "</form><script>document.querySelector('[name=name]').addEventListener("
                                       "'change', (e) => fetch('/early', {method: 'POST', body: e.target.value}));</script>")
@@ -1082,6 +1172,10 @@ class BrowserSubmitTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "submitted", result)
         self.assertTrue(parse_qs(site.posts[-1][1])["g-recaptcha-response"][0].startswith("token-"))
 
+    def test_a_form_sent_over_a_websocket_is_never_called_submitted(self):
+        result, site = self.submit(websocket_form(9))
+        self.assertNotEqual(result["outcome"], "submitted", result)
+
     def test_a_captcha_that_asks_for_a_challenge_waits_for_the_student(self):
         with mock.patch.object(outreach_forms, "CAPTCHA_WAIT_SECONDS", 1):
             result, site = self.submit(CAPTCHA_FORM, anchor=ANCHOR_CHALLENGES)
@@ -1189,6 +1283,71 @@ class FinishInBrowserTests(unittest.TestCase):
         self.assertAsked(result)
         self.assertIn("/send", [path for path, _ in site.posts])
         self.assertEqual(pressed, [1])
+
+    def test_nothing_but_a_real_submit_is_the_press(self):
+        # Enter the page cancels, Enter with the send button disabled, and a click on a button with no type that the
+        # page cancels: none submits, so none opens the way, and what the page then posts of the student's is held.
+        cases = {
+            "cancelled enter": (EARLY_POST_FORM.replace("</form>", "</form><script>document.querySelector('[name=budget]').addEventListener("
+                                                         "'keydown', (e) => { if (e.key === 'Enter') e.preventDefault(); });</script>"),
+                                lambda window: window.locator("[name=budget]").press("Enter")),
+            "disabled send": (EARLY_POST_FORM.replace('<button type="submit">', '<button type="submit" disabled>'),
+                              lambda window: window.locator("[name=budget]").press("Enter")),
+            "typeless widget": (EARLY_POST_FORM.replace("<button", '<button onclick="event.preventDefault()">Attach a file</button><button'),
+                                lambda window: window.get_by_role("button", name="Attach a file").click()),
+        }
+        for case, (page, act) in cases.items():
+            with self.subTest(case=case):
+                def student(window, site):
+                    window.locator("[name=budget]").fill("Under $10k")
+                    act(window)
+                    window.locator("[name=name]").fill("Sam Rivera-Lopez")
+                    window.locator("[name=name]").blur()
+
+                result, site, pressed = self.submit(page, student)
+                self.assertNothingSent(result, site, pressed)
+
+    def test_a_press_near_the_end_keeps_the_window_open_a_while(self):
+        started = time.monotonic()
+        with mock.patch.object(outreach_forms, "AFTER_PRESS_SECONDS", 3):
+            result, site, pressed = self.submit(STILL_FORM, lambda window, site: window.get_by_role("button", name="Send").click(),
+                                                wait=1, close=False)
+        self.assertAsked(result)
+        self.assertGreaterEqual(time.monotonic() - started, 3)
+
+    def test_a_form_sent_over_a_websocket_never_gets_out_and_is_never_called_sent(self):
+        # The page's WebSocket fails as a blocked connection does, so its thank-you never comes; in the app's own send
+        # the outcome is not "submitted", and in Finish in browser nothing leaves.
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(4)
+        listener.settimeout(1)
+        self.addCleanup(listener.close)
+        page = websocket_form(listener.getsockname()[1])
+        result, site, _pressed = self.submit(page, lambda window, site: window.get_by_role("button", name="Send").click(), close=False, wait=3)
+        self.assertNotEqual(result["outcome"], "submitted", result)
+        self.assertIn("WEBSOCKET 127.0.0.1", result["held_back"])
+        with self.assertRaises(socket.timeout, msg="nothing connected"):
+            listener.accept()
+
+    def test_a_worker_cannot_carry_the_students_details_out(self):
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(4)
+        listener.settimeout(1)
+        self.addCleanup(listener.close)
+        page = worker_relay(listener.getsockname()[1])
+        seen = []
+
+        def student(window, site):
+            window.wait_for_timeout(1_000)
+            seen.append(window.evaluate("() => [typeof Worker, typeof SharedWorker, document.body.dataset.relay || ''].join(' ')"))
+
+        result, site, pressed = self.submit(page, student)
+        self.assertEqual(seen, ["undefined undefined refused"])
+        self.assertNothingSent(result, site, pressed)
+        with self.assertRaises(socket.timeout, msg="nothing connected"):
+            listener.accept()
 
     def test_a_press_that_sends_nothing_records_nothing(self):
         # The page's own check stops the form (it shows an error and sends nothing): the press opened the way, but
