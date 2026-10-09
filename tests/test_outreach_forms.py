@@ -1583,13 +1583,13 @@ class FinishInBrowserTests(unittest.TestCase):
         self.assertIn("over a connection the app does not allow (a WebSocket)", result["note"])
         self.assertIn("WEBSOCKET bovi.test", result["held_back"])
 
-    def test_a_refused_websocket_never_decides_once_the_form_went_from_the_page(self):
-        # The page thanks the student and drops the form, though its socket was refused: the card asks, with the reason,
-        # since the app cannot tell an empty thank-you from a send it could not read.
-        result, site, _pressed = self.submit(QUEUED_SOCKET_FORM, lambda window, site: window.get_by_role("button", name="Send").click(),
-                                             close=False, wait=3)
-        self.assertAsked(result)
-        self.assertIn("also tried a connection the app refused (a WebSocket)", result["note"])
+    def test_a_thank_you_after_a_refused_socket_with_nothing_left_is_no_send(self):
+        # The page queues the message on its refused socket and swaps in an instant thank-you; nothing at all left the
+        # window. Nothing went, so the card does not ask (the student, having seen the thank-you, would say Yes).
+        result, site, pressed = self.submit(QUEUED_SOCKET_FORM, lambda window, site: window.get_by_role("button", name="Send").click(),
+                                            close=False, wait=3)
+        self.assertEqual((result["outcome"], site.posts), ("needs_you", []), result)
+        self.assertIn("so nothing was sent, even if the page said thank you", result["note"])
 
     def test_a_refused_socket_never_decides_once_something_left(self):
         # The form goes as a base64 body the app cannot read, while a widget's socket (opened after the fill) is refused.

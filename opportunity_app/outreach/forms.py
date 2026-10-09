@@ -1907,10 +1907,16 @@ class FormSubmitter:
         self._gate = "closed"
         self._left_sink = None
         refused_socket = any(entry.startswith("WEBSOCKET ") for entry in self.held_back)
-        if left or vanished:
+        if presses and not left and refused_socket:
+            # Nothing left the window after the press, and the page's way of sending was a socket the app refused: nothing
+            # went, whatever the page then showed (it may thank the student for a message it only queued).
+            result.update(outcome="needs_you", confirmation="", note=(
+                "You pressed send, but the page tried to send it over a connection the app does not allow (a WebSocket), and "
+                "nothing left the page, so nothing was sent, even if the page said thank you. Send it from their page in your own browser"))
+        elif left or vanished:
             # The app does not judge what the page said: the student does, on the card. A refused socket decides nothing
-            # once something left (that may have been the form, in a form the app cannot read) or the form went: the
-            # note gives the student the reason to weigh.
+            # once something left (that may have been the form, in a form the app cannot read): the note gives the
+            # student the reason to weigh.
             result.update(outcome="unconfirmed", confirmation="", note=FORM_PRESSED_NOTE)
             self._note_students_part(result, plan, held, presses[-1] if presses else {})
             if refused_socket:
@@ -1923,10 +1929,6 @@ class FormSubmitter:
             if presses:
                 parts[0] = ("You pressed send, but nothing left the page (it may have shown an error), and then "
                             + ("closed the window. Nothing was sent" if closed else "the time ran out. Nothing was sent"))
-                if refused_socket:
-                    # Nothing left and the form stayed: the page's way of sending was a socket the app refused.
-                    parts[0] = ("You pressed send, but the page tried to send it over a connection the app does not allow "
-                                "(a WebSocket), and nothing left the page, so nothing was sent. Send it from their page in your own browser")
             if notes:
                 parts.append("Left for you: " + "; ".join(notes))
             hosts = sorted({entry.split(" ", 1)[1] for entry in self.held_back if " " in entry})
