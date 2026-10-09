@@ -53,7 +53,9 @@ from opportunity_app.student import preparation
 
 import test_apply_api as api_tests
 import test_apply_runner as runner_tests
-from apply_fake_ats import CrashingAgentFactory, FakeApplyAgentFactory, FakeSchemaClient, JOB_URL, ProcessCannedFactory, kill_if_same_process
+from apply_fake_ats import (
+    CrashingAgentFactory, FakeApplyAgentFactory, FakeSchemaClient, JOB_URL, ProcessCannedFactory, kill_if_same_process, still_running,
+)
 from helpers_apply import BLUEFIN, ApplyCase, setUpModule, tearDownModule  # noqa: F401 (module fixtures: unittest and pytest find them here)
 from pipeline_core.identity import employer_key
 
@@ -1412,7 +1414,10 @@ class KillOrderingTests(HandoffCase):
     """Real processes: the child is a spawned process and a sleeping grandchild stands in for Chromium.
 
     The browser is killed, by pid, and confirmed gone before the claim is settled as "nothing was sent" (I3): a spy on
-    record_result looks at every pid at the moment the settlement is written.
+    record_result looks at both processes at the moment the settlement is written. It looks with ``still_running``, which asks
+    about the very processes the child started, never with ``process_alive``: that one says True when it cannot tell, so on Linux
+    it can call a browser the runner had already confirmed dead (a zombie) running while init reaps it, a moment after the runner's
+    own look, and on Windows a freed pid can belong to another program by then.
     """
 
     def setUp(self):
@@ -1427,19 +1432,30 @@ class KillOrderingTests(HandoffCase):
         for pid, started in self.grandchildren.items():
             kill_if_same_process(pid, started)
 
+    def recorded(self):
+        """What the child wrote once it had started its grandchild (each pid with its start), or None before it has."""
+        try:
+            return json.loads(self.pid_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
     def pids(self):
-        self.assertTrue(wait_until(lambda: self.pid_file.exists() and len(self.pid_file.read_text().split()) == 2, 60), "the child never started its grandchild")
-        child, grandchild = (int(part) for part in self.pid_file.read_text().split())
-        self.grandchildren[grandchild] = apply_runner.process_start(grandchild)
-        return child, grandchild
+        self.assertTrue(wait_until(lambda: self.recorded() is not None, 60), "the child never started its grandchild")
+        seen = self.recorded()
+        self.assertTrue(seen["child_start"] and seen["grandchild_start"], "the child could not read when its processes started")
+        self.grandchildren[seen["grandchild"]] = seen["grandchild_start"]
+        return seen["child"], seen["grandchild"]
 
     def spy(self):
         real = apply_runs.record_result
 
         def look(*args, **kwargs):
-            if self.alive_at_settle is None and self.pid_file.exists():
-                child, grandchild = (int(part) for part in self.pid_file.read_text().split())
-                self.alive_at_settle = {"child": apply_runner.process_alive(child), "grandchild": apply_runner.process_alive(grandchild)}
+            seen = self.recorded() if self.alive_at_settle is None else None
+            if seen is not None:
+                self.alive_at_settle = {
+                    "child": still_running(seen["child"], seen["child_start"]),
+                    "grandchild": still_running(seen["grandchild"], seen["grandchild_start"]),
+                }
             return real(*args, **kwargs)
 
         return mock.patch.object(apply_runs, "record_result", side_effect=look)
@@ -1692,6 +1708,23 @@ class ProcessIdentityTests(unittest.TestCase):
         self.assertEqual(apply_runner.process_start(os.getpid()), mine)
         other = self.sleeper()
         self.assertNotEqual(apply_runner.process_start(other.pid), mine)
+
+    def test_the_look_at_settle_follows_the_process_not_its_pid(self):
+        # KillOrderingTests' instrument. Running: True. Another start at the pid (a program handed a freed pid): False. Exited: False,
+        # also before it is reaped and while process_alive, which says True when it cannot tell, would still call it running.
+        child = self.sleeper()
+        started = apply_runner.process_start(child.pid)
+        self.assertTrue(still_running(child.pid, started))
+        self.assertFalse(still_running(child.pid, "the start of the process that had this pid before"))
+        self.assertTrue(still_running(child.pid, None), "with no recorded start it cannot tell, so it must not say the process is gone")
+        child.kill()
+        self.assertTrue(wait_until(lambda: not still_running(child.pid, started), 15), "a killed process still read as running")
+        if os.name == "nt" or hasattr(os, "pidfd_open"):
+            # Not reaped yet: a zombie on Linux, a process object this Popen still holds a handle to on Windows.
+            with mock.patch.object(apply_runner, "process_alive", return_value=True):
+                self.assertFalse(still_running(child.pid, started), "an exited process read as running because process_alive could not tell")
+        child.wait(timeout=30)
+        self.assertFalse(still_running(child.pid, started))
 
     def test_the_snapshots_keep_when_each_process_started(self):
         child = self.sleeper()

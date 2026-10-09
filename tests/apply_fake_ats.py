@@ -829,7 +829,8 @@ class ProcessCannedFactory:
 
     Module-level and picklable (``isolation = "process"``), opens no browser and no socket, and is importable as
     ``apply_fake_ats`` from the spawned child. The grandchild is started before the student's turn (the runner snapshots the
-    child's descendants when it sees the agent is ready), its pid is written to ``pid_file``, and the child's own exit
+    child's descendants when it sees the agent is ready), its pid and the child's, each with its ``process_start``, are written
+    to ``pid_file`` as JSON (``child``, ``grandchild``, ``child_start``, ``grandchild_start``), and the child's own exit
     stops it unless ``leak`` is True (a browser that outlives its driver), so the kill-ordering tests see real pids.
     ``outcome`` and ``wait`` are the same knobs as ``CANNED["handoff"]``.
     """
@@ -873,7 +874,13 @@ class ProcessCannedAgent(CannedAgent):
                 [sys.executable, "-c", "import time; time.sleep(600)"], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             if self.factory.pid_file:
-                Path(self.factory.pid_file).write_text(f"{os.getpid()} {self.grandchild.pid}", encoding="utf-8")
+                from opportunity_app.apply.runner import process_start
+
+                # Each pid with when its process started, read here while both certainly run (this process holds the grandchild's
+                # handle), so a test that looks later never takes a program that was handed a freed pid for one of them.
+                record = {"child": os.getpid(), "grandchild": self.grandchild.pid,
+                          "child_start": process_start(os.getpid()), "grandchild_start": process_start(self.grandchild.pid)}
+                Path(self.factory.pid_file).write_text(json.dumps(record), encoding="utf-8")
             if not self.factory.leak:
                 self.extra_cleanup = self._stop_grandchild
         if self.factory.crash_at == "after_hand_over":
@@ -993,6 +1000,65 @@ def kill_if_same_process(pid: int, started: str | None) -> bool:
         return False
     apply_runner._kill_pid(pid)
     return True
+
+
+def still_running(pid: int, started: str | None) -> bool:
+    """Whether the process first seen at ``pid`` (``started`` is what ``process_start`` read then) has not exited. For a test's look.
+
+    ``process_alive`` says True whenever it cannot tell, which is right for the runner (it never calls a browser gone that may not be)
+    and wrong for a test asking whether the runner had killed it: on Linux a process that has exited reads as running while its new
+    parent reaps it (its /proc entry answers ESRCH), and on Windows a freed pid is soon another program's. This asks about the process
+    itself. Linux: a pidfd, readable once the process has exited (a zombie has). Windows: a handle, signaled once it has exited, which
+    keeps the pid from being handed out while it is open. A running process at the pid counts only if it started when the first one
+    did. With no start recorded the answer is True, so a test that cannot tell fails rather than passes.
+    """
+    from opportunity_app.apply import runner as apply_runner
+
+    if not started:
+        return True
+
+    def same() -> bool:
+        return apply_runner.process_start(pid) == started
+
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        handle = kernel32.OpenProcess(0x00100000 | 0x1000, False, int(pid))   # SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            if ctypes.get_last_error() in (5, 87):
+                return False   # no process has the pid (87), or only one this user may not open, never one a test started (5)
+            return apply_runner.process_alive(pid) and same()
+        try:
+            if kernel32.WaitForSingleObject(handle, 0) == 0:   # WAIT_OBJECT_0: it has exited
+                return False
+            return same()      # running, and the open handle keeps it the process at this pid
+        finally:
+            kernel32.CloseHandle(handle)
+    pidfd_open = getattr(os, "pidfd_open", None)
+    if pidfd_open is not None:
+        try:
+            descriptor = pidfd_open(pid)
+        except ProcessLookupError:
+            return False       # reaped: no process has the pid
+        except OSError:
+            descriptor = -1    # a kernel without pidfds: the look below
+        if descriptor >= 0:
+            import select
+
+            try:
+                if select.select([descriptor], [], [], 0)[0]:
+                    return False   # readable once the process has exited
+                return same()
+            finally:
+                os.close(descriptor)
+    return apply_runner.process_alive(pid) and same()
 
 
 # --- FakeLever: a local Lever board for the browser tests and the sandbox (docs/phase5-lever-handoff-spec.md 10.3) ---------------------

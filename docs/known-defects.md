@@ -18,7 +18,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Apply for me | 0 | 4 | 9 | 13 |
+| Apply for me | 0 | 4 | 10 | 14 |
 | Mail, Gmail and inboxes | 0 | 4 | 8 | 12 |
 | Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
@@ -26,7 +26,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Scoring, scheduling and configuration | 1 | 2 | 8 | 11 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **29** | **36** | **66** |
+| **Total** | **1** | **29** | **37** | **67** |
 
 ## Start here: the high-severity entries
 
@@ -112,7 +112,7 @@ The entry flagged for an owner decision is
 
 ## Apply for me
 
-The first three were left open by PR #54 (the fail-closed net) and recorded here on 2026-10-03; each was narrowed on 2026-10-08 (the lists were widened, a page's headings now count, and the chain follows every follow-up-shaped child). Apply for me never carries an answer across companies, so each can at worst affect one company's own saved answer, and the student still presses Submit (D1 B). The next three were found while building the rehearsal engine (M5a), and the next one while building Finish in browser (M5b part 2); none was fixed there. The last two were found on 2026-10-04 and 2026-10-08.
+The first three were left open by PR #54 (the fail-closed net) and recorded here on 2026-10-03; each was narrowed on 2026-10-08 (the lists were widened, a page's headings now count, and the chain follows every follow-up-shaped child). Apply for me never carries an answer across companies, so each can at worst affect one company's own saved answer, and the student still presses Submit (D1 B). The next three were found while building the rehearsal engine (M5a), and the next one while building Finish in browser (M5b part 2); none was fixed there. The next four were found on 2026-10-04 and 2026-10-08, and the last one on 2026-10-08 while diagnosing a kill-ordering test flake.
 
 ### Agreement-shaped choices and signatures in wordings no list has still fill from a same-company saved answer
 - **Severity:** medium (PR #54 review; narrowed on 2026-10-08)
@@ -205,6 +205,13 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** The exemption says a card question's words are its own and the template's size limits them. That limit covers one template; a page can carry any number of them. Only the page cap of `LeverPageClient` (4 MB) bounds the total, so the text a plan reads is linear in the page and never multiplied by controls the way a shared label is. No test times a page of many large templates, and a page just under the cap is not counted against the budget at all.
 - **Suggested fix:** Count a card question's label and options in `_text_spent()` against a budget of its own, sized from the largest real template (a university dropdown of about 3,300 options), and read the form as unreadable above it. Time a page of many templates first.
 - **Regression suite:** tests/test_lever_form.py (many large card templates under the page cap are read in under three seconds, or the form is left to the student)
+
+### A process only the kill's own listing found is killed but never checked, so the close can be confirmed while it runs
+- **Severity:** low, latent (found 2026-10-08, diagnosing the KillOrderingTests flake)
+- **Where:** `opportunity_app/apply/runner.py` `_end_child()` (`killed = kill_tree(pid)`, then `_kill_survivors(outcome.pids, ...)`); `kill_tree()` lists the tree again through `descendants()`
+- **What happens:** `_end_child` lists the processes below the child, records them in `outcome.pids`, then calls `kill_tree`, which lists the tree a second time and kills what it finds. `_kill_survivors` re-checks only `outcome.pids` (and the child), so a process that started between the two listings is killed by pid but never looked at again; `killed_pids` names it and `closed_confirmed` can be True while it is still running. With `_process_table` returning the second listing only for the kill, a process that survives the kill, and `process_alive` True for it, `_end_child` sets `closed_confirmed` True. For a claim still `claimed`, row 7 ("couldn't confirm the window closed") is then skipped. It needs a process born within milliseconds of the kill that also survives `SIGKILL` or `taskkill /F`. Chromium's main process is listed long before (the ready snapshot), so this has not been seen.
+- **Suggested fix:** Pass `kill_tree`'s targets to `_kill_survivors` with the recorded pids (record their start times first, as `_remember` does), or list the tree once more after the kill and repeat until nothing new appears.
+- **Regression suite:** tests/test_apply_handoff.py (a process that only the second listing finds and that survives the kill leaves `closed_confirmed` False)
 
 ## Mail, Gmail and inboxes
 
