@@ -20,13 +20,13 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Browser extension | 0 | 1 | 0 | 1 |
 | Apply for me | 0 | 4 | 11 | 15 |
 | Mail, Gmail and inboxes | 0 | 4 | 8 | 12 |
-| Outreach drafting, research, forms and CLI | 0 | 6 | 4 | 10 |
+| Outreach drafting, research, forms and CLI | 0 | 5 | 4 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
 | Web API, auth and storage | 0 | 4 | 1 | 5 |
 | Scoring, scheduling and configuration | 1 | 2 | 8 | 11 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **29** | **38** | **68** |
+| **Total** | **1** | **28** | **38** | **67** |
 
 ## Start here: the high-severity entries
 
@@ -307,13 +307,6 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **Regression suite:** tests/ unittest (`test_outreach_labels` with `test_account_coverage`: a `client_factory` whose Gmail call deletes the account before the pass writes; no label row remains for that user)
 
 ## Outreach drafting, research, forms and CLI
-
-### FormSubmitter does not block WebSockets, so page scripts get past the request guard
-- **Severity:** medium, privacy (notes 15, 97)
-- **Where:** `opportunity_app/outreach/forms.py:816-824` `FormSubmitter._start()` (compare `opportunity_app/outreach/render.py:80-84`)
-- **What happens:** `context.route()` does not intercept WebSockets, and only the renderer closes them. A contact page loaded for submission or rehearsal can open ws:// connections to loopback or private hosts, such as the local app. It can also stream typed form fields out during a rehearsal that promises nothing leaves the page. The class docstring claims the renderer's guard.
-- **Suggested fix:** After `route()`, add `route_web_socket('**/*', lambda s: s.close())`. Better, build both browser contexts with one shared guarded-context helper.
-- **Regression suite:** tests/ unittest (`test_outreach_forms`: a fake context asserts that `route_web_socket` is installed)
 
 ### A required box about the company (its address, website, size) is typed with the student's school
 - **Severity:** medium, wrong value sent (found while adding the mailing address to contact forms)

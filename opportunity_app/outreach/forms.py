@@ -1324,6 +1324,9 @@ class FormSubmitter:
         self._browser = self._playwright.chromium.launch(headless=not self.headed, args=self._launch_args)
         self._context = self._browser.new_context(service_workers="block", accept_downloads=False)
         self._context.route("**/*", self._route)
+        # A route never sees a WebSocket: closed before it connects, as the renderer's are (outreach/render.py).
+        if hasattr(self._context, "route_web_socket"):
+            self._context.route_web_socket("**/*", lambda socket: socket.close())
         if self.person_wait or self.rehearse:
             self._context.add_init_script(CLOSE_GUARD)
 

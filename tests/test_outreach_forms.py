@@ -1,6 +1,7 @@
 """Contact forms for companies with no email: found by the crawl, filled truthfully, sent once."""
 
 import json
+import socket
 import sqlite3
 import sys
 import tempfile
@@ -1646,6 +1647,27 @@ class FinishInBrowserGateTests(unittest.TestCase):
         open_route = _GateRoute("POST", "https://bovi.test/send")
         submitter._route(open_route)
         self.assertFalse(open_route.aborted, "the student's own send leaves once they pressed")
+
+
+@requires_chromium
+class FormSubmitterSocketTests(unittest.TestCase):
+    """A contact page's WebSocket is closed before it connects, as the renderer's is: no route sees one."""
+
+    def test_a_page_opens_no_websocket(self):
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(4)
+        listener.settimeout(3)
+        self.addCleanup(listener.close)
+        port = listener.getsockname()[1]
+        page = PLAIN_FORM.replace("</form>", f"</form><script>new WebSocket('ws://127.0.0.1:{port}/x?v=Sam+Rivera');</script>")
+        site = Site({"/contact": page})
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        with FormSubmitter(route_hook=site.route, screenshot_dir=Path(tempdir.name), rehearse=True) as submitter:
+            submitter.submit("https://bovi.test/contact", identity=IDENTITY, subject="s", body=LETTER, name="bovi")
+            with self.assertRaises(socket.timeout, msg="nothing connected"):
+                listener.accept()
 
 
 class FormSubmitterCheckTests(unittest.TestCase):
