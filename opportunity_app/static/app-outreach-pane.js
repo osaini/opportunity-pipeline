@@ -26,9 +26,9 @@
   // From app-outreach-send.js.
   const {
     CALL_PREP_ACTIVE, CALL_PREP_WRITING, CONTACT_CONFIDENCE_LABELS, DRAFT_PROVIDER_LABELS, DRAFT_STATUS_LABELS, approveAndScheduleButton,
-    automaticSendWords, canApproveAndSchedule, OUTREACH_STATUS_LABELS, composeControl, formHost, formSendControls, outreachChoice, outreachContactFormSection,
-    outreachDraftNeedsReview, outreachField, outreachReachable, pauseWords, refocusOutreach, refuseUnsavedHandOff,
-    reloadOutreachAt, scheduleText, scheduleWords, sentFolderCheck,
+    approveFollowUpButtons, automaticSendWords, canApproveAndSchedule, OUTREACH_STATUS_LABELS,
+    composeControl, formHost, formSendControls, outreachChoice, outreachContactFormSection, outreachDraftNeedsReview, outreachField,
+    outreachReachable, pauseWords, refocusOutreach, refuseUnsavedHandOff, reloadOutreachAt, scheduleText, scheduleWords, sentFolderCheck,
   } = App;
 
   // From app-outreach-drafts.js.
@@ -136,9 +136,16 @@
       return { label: "Keep the conversation going", hint: `Log each reply so the history stays complete.${revisit}`, tab: "history" };
     }
     if (item.follow_up_due) {
+      const queued = item.scheduled?.follow_up;
+      if (queued?.state === "scheduled") {
+        const suffix = ". Cancel it or send it now below.";
+        return { label: "Follow-up scheduled", hint: `${scheduleWords(queued.label)}${suffix}`, schedule: { label: queued.label, suffix }, tab: null, tone: "is-region" };
+      }
+      if (queued?.state === "sending" || queued?.state === "transmitting") return { label: "Sending the follow-up", hint: "It is going out now.", tab: null, tone: "is-region" };
+      if (queued?.state === "failed") return { label: "Scheduled follow-up stopped", hint: `${queued.error}.`, tab: "follow-up", tone: "is-warning" };
       return item.follow_up_status === "approved"
         ? { label: "Send the follow-up", hint: "It is approved; open it in your email and send it.", tab: null, tone: "is-warning" }
-        : { label: "Follow up now", hint: "The follow-up date has passed. Draft and approve a short follow-up.", tab: "draft", tone: "is-warning" };
+        : { label: "Follow up now", hint: "The follow-up date has passed. Draft and approve a short follow-up.", tab: "follow-up", tone: "is-warning" };
     }
     if (item.status === "sent" || item.status === "followed_up") {
       return { label: "Wait for a reply", hint: item.follow_up_at ? `Follow up on ${formatCalendarDate(item.follow_up_at)} if nothing arrives.` : "Log their reply here when it arrives.", tab: "history" };
@@ -168,17 +175,20 @@
 
   const OUTREACH_PANE_TABS = [
     ["draft", "Draft"],
+    ["follow-up", "Follow-up"],
     ["research", "Research"],
     ["contact", "Contact"],
     ["timing", "Timing"],
     ["history", "Replies and history"],
   ];
 
+  // A follow-up has somewhere to go once the first email is out, and keeps it while one is written.
+  const outreachHasFollowUp = (item) => item.status === "sent" || item.status === "followed_up" || Boolean(item.follow_up_body);
+
   // Call prep appears once a company writes back, and stays while it holds notes.
   function outreachPaneTabs(item) {
-    return OUTREACH_CALL_PREP.includes(item.status) || item.call_prep
-      ? [["prep", "Call prep"], ...OUTREACH_PANE_TABS]
-      : OUTREACH_PANE_TABS;
+    const tabs = OUTREACH_PANE_TABS.filter(([id]) => id !== "follow-up" || outreachHasFollowUp(item));
+    return OUTREACH_CALL_PREP.includes(item.status) || item.call_prep ? [["prep", "Call prep"], ...tabs] : tabs;
   }
 
   // The tab a company opens on: the one you last used for it, else where its next step lives.
@@ -1435,12 +1445,17 @@
     draft.appendChild(sendNote);
 
     let followUpGroup = null;
-    if (item.status === "sent" || item.status === "followed_up" || item.follow_up_body) {
+    if (tabNames["follow-up"]) {
       followUpGroup = element("fieldset", "outreach-group is-draft");
       followUpGroup.appendChild(element("legend", "", "Follow-up draft"));
+      if (item.contact_email) {
+        const to = element("p", "outreach-to is-wide");
+        to.append(element("strong", "", "To "), document.createTextNode(item.contact_cc ? `${item.contact_email} (Cc ${item.contact_cc})` : item.contact_email));
+        followUpGroup.appendChild(to);
+      }
       const followSubject = outreachField(followUpGroup, "Subject", "follow_up_subject", item.follow_up_subject, { wide: true });
       const followBody = outreachField(followUpGroup, "Body", "follow_up_body", item.follow_up_body, { multiline: true, wide: true });
-      followBody.rows = 6;
+      followBody.rows = 8;
       const followChecks = element("div", "outreach-checks");
       followChecks.setAttribute("aria-live", "polite");
       const refreshFollowChecks = () => renderDraftChecks(followChecks, followSubject.value, followBody.value);
@@ -1448,36 +1463,47 @@
       followBody.addEventListener("input", refreshFollowChecks);
       refreshFollowChecks();
       followUpGroup.appendChild(followChecks);
-      draftAssistant(followUpGroup, item, "follow_up", followSubject, followBody);
+      draftAssistant(followUpGroup, item, "follow_up", followSubject, followBody, { extra: approveFollowUpButtons(context, item, followSubject, followBody) });
     }
 
     const notesGroup = element("fieldset", "outreach-group");
     notesGroup.appendChild(element("legend", "", "Notes"));
     outreachField(notesGroup, "Private notes", "notes", item.notes, { multiline: true, wide: true });
 
-    // Draft sits beside a summary of who it goes to and when, so the other tabs
-    // are only needed to change those details.
+    // Each draft sits beside a summary of who it goes to and when, so the other
+    // tabs are only needed to change those details.
+    const draftAside = () => {
+      const aside = element("aside", "outreach-aside");
+      aside.setAttribute("aria-label", "Contact and timing");
+      aside.append(
+        outreachSummaryCard("Contact", item.contact_email || item.contact_name ? [
+          [item.contact_name || item.contact_email, "outreach-aside-strong"],
+          item.contact_role ? [item.contact_role] : null,
+          item.contact_name && item.contact_email ? [item.contact_email] : null,
+          [CONTACT_CONFIDENCE_LABELS[item.contact_confidence], `outreach-aside-tag is-${item.contact_confidence}`],
+        ] : item.contact_form ? [["Contact form", "outreach-aside-strong"], [formHost(item)]] : [["No contact yet. Find one under Contact."]]),
+        outreachSummaryCard("Timing", [
+          [`Deadline: ${item.deadline_date ? formatCalendarDate(item.deadline_date) : item.deadline_label || "none recorded"}`],
+          [item.sent_at ? `Sent ${formatCalendarDate(item.sent_at)}` : "Not sent yet"],
+          OUTREACH_REVISIT.includes(item.status)
+            ? [item.follow_up_at ? `Revisit ${formatCalendarDate(item.follow_up_at)}` : "No revisit date set"]
+            : [item.follow_up_at ? `Follow up ${formatCalendarDate(item.follow_up_at)}` : "Follow-up is set when you mark it sent"],
+        ])
+      );
+      return aside;
+    };
     const draftPanel = panel("draft");
     const draftMain = element("div", "outreach-draft-main");
-    draftMain.append(draft, ...(followUpGroup ? [followUpGroup] : []));
-    const aside = element("aside", "outreach-aside");
-    aside.setAttribute("aria-label", "Contact and timing");
-    aside.append(
-      outreachSummaryCard("Contact", item.contact_email || item.contact_name ? [
-        [item.contact_name || item.contact_email, "outreach-aside-strong"],
-        item.contact_role ? [item.contact_role] : null,
-        item.contact_name && item.contact_email ? [item.contact_email] : null,
-        [CONTACT_CONFIDENCE_LABELS[item.contact_confidence], `outreach-aside-tag is-${item.contact_confidence}`],
-      ] : item.contact_form ? [["Contact form", "outreach-aside-strong"], [formHost(item)]] : [["No contact yet. Find one under Contact."]]),
-      outreachSummaryCard("Timing", [
-        [`Deadline: ${item.deadline_date ? formatCalendarDate(item.deadline_date) : item.deadline_label || "none recorded"}`],
-        [item.sent_at ? `Sent ${formatCalendarDate(item.sent_at)}` : "Not sent yet"],
-        OUTREACH_REVISIT.includes(item.status)
-          ? [item.follow_up_at ? `Revisit ${formatCalendarDate(item.follow_up_at)}` : "No revisit date set"]
-          : [item.follow_up_at ? `Follow up ${formatCalendarDate(item.follow_up_at)}` : "Follow-up is set when you mark it sent"],
-      ])
-    );
-    draftPanel.append(draftMain, aside);
+    draftMain.appendChild(draft);
+    draftPanel.append(draftMain, draftAside());
+    const followUpPanels = [];
+    if (followUpGroup) {
+      const followUpPanel = panel("follow-up");
+      const followUpMain = element("div", "outreach-draft-main");
+      followUpMain.appendChild(followUpGroup);
+      followUpPanel.append(followUpMain, draftAside());
+      followUpPanels.push(followUpPanel);
+    }
 
     const researchPanel = panel("research");
     researchPanel.append(research, outreachTechBrief(item, context), notesGroup);
@@ -1511,7 +1537,7 @@
       prepPanel.appendChild(outreachCallPrep(item));
       prepPanels.push(prepPanel);
     }
-    form.append(...prepPanels, draftPanel, researchPanel, contactPanel, timingPanel, historyPanel, footer);
+    form.append(...prepPanels, draftPanel, ...followUpPanels, researchPanel, contactPanel, timingPanel, historyPanel, footer);
     loadOutreachTimeline(item.id, timelineBody);
     contactsSection.load();
 
