@@ -427,17 +427,35 @@ class StudentFileSignalTests(unittest.TestCase):
 
     def test_a_choice_in_the_students_turn_lets_one_read_pass_and_its_hash_follows_under_its_own_number(self):
         agent = self.agent(phase=apply_agent.PHASE_STUDENT)
-        self.call(agent, "file:1")
+        self.call(agent, "file:1:file1.pdf")
         self.assertEqual((agent._state.student_files_chosen, [number for number, _ in agent._open_choices]), (1, [1]))
-        self.call(agent, "file:2")
+        self.call(agent, "file:2:file2.pdf")
         self.assertEqual((agent._state.student_files_chosen, [number for number, _ in agent._open_choices]), (2, [1, 2]))
         self.call(agent, f"sha:2:{self.SHA}")   # the second one's hash first: it still finds its own choice
         self.call(agent, "sha:1:")
         self.assertEqual(agent._choice_digests, {2: self.SHA, 1: ""})
 
+    def test_the_rules_are_given_the_name_and_hash_of_the_oldest_open_choice_and_nothing_once_it_is_used_or_has_run_out(self):
+        agent = self.agent(phase=apply_agent.PHASE_STUDENT)
+        self.call(agent, "file:1:first.pdf")
+        self.call(agent, "file:2:second.pdf")
+        self.assertEqual((agent._state.student_file_name, agent._state.student_file_sha256), ("first.pdf", ""))
+        self.call(agent, f"sha:2:{self.SHA}")
+        self.assertEqual((agent._state.student_file_name, agent._state.student_file_sha256), ("first.pdf", ""), "the second choice's hash is not the first one's")
+        self.call(agent, f"sha:1:{'cd' * 32}")
+        self.assertEqual((agent._state.student_file_name, agent._state.student_file_sha256), ("first.pdf", "cd" * 32))
+        agent._open_choices.pop(0)
+        agent._choice_names.pop(1)
+        agent._publish_open_choice()
+        self.assertEqual((agent._state.student_file_name, agent._state.student_file_sha256), ("second.pdf", self.SHA))
+        with mock.patch.object(apply_agent, "STUDENT_FILE_WINDOW_S", 0.05):
+            time.sleep(0.15)
+            agent._expire_student_choices()
+        self.assertEqual((agent._state.student_file_name, agent._state.student_file_sha256, agent._choice_names), ("", "", {}))
+
     def test_a_hash_for_a_choice_nobody_made_is_ignored(self):
         agent = self.agent(phase=apply_agent.PHASE_STUDENT)
-        self.call(agent, "file:1")
+        self.call(agent, "file:1:file1.pdf")
         self.call(agent, f"sha:7:{self.SHA}")
         self.assertEqual(agent._choice_digests, {})
 
@@ -448,13 +466,13 @@ class StudentFileSignalTests(unittest.TestCase):
             ("Greenhouse", self.agent(GreenhouseAdapter(), phase=apply_agent.PHASE_STUDENT)),
         ):
             with self.subTest(case=label):
-                self.call(agent, "file:1")
+                self.call(agent, "file:1:file1.pdf")
                 self.call(agent, f"sha:1:{self.SHA}")
                 self.assertEqual((agent._state.student_files_chosen, agent._open_choices, agent._choice_digests), (0, [], {}))
 
     def test_anything_but_the_listeners_words_is_ignored(self):
         agent = self.agent(phase=apply_agent.PHASE_STUDENT)
-        for payload in ("", "File", "file", "file:", "file:x", "file:1 ", "file:1234567890", "sha:", "sha:1", "sha:1:xyz", f"sha:1:{self.SHA.upper()}", f"sha:1:{self.SHA}0", 1, None, {"file": 1}):
+        for payload in ("", "File", "file", "file:", "file:x", "file:1 ", "file:1", "file:1:", "file:1:a b.pdf", "file:1:a/b.pdf", "file:1:" + "a" * 256, "file:1234567890", "sha:", "sha:1", "sha:1:xyz", f"sha:1:{self.SHA.upper()}", f"sha:1:{self.SHA}0", 1, None, {"file": 1}):
             self.call(agent, payload)
         self.assertEqual((agent._state.student_files_chosen, agent._open_choices, agent._choice_digests), (0, [], {}))
         agent._on_binding({"name": "somebodyElse", "payload": "file:1"})
@@ -462,11 +480,11 @@ class StudentFileSignalTests(unittest.TestCase):
 
     def test_a_choice_no_read_used_runs_out_and_takes_its_allowance_with_it(self):
         agent = self.agent(phase=apply_agent.PHASE_STUDENT)
-        self.call(agent, "file:1")
-        self.call(agent, "file:2")
+        self.call(agent, "file:1:file1.pdf")
+        self.call(agent, "file:2:file2.pdf")
         with mock.patch.object(apply_agent, "STUDENT_FILE_WINDOW_S", 0.05):
             time.sleep(0.15)
-            self.call(agent, "file:3")   # a new one: the two before it have run out
+            self.call(agent, "file:3:file3.pdf")   # a new one: the two before it have run out
             self.assertEqual((agent._state.student_files_chosen, [number for number, _ in agent._open_choices]), (1, [3]))
             time.sleep(0.15)
             agent._expire_student_choices()

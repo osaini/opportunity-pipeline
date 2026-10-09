@@ -190,6 +190,7 @@ MAX_TELEMETRY_RECORDED = 20
 MAX_REQUESTS = 300
 CODE_PATTERN = re.compile(r"[A-Za-z0-9]{8}")
 CODE_SETTLE_S = 0.3      # after typing the code: time for a widget that sends by itself to try, before the student is told what to do
+STUDENT_HASH_WAIT_S = 1.0   # a read that carries bytes waits this long for the hash of the file the student chose (a file from their disk carries none)
 STUDENT_FILE_WINDOW_S = 10.0   # a file the student chose may be read by the page for this long; a choice no read has used by then is forgotten
 PRESS_GRACE_S = 0.15     # a code POST refused for want of a press waits this long for the press to be reported (it is reported first, by a few ms)
 TURN_POLL_MS = 250
@@ -325,8 +326,8 @@ PRESS_LISTENER_TEMPLATE = """(() => {
   // read: a file over the page's own limit is not sent, so no read follows it. A page that reads a file the moment it is attached sends it then; only
   // those boards' pages are listened to, so a Greenhouse page's files are never opened here. Only a trusted 'change' counts, so a script that sets
   // a file box's files and fires its own event does not. Other file boxes of the form (a cover letter) are not reported: the page does not read them.
-  // Each choice gets a number, and is reported at once with it (the page's read of the file follows it by moments); the file's SHA-256 follows, with the
-  // same number, when it is worked out. The bytes of a file the student picks from their disk do not pass through the request rules (the browser sends
+  // Each choice gets a number, and is reported at once with it and the file's name (the page's read of the file follows it by moments); the file's SHA-256
+  // follows, with the same number, when it is worked out. The bytes of a file the student picks from their disk do not pass through the request rules (the browser sends
   // them itself, and the route sees an empty part), so this is the only way to know which file it was, and the number is how a hash finds its choice.
   const fileBox = __FILE_BOX__;
   const fileLimit = __FILE_LIMIT__;
@@ -338,7 +339,9 @@ PRESS_LISTENER_TEMPLATE = """(() => {
     const file = box.files[0];
     if (!(fileLimit > 0 && file.size <= fileLimit)) return;
     const id = ++chosen;
-    window.__BINDING__('file:' + id);
+    // The name is reported as the page rewrites it when it posts the file (each run of characters outside letters, digits, dot, underscore and hyphen
+    // becomes one underscore): the read may carry that name only, so a script cannot send a value in the name of the student's own file.
+    window.__BINDING__('file:' + id + ':' + String(file.name || 'resume').replace(/[^A-Za-z0-9._-]+/g, '_'));
     try {
       file.arrayBuffer().then((data) => crypto.subtle.digest('SHA-256', data)).then((hash) => {
         window.__BINDING__('sha:' + id + ':' + Array.from(new Uint8Array(hash)).map((byte) => byte.toString(16).padStart(2, '0')).join(''));
@@ -1052,6 +1055,7 @@ class ApplyAgent:
         # The student's own: files they chose in the window during their turn, and the reads of them the route let through (spec 6.12 step 7).
         self._student_reads: list[Any] = []        # the requests (the page's read of each file the student chose)
         self._open_choices: list[tuple[int, float]] = []   # (number, time.monotonic()) of each file the student chose that no read has used yet, oldest first
+        self._choice_names: dict[int, str] = {}    # the name the page gives each file the student chose that no read has used yet, by the listener's number
         self._choice_digests: dict[int, str] = {}  # the SHA-256 of each file the student chose, by the listener's number for it ("" when the page could not work it out)
         self._read_choices: list[int | None] = []  # the choice each of the reads above used up (None when none was open)
         self._student_changed: list[str] = []      # the keys of the fields the page's reader changed after those reads (names, never values)
@@ -1150,25 +1154,39 @@ class ApplyAgent:
             return
         if event.get("payload") == "1":
             self._state.note_student_press()
-        elif isinstance(event.get("payload"), str) and re.fullmatch(r"file:[0-9]{1,9}", event["payload"]):
+        elif isinstance(event.get("payload"), str) and re.fullmatch(r"file:[0-9]{1,9}:[A-Za-z0-9._-]{1,255}", event["payload"]):
             if self._policy.resume_post_path and self._phase == PHASE_STUDENT and not self._handed_over:
                 # The student chose a file in the page's file box: the page's read of it may pass, once, and only for a moment (``RouteState.student_files_chosen``).
+                _, number, name = event["payload"].split(":", 2)
                 self._expire_student_choices()
-                self._open_choices.append((int(event["payload"][5:]), time.monotonic()))
+                self._open_choices.append((int(number), time.monotonic()))
+                self._choice_names[int(number)] = name
                 self._state.student_files_chosen += 1
+                self._publish_open_choice()
         elif isinstance(event.get("payload"), str) and re.fullmatch(r"sha:[0-9]{1,9}:(?:[0-9a-f]{64})?", event["payload"]):
             # That file's SHA-256 (or nothing, when the page could not work it out), for the choice with that number.
             _, number, digest = event["payload"].split(":")
             if int(number) in self._read_choices or any(int(number) == known for known, _ in self._open_choices):
                 self._choice_digests[int(number)] = digest
+                self._publish_open_choice()
+
+    def _publish_open_choice(self) -> None:
+        """Give the request rules the oldest open choice's name and hash: the read they judge next is the one that choice allows."""
+        number = self._open_choices[0][0] if self._open_choices else None
+        self._state.student_file_name = self._choice_names.get(number, "") if number is not None else ""
+        self._state.student_file_sha256 = self._choice_digests.get(number, "") if number is not None else ""
 
     def _expire_student_choices(self) -> None:
         """Forget the choices no read used within ``STUDENT_FILE_WINDOW_S``: the page reads a file at once, so a choice still unused after that is not
         followed by a read, and its allowance must not wait for a script's."""
         now = time.monotonic()
+        expired = False
         while self._open_choices and now - self._open_choices[0][1] > STUDENT_FILE_WINDOW_S:
-            self._open_choices.pop(0)
+            self._choice_names.pop(self._open_choices.pop(0)[0], None)
             self._state.student_files_chosen -= 1
+            expired = True
+        if expired:
+            self._publish_open_choice()
 
     # --- the request policy -----------------------------------------------------------------------------------
 
@@ -1203,6 +1221,8 @@ class ApplyAgent:
                 decision = route_decision(self.mode, self._phase, facts, self._state, self._policy)   # the press was reported a moment after the request
             if isinstance(decision, Abort) and decision.rule == "resume_post_unasked" and self._file_choice_arrives():
                 decision = route_decision(self.mode, self._phase, facts, self._state, self._policy)   # the choice was reported a moment after the request
+            if isinstance(decision, Abort) and decision.rule == "resume_post_file" and self._phase == PHASE_STUDENT and self._file_hash_arrives():
+                decision = route_decision(self.mode, self._phase, facts, self._state, self._policy)   # the file's hash was reported a moment after the request
             # Resolved last, and only for a request the policy would let through: the name of a request that is refused anyway
             # (after the first input, anything but Greenhouse's own hosts) is never sent to a resolver, since a hostname can carry a value.
             # A name the browser itself could not look up is not looked up here either: the resolver below runs in this process, outside the
@@ -1226,6 +1246,8 @@ class ApplyAgent:
                     self._student_reads.append(request)
                     # The read uses up the oldest choice that is still open, as ``RouteState.record`` counts it: that choice's file is the one Lever received.
                     self._read_choices.append(self._open_choices.pop(0)[0] if self._open_choices else None)
+                    self._choice_names.pop(self._read_choices[-1], None)
+                    self._publish_open_choice()
                 else:
                     self._resume_requests.append(request)
                     self._resume_digest = str(getattr(decision, "digest", "") or "")
@@ -1276,6 +1298,23 @@ class ApplyAgent:
             except Exception:  # noqa: BLE001 - the page is going away: the request is refused
                 break
         return self._state.student_files_chosen > self._state.student_file_reads_passed
+
+    def _file_hash_arrives(self) -> bool:
+        """Wait up to ``STUDENT_HASH_WAIT_S`` for the hash of the file the student chose to be reported: it takes a moment to work out, and a read that
+        carries bytes is judged by it. True when the oldest open choice has one."""
+        if not self._policy.resume_post_path or not self._open_choices:
+            return False
+        deadline = time.monotonic() + STUDENT_HASH_WAIT_S
+        while time.monotonic() < deadline:
+            if self._choice_digests.get(self._open_choices[0][0]):
+                return True
+            try:
+                self._page.wait_for_timeout(20)
+            except Exception:  # noqa: BLE001 - the page is going away: the request is refused
+                break
+            if not self._open_choices:
+                break
+        return bool(self._open_choices and self._choice_digests.get(self._open_choices[0][0]))
 
     def _send_after_a_late_press(self, facts: RouteRequest) -> bool:
         """``looks_like_a_send`` for a request whose press has not been reported yet: wait a moment for it, and ask again."""

@@ -326,6 +326,49 @@ class StudentAttachTests(LeverHandoffCase):
     FORGED = """() => { const data = new FormData(); data.append('resume', new Blob(['answers: ' + document.querySelector('[name=email]').value]), 'x.pdf');
       data.append('accountId', document.querySelector('[name=accountId]').value); return fetch('/parseResume', {method: 'POST', body: data}).catch(() => 0); }"""
 
+    # A script that waits for the student's own choice and uses the read that choice allows. Both listen on the window in the capture phase, after the
+    # app's own listener has reported the choice, as a script of the page can.
+    TAKES_THE_STUDENTS_READ = """window.addEventListener('change', function (e) {
+      if (!e.target || e.target.name !== 'resume') return;
+      __SUPPRESS__
+      var data = new FormData();
+      data.append('resume', __FILE__, __NAME__);
+      data.append('accountId', document.querySelector('[name=accountId]').value);
+      fetch('/parseResume', {method: 'POST', body: data}).catch(function () {});
+    }, true);"""
+
+    def take_the_read(self, *, suppress, file, name):
+        return (self.TAKES_THE_STUDENTS_READ.replace("__SUPPRESS__", "e.stopImmediatePropagation();" if suppress else "")
+                .replace("__FILE__", file).replace("__NAME__", name))
+
+    def test_a_script_cannot_post_its_own_bytes_in_the_read_the_students_choice_allows_even_when_it_stops_the_pages_own_read(self):
+        """The page's own read never happens here, so nothing else would close the turn: the bytes posted must be the student's file."""
+        fake = FakeLever()
+        fake.inject.append(self.take_the_read(suppress=True, file="new Blob(['answers: ' + document.querySelector('[name=email]').value])", name="'x.pdf'"))
+        run = self.go(fake, src=lever_sources(upload=False), files={}, student=Student(("handoff", self.attach)))
+        self.assertEqual(fake.parse_posts(), [], "a script's bytes reached Lever in the read the student's choice allowed")
+        self.assertEqual(len(self.refused(run, rule="resume_post_file")), 1)
+        self.assertNotIn("student_attached_resume", run.result.evidence, "the record names a file Lever never received")
+        self.assertNotIn("resume_attached", run.steps)
+        self.assertEqual(run.result.evidence["resume_sent_to_lever"], False)
+
+    def test_a_script_cannot_post_the_students_file_under_a_name_it_chooses(self):
+        """The file name is text a script chooses: only the name of the file the student picked, as the page rewrites it, may go."""
+        fake = FakeLever()
+        fake.inject.append(self.take_the_read(suppress=False, file="e.target.files[0]", name="'answers ' + document.querySelector('[name=email]').value + '.pdf'"))
+        run = self.go(fake, src=lever_sources(upload=False), files={}, student=Student(("handoff", self.attach)))
+        self.assertEqual([post.part("resume").filename for post in fake.parse_posts() if "answers" in (post.part("resume").filename or "")], [],
+                         "a planned value reached Lever in the name of a file")
+        self.assertEqual(len(self.refused(run, rule="resume_post_name")), 1)
+
+    def test_the_name_the_page_gives_the_students_file_is_the_name_that_may_go(self):
+        """A name with spaces and an accent: the page rewrites it, and that is the one name the read may carry."""
+        path = self.file_named("My Résumé (final).pdf", STUDENTS_FILE)
+        run = self.go(src=lever_sources(upload=False), files={}, student=Student(("handoff", lambda page, seen: page.set_input_files('input[name="resume"]', str(path)))))
+        (post,) = run.fake.parse_posts()
+        self.assertEqual((post.status, post.part("resume").filename), (200, "My_R_sum_final_.pdf"))
+        self.assertEqual(run.result.evidence["student_attached_resume"]["sha256"], STUDENTS_SHA)
+
     def test_a_file_chosen_in_another_file_box_opens_no_read_for_a_script_to_use(self):
         """The cover letter box (a card on the page) is not read by Lever's reader: choosing a file there must not leave an allowance behind."""
         def cover_letter_then_forged(page, seen):
