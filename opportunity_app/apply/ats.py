@@ -69,6 +69,8 @@ class AtsSpec:
     # Whether the app starts a browser run for this ATS's form. False means the form can be read and planned and no window opens, in the app: the driver may
     # exist and be exercised by the tests before the milestone that connects it (Lever's did, until LV4).
     adapter_built: bool = True
+    # Whether the ATS emails a security code the app may type (Greenhouse does; Lever emails none, spec 6.9 Q5). The statistics count codes only for one that does.
+    has_security_code: bool = True
 
 
 GREENHOUSE = AtsSpec(
@@ -136,6 +138,7 @@ LEVER = AtsSpec(
     claim_modes=("handoff",),
     switch="apply_agent_lever",
     adapter_built=True,
+    has_security_code=False,
 )
 
 # In the order identify tries them. The first to recognise a role is the role's ATS.

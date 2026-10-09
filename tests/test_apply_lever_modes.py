@@ -91,7 +91,7 @@ class LeverRunnerTests(runner_tests.RunnerCase):
     def test_with_the_driver_connected_a_finish_in_browser_still_needs_the_lever_switch_and_writes_nothing(self):
         applications_before = self.counts("applications")["applications"]
         refused = self.refuse("handoff")
-        self.assertEqual(refused.message, "Apply for me works with Lever postings once you turn it on in Apply agent settings")
+        self.assertEqual(refused.message, "Apply for me on Lever is off. Turn it on in Profile, under Automation, in the Applications list")
         self.assertEqual(self.pages.calls, [], "the page was not asked for")
         self.assertEqual(self.counts("apply_runs", "application_submit_claims", "applications"),
                          {"apply_runs": 0, "application_submit_claims": 0, "applications": applications_before})

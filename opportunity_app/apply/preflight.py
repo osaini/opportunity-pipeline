@@ -38,7 +38,8 @@ from .checks import question_key
 NOT_FOUND = "The app couldn't find this posting on {ats}. It may be closed"
 NO_ANSWER = "{ats} did not answer. Try again later"
 DUPLICATE_TICK = "I know Apply for me handed an application to {company} to {ats} on {date} (it may not have gone through). Apply anyway."
-SWITCH_OFF = "Apply for me works with {ats} postings once you turn it on in Apply agent settings"
+# The switch is "Apply for me on {ats}", in Profile, under Automation, in the Applications list. Said once: the page does not repeat it under a button.
+SWITCH_OFF = "Apply for me on {ats} is off. Turn it on in Profile, under Automation, in the Applications list"
 LEFT_FOR_YOU = ". {count} more {is_are} left for you to answer on the {ats} form"
 YOURS_TO_ANSWER = "The app has everything it can fill. {count} question{s_are} yours to answer on the {ats} form"
 
@@ -119,20 +120,20 @@ def _listing(
     return listing, "", False
 
 
-LEVER_RESUME_YOURS = "Your résumé: you attach it yourself {there}, because Lever reads it as soon as it is attached"
-LEVER_RESUME_ATTACHED = ("Your résumé: the app attaches it itself, because you let it in Apply for me settings. "
-                         "Lever reads it as soon as it is attached, so it is sent to Lever before you press Submit")
-# While Lever has no window (``adapter_built``), the switch changes nothing yet: the student still attaches the résumé on Lever's own page.
-LEVER_RESUME_ATTACHED_LATER = ("Your résumé: you attach it yourself on Lever's application page. You let the app attach it in Apply for me settings, "
+# With Lever's window built, Finish in browser says who attaches the résumé in its own sentence above its button (the page's), so the check adds no note
+# and the student reads it once. While Lever has no window (``adapter_built``) there is no button and the switch changes nothing yet, so this is the
+# only place it is said: the student still attaches the résumé on Lever's own page.
+LEVER_RESUME_YOURS = "Your résumé: you attach it yourself on Lever's application page, because Lever reads it as soon as it is attached"
+LEVER_RESUME_ATTACHED_LATER = ("Your résumé: you attach it yourself on Lever's application page. You turned on Let the app attach my résumé on Lever, "
                                "but it cannot do that on Lever yet. Once it can, Lever reads it as soon as it is attached, "
                                "so it is sent to Lever before you press Submit")
 
 
 def lever_resume_note(ats: apply_ats.AtsSpec, upload: bool) -> str:
-    """The sentence above a Lever role's list about the résumé: who attaches it, following the student's choice and whether Lever has a window."""
-    if not ats.adapter_built:
-        return LEVER_RESUME_ATTACHED_LATER if upload else LEVER_RESUME_YOURS.format(there="on Lever's application page")
-    return LEVER_RESUME_ATTACHED if upload else LEVER_RESUME_YOURS.format(there="in the window")
+    """The note above a Lever role's list about the résumé, or "" when Finish in browser's own sentence says it (the window is built)."""
+    if ats.adapter_built:
+        return ""
+    return LEVER_RESUME_ATTACHED_LATER if upload else LEVER_RESUME_YOURS
 
 
 def _offers(ats: apply_ats.AtsSpec) -> dict[str, Any]:
@@ -346,7 +347,8 @@ def _prepare(
         window=ats.adapter_built,
     )
     if ats.key == apply_lever.ATS_LEVER:
-        result["notes"] = [lever_resume_note(ats, upload)]
+        note = lever_resume_note(ats, upload)
+        result["notes"] = [note] if note else []
         result["resume_upload"] = upload
     return result, plan, sources, schema
 

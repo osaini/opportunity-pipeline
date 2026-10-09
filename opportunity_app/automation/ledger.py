@@ -197,11 +197,12 @@ FEATURES: dict[str, Feature] = {
         # Lever (docs/phase5-lever-handoff-spec.md, section 9): both are off until the student turns them on, and nothing turns them on
         # for the student. The first lets Apply for me read a saved Lever role; the second is the choice L1 asked for.
         Feature("apply_agent_lever", f"Apply for me on {LEVER_NAME}",
-                f"Let Apply for me read saved {LEVER_NAME} roles and show what it would fill and what is missing. Needs Apply for me on",
+                f"Let Apply for me read saved {LEVER_NAME} roles and show what it would fill and what is missing, and let Finish in browser fill "
+                f"{LEVER_NAME}'s form in a window for you to finish. Needs Apply for me on",
                 "applications", "external"),
         Feature("apply_lever_resume_upload", f"Let the app attach my résumé on {LEVER_NAME}",
-                f"Let the app attach my résumé on {LEVER_NAME}. {LEVER_NAME} reads it as soon as it is attached, so it is sent to {LEVER_NAME} "
-                "before you press Submit. While this is off, you attach it yourself",
+                f"Finish in browser attaches your résumé in {LEVER_NAME}'s form itself. {LEVER_NAME} reads it as soon as it is attached, so it is sent to "
+                f"{LEVER_NAME} before you press Submit. While this is off, you attach it yourself in the window",
                 "applications", "external"),
         # Phase 2: changes that stay inside the app, each with an Undo (student/resume_variants.py,
         # automation/internal.py, automation/triage.py).

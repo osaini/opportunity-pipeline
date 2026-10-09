@@ -67,6 +67,13 @@ class LeverSwitchTests(ApplyCase):
         self.assertIn("Let the app attach my résumé on Lever", feature.label)
         self.assertIn("Lever reads it as soon as it is attached", feature.description)
         self.assertIn("sent to Lever before you press Submit", feature.description)
+        self.assertFalse(feature.description.startswith(feature.label), "its first sentence is not its title again")
+
+    def test_apply_for_me_on_lever_says_it_now_lets_finish_in_browser_fill_the_form(self):
+        description = automation.FEATURES["apply_agent_lever"].description
+        self.assertIn("what is missing", description)
+        self.assertIn("Finish in browser", description)
+        self.assertIn("window", description)
 
     def test_no_code_path_turns_either_on(self):
         # The only writes of these keys in the product are the student's own settings requests (the automation routes).

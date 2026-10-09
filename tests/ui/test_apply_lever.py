@@ -105,7 +105,8 @@ def test_a_required_lever_location_is_saved_for_lever_and_never_looked_up(requir
     expect(section).to_be_visible()
     location = section.locator('[data-apply-key="location"]')
     expect(location).to_contain_text("Choose your current location")
-    expect(location.get_by_role("link", name="Open the posting on Lever")).to_have_attribute("href", f"{LEVER_URL}/apply")
+    # Finish in browser is offered here, so the posting is not offered as a second way to fill and send the form outside the app.
+    expect(location.get_by_role("link", name="Open the posting on Lever")).to_have_count(0)
     # Lever's list is only read from its own form, which comes later: the type-it-yourself box has no Look up options beside it.
     expect(location.get_by_role("button", name="Save this option")).to_be_visible()
     expect(location.get_by_role("button", name="Look up options")).to_have_count(0)
@@ -134,7 +135,8 @@ def test_with_the_lever_switch_off_the_role_says_how_to_turn_it_on(lever_ready, 
     wait_for_results(owner_page)
     open_saved_role(owner_page, LEVER_COMPANY)
     section = owner_page.locator(".apply-for-me")
-    expect(section.locator(".apply-summary")).to_have_text("Apply for me works with Lever postings once you turn it on in Apply agent settings")
+    expect(section.locator(".apply-summary")).to_have_text("Apply for me on Lever is off. Turn it on in Profile, under Automation, in the Applications list")
+    expect(section.get_by_text("Turn it on in Profile")).to_have_count(1)
     expect(section.get_by_role("button")).to_have_count(0)
 
 
@@ -303,3 +305,32 @@ def test_the_not_offered_line_and_the_resume_note_have_room_around_them(window_n
     assert margin(".apply-ats-note", "marginBottom") >= 8, "the note does not sit on the first card's border"
     note, cards = section.locator(".apply-ats-note").bounding_box(), section.locator(".apply-problems").first.bounding_box()
     assert cards["y"] - (note["y"] + note["height"]) >= 8
+
+
+def test_the_settings_follow_the_lever_switch_without_a_reload(lever_ready, owner_page):
+    owner_page.click("#profile-nav")
+    wait_for_results(owner_page)
+    block = owner_page.locator(".automation-apply-agent")
+    lever_lists = block.get_by_role("heading", name="Exact options for lists the Lever form owns")
+    expect(lever_lists).to_be_visible()
+    owner_page.locator("#automation-mode-apply_agent_lever").uncheck()
+    expect(lever_lists).to_have_count(0)
+    expect(block.locator('form[data-ats="lever"]')).to_have_count(0)
+    owner_page.locator("#automation-mode-apply_agent_lever").check()
+    expect(lever_lists).to_be_visible()
+    expect(block.locator('form[data-ats="lever"]')).to_be_visible()
+
+
+def test_the_resume_line_in_the_settings_is_worded_for_the_state_of_the_lever_switch(lever_ready, owner_page):
+    owner_page.click("#profile-nav")
+    wait_for_results(owner_page)
+    block = owner_page.locator(".automation-apply-agent")
+    line = block.locator(".apply-lever-settings li").nth(1)
+    expect(line).to_contain_text("you attach it yourself in the window")
+    owner_page.locator("#automation-mode-apply_agent_lever").uncheck()
+    # With the Lever switch off there is no window: the line says when the choice starts to matter instead of sending the student to one.
+    expect(block.locator(".apply-lever-settings li").nth(0)).to_contain_text("Apply for me on Lever is off.")
+    expect(line).to_contain_text("It takes effect once Apply for me on Lever is on")
+    expect(line).not_to_contain_text("With this off, you attach it yourself in the window.")
+    owner_page.locator("#automation-mode-apply_agent_lever").check()
+    expect(line).to_contain_text("With this off, you attach it yourself in the window.")

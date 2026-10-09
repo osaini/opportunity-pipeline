@@ -7,6 +7,7 @@ agent's pause of ``CANNED["handoff"]["wait"]`` seconds, and nothing reaches Leve
 
 from __future__ import annotations
 
+import re
 import time
 
 import httpx
@@ -97,7 +98,9 @@ def test_with_the_resume_choice_on_the_start_says_the_app_attaches_it_and_it_goe
     wait_for_results(owner_page)
     section = open_lever(owner_page)
     expect(section.locator("[data-apply-resume-start]")).to_have_text(BY_APP)
-    expect(section.locator(".apply-ats-note")).to_contain_text("the app attaches it itself, because you let it in Apply for me settings")
+    # Said once, above the button: no second sentence about the file under "Read from".
+    expect(section.locator(".apply-ats-note")).to_have_count(0)
+    expect(section.get_by_text("as soon as it is attached")).to_have_count(1)
 
 
 def test_a_run_with_the_resume_choice_on_shows_the_resume_was_sent_and_a_stop_says_lever_received_it(canned_agent, owner_page, base_url, live_server):
@@ -232,3 +235,80 @@ def test_the_settings_say_the_window_is_there_once_it_is(canned_agent, owner_pag
     expect(lever).to_contain_text("and Finish in browser opens its form in a window for you to finish.")
     expect(lever).not_to_contain_text("is not available yet")
     expect(lever).to_contain_text("With this off, you attach it yourself in the window.")
+
+
+def switch(base_url, key, mode):
+    response = httpx.put(f"{base_url}/api/v1/automation/settings", headers=BEARER, json={"modes": {key: mode}})
+    assert response.status_code == 200, response.text
+
+
+def test_the_resume_is_said_once_with_the_choice_off_too(canned_agent, owner_page):
+    section = open_lever(owner_page)
+    expect(section.locator(".apply-ats-note")).to_have_count(0)
+    expect(section.get_by_text("attach it in the window")).to_have_count(1)
+    expect(section.get_by_text("as soon as it is attached")).to_have_count(1)
+
+
+def test_the_resume_sentence_is_part_of_what_the_button_reads_out(canned_agent, owner_page):
+    section = open_lever(owner_page)
+    note = section.locator("[data-apply-resume-start]")
+    expect(note).to_have_text(BY_YOU)
+    note_id = note.get_attribute("id")
+    assert note_id, "the sentence has an id the button can point at"
+    expect(finish_button(section)).to_have_attribute("aria-describedby", re.compile(rf"(^|\s){re.escape(note_id)}(\s|$)"))
+    reason_id = section.locator(".apply-handoff-start .apply-limit").get_attribute("id")
+    described = finish_button(section).get_attribute("aria-describedby") or ""
+    assert reason_id not in described.split(), "an empty reason is not read out"
+
+
+def test_a_lever_role_does_not_send_the_student_to_the_posting_while_finish_in_browser_is_offered(canned_agent, owner_page):
+    section = open_lever(owner_page)
+    # The role has a question only the window can answer, and the button for it is on the page: no second way to fill the form outside the app.
+    expect(section.locator(".apply-problem", has=owner_page.get_by_text("Current company"))).to_be_visible()
+    expect(finish_button(section)).to_be_visible()
+    expect(section.get_by_role("link", name="Open the posting on Lever")).to_have_count(0)
+
+
+def test_no_link_to_the_posting_during_the_students_turn_and_no_empty_gap_in_it(canned_agent, owner_page):
+    handoff(canned_agent, wait=60.0)
+    section = open_lever(owner_page)
+    finish_button(section).click()
+    turn = section.locator(".apply-turn")
+    expect(turn).to_be_visible(timeout=30_000)
+    expect(section.get_by_role("link", name="Open the posting on Lever")).to_have_count(0)
+    # The "about 2 minutes left" line is empty at the start: it takes no row, so no gap, above the résumé line.
+    assert turn.locator(".apply-turn-soon").evaluate("(node) => [node.textContent, getComputedStyle(node).display]") == ["", "none"]
+    turn.get_by_role("button", name="Stop").click()
+    expect(section.locator(".apply-result .apply-result-title")).to_be_visible(timeout=30_000)
+
+
+def test_the_finish_box_alone_has_no_divider_above_it_but_acmes_keeps_the_one_between_its_two(canned_agent, owner_page):
+    section = open_lever(owner_page)
+    top = lambda selector: section.locator(selector).first.evaluate("(node) => [parseFloat(getComputedStyle(node).borderTopWidth), parseFloat(getComputedStyle(node).paddingTop)]")
+    assert top(".apply-handoff-start") == [0, 0], "the only box in its block has nothing above it to divide from"
+    owner_page.locator("#detail-close").click()
+    open_saved_role(owner_page)
+    greenhouse = owner_page.locator(".apply-for-me")
+    expect(greenhouse.get_by_role("button", name="Rehearse in a window")).to_be_visible()
+    border, padding = greenhouse.locator(".apply-handoff-start").evaluate("(node) => [parseFloat(getComputedStyle(node).borderTopWidth), parseFloat(getComputedStyle(node).paddingTop)]")
+    assert border == 1 and padding > 0
+
+
+def test_with_the_lever_switch_off_the_sentence_is_said_once_and_the_button_has_no_window_words(canned_agent, owner_page, base_url):
+    handoff(canned_agent, wait=1.0, outcome="submitted")
+    section = open_lever(owner_page)
+    finish_button(section).click()
+    expect(section.locator(".apply-result .apply-result-title")).to_be_visible(timeout=40_000)
+    owner_page.locator("#detail-close").click()
+    switch(base_url, "apply_agent_lever", "off")
+    owner_page.reload()
+    wait_for_results(owner_page)
+    section = open_lever(owner_page)
+    sentence = "Apply for me on Lever is off. Turn it on in Profile, under Automation, in the Applications list"
+    expect(section.locator(".apply-summary")).to_have_text(sentence)
+    expect(section.get_by_text("Turn it on in Profile")).to_have_count(1)
+    expect(section.get_by_text("attach it in the window")).to_have_count(0)
+    expect(section.locator("[data-apply-resume-start]:visible")).to_have_count(0)
+    for button in section.get_by_role("button", name="Finish in browser").all():
+        expect(button).to_have_attribute("aria-disabled", "true")
+        expect(button).to_have_attribute("aria-describedby", section.locator(".apply-summary").get_attribute("id"))

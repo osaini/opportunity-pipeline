@@ -923,6 +923,17 @@ class StatisticsTests(WatchCase):
             "Of your last 3 submissions whose email watch finished, 1 got no confirmation email and 2 asked for a security code.",
         ])
 
+    def test_lever_emails_no_code_so_its_lines_never_count_security_codes(self):
+        self.submitted(verification="email_confirmed", ats="lever", handed=self.at(hours=-9))
+        self.submitted(verification="no_email_24h", ats="lever", handed=self.at(hours=-8))
+        lines = apply_watch.ats_statistics(self.conn, USER, "lever")["lines"]
+        self.assertEqual(lines, [
+            "Lever: 2 applications handed over, 2 submitted.",
+            "Confirmation emails: 1 arrived, 1 didn't come within 24 hours, 0 still being looked for.",
+            "Of your last 2 submissions whose email watch finished, 1 got no confirmation email.",
+        ])
+        self.assertNotIn("code", " ".join(lines).lower())
+
     def test_the_lines_read_right_with_one(self):
         self.submitted(verification="email_confirmed")
         lines = apply_watch.ats_statistics(self.conn, USER)["lines"]

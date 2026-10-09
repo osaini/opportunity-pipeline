@@ -94,17 +94,17 @@ class LeverCheckTests(PolicyCase):
         )
         self.assertEqual(result["eligibility"]["handoff"]["ticks"], [])
 
+    def test_with_the_window_built_the_resume_is_said_once_above_the_button_and_the_check_adds_no_note(self):
+        # Finish in browser's own sentence above its button says who attaches the résumé; a second one under "Read from" would repeat it.
+        self.assertEqual(self.lever_check()["notes"], [])
+        self.switch("apply_lever_resume_upload", "on")
+        self.assertEqual(self.lever_check()["notes"], [])
+
     def test_the_resume_sentence_follows_the_students_choice_and_it_starts_off(self):
-        self.assertIn("you attach it yourself in the window", self.lever_check()["notes"][0])
         with self.window_not_built():
             self.assertIn("you attach it yourself on Lever's application page", self.lever_check()["notes"][0])
             self.assertNotIn("window", " ".join(self.lever_check()["notes"]))
         self.switch("apply_lever_resume_upload", "on")
-        notes = self.lever_check()["notes"]
-        self.assertIn("sent to Lever before you press Submit", notes[0])
-        self.assertIn("the app attaches it itself", notes[0])
-        self.assertIn("Apply for me settings", notes[0])
-        self.assertNotIn("Apply agent settings", notes[0])
         with self.window_not_built():
             # There is no window to attach it in, so the note cannot say the app does it: the student still attaches it on Lever's page.
             notes = self.lever_check()["notes"]
@@ -112,7 +112,8 @@ class LeverCheckTests(PolicyCase):
         self.assertIn("you attach it yourself on Lever's application page", notes[0])
         self.assertNotIn("the app attaches it itself", notes[0])
         self.assertIn("cannot do that on Lever yet", notes[0])
-        self.assertIn("Apply for me settings", notes[0])
+        self.assertNotIn("Apply for me settings", notes[0], "the switch is under Applications, not in a settings page")
+        self.assertIn("Let the app attach my résumé on Lever", notes[0])
         field = next(item for item in self.lever_check()["fields"] if item["key"] == "resume")
         self.assertEqual(field["source"], "Your confirmed résumé")
 
@@ -127,18 +128,17 @@ class LeverCheckTests(PolicyCase):
         # Lever's driver is connected (adapter_built); the note says the app does it. A spec whose driver is not connected says the student does.
         built = dataclasses.replace(apply_ats.LEVER, adapter_built=True)
         unbuilt = dataclasses.replace(apply_ats.LEVER, adapter_built=False)
-        on = apply_preflight.lever_resume_note(built, True)
-        self.assertIn("the app attaches it itself", on)
-        self.assertIn("Apply for me settings", on)
-        self.assertNotIn("Apply agent settings", on)
-        self.assertIn("in the window", apply_preflight.lever_resume_note(built, False))
+        self.assertEqual(apply_preflight.lever_resume_note(built, True), "", "the sentence above the button says it")
+        self.assertEqual(apply_preflight.lever_resume_note(built, False), "")
         self.assertIn("on Lever's application page", apply_preflight.lever_resume_note(unbuilt, False))
         self.assertIn("cannot do that on Lever yet", apply_preflight.lever_resume_note(unbuilt, True))
 
     def test_with_the_lever_switch_off_the_answer_says_how_to_turn_it_on_and_asks_lever_nothing(self):
         self.switch("apply_agent_lever", "off")
         result = self.lever_check()
-        self.assertEqual((result["status"], result["ats"], result["message"]), ("unavailable", "lever", "Apply for me works with Lever postings once you turn it on in Apply agent settings"))
+        self.assertEqual((result["status"], result["ats"], result["message"]), ("unavailable", "lever", apply_preflight.SWITCH_OFF.format(ats="Lever")))
+        self.assertEqual(result["message"], "Apply for me on Lever is off. Turn it on in Profile, under Automation, in the Applications list")
+        self.assertNotIn("Apply agent settings", result["message"])
         self.assertEqual(self.pages.calls, [])
         self.assertEqual(result["eligibility"]["handoff"]["allowed"], False)
 

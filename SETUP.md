@@ -732,8 +732,8 @@ fields too.
      themselves in the window). Say that plainly and ask. On, the start of every
      Finish in browser says "The app will attach your résumé. Lever reads it as soon as it
      is attached, so it is sent to Lever before you press Submit." and the run records it.
-     Off, the app attaches nothing, the start says the résumé is left for them to attach in
-     the window, and it stays on their "left for you" list. A run that ends before Submit
+     Off, the app attaches nothing and the start says the résumé is left for them to attach in
+     the window; it stays on their "left for you" list only if the form requires it. A run that ends before Submit
      then reads "Your application was not sent. Lever received your résumé." once a résumé
      has gone. It needs the first switch on.
 

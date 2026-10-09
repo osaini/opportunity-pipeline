@@ -44,7 +44,7 @@ from ..core.timestamps import parse_app_instant
 from ..integrations.gmail_client import connection_state
 from ..mail.gmail_connection import connector_row
 from ..student import preparation
-from .ats import REGISTRY, name_of
+from .ats import REGISTRY, name_of, spec_for
 from .claims import UNCONFIRMED_UNWRITTEN, claim_held
 from .greenhouse import ATS_GREENHOUSE
 
@@ -750,10 +750,18 @@ def ats_statistics(conn: sqlite3.Connection, user_id: str, ats: str = ATS_GREENH
             recent["finished"] += 1
             recent["no_email_24h"] += verification == "no_email_24h"
             recent["security_code_prompts"] += prompted
-    return {"ats": ats, "ats_name": name, **total, "recent": recent, "lines": _lines(name, total, recent)}
+    return {"ats": ats, "ats_name": name, **total, "recent": recent, "lines": _lines(name, total, recent, codes=_has_security_code(ats))}
 
 
-def _lines(name: str, total: dict[str, int], recent: dict[str, int]) -> list[str]:
+def _has_security_code(ats: str) -> bool:
+    """Whether this ATS has a security-code step to count. A row of an ATS this build no longer registers keeps the lines it always had."""
+    try:
+        return spec_for(ats).has_security_code
+    except KeyError:
+        return True
+
+
+def _lines(name: str, total: dict[str, int], recent: dict[str, int], *, codes: bool = True) -> list[str]:
     if not total["handed_over"]:
         return [f"No applications submitted with Apply for me on {name} yet."]
     still = total["watching"] + total["watch_paused"]
@@ -761,12 +769,13 @@ def _lines(name: str, total: dict[str, int], recent: dict[str, int]) -> list[str
         f"{name}: {_plural(total['handed_over'], 'application', 'applications')} handed over, {total['submitted']} submitted.",
         f"Confirmation emails: {total['email_confirmed']} arrived, {total['no_email_24h']} didn't come within 24 hours, "
         f"{still} still being looked for.",
-        f"Security codes: {name} asked for a code {_plural(total['security_code_prompts'], 'time', 'times')}; "
-        f"the app typed it {_plural(total['security_code_typed'], 'time', 'times')}.",
     ]
-    if recent["finished"]:
+    if codes:
         lines.append(
-            f"Of your last {_plural(recent['finished'], 'submission', 'submissions')} whose email watch finished, "
-            f"{recent['no_email_24h']} got no confirmation email and {recent['security_code_prompts']} asked for a security code."
+            f"Security codes: {name} asked for a code {_plural(total['security_code_prompts'], 'time', 'times')}; "
+            f"the app typed it {_plural(total['security_code_typed'], 'time', 'times')}."
         )
+    if recent["finished"]:
+        finished = f"Of your last {_plural(recent['finished'], 'submission', 'submissions')} whose email watch finished, {recent['no_email_24h']} got no confirmation email"
+        lines.append(f"{finished} and {recent['security_code_prompts']} asked for a security code." if codes else f"{finished}.")
     return lines
