@@ -2060,6 +2060,11 @@ def submit_contact_form(
     """
     target = get_target(conn, target_id, user_id=user_id)
     form_ready(target, fingerprint=fingerprint, retry=retry_unconfirmed)
+    if target["contact_form"]["asks"] and not in_browser:
+        # The student pressed its send button themselves and has not said whether it went: the app never presses
+        # it again on their behalf. Their answer is Yes, or No (which opens Finish in browser again).
+        raise ValueError("You pressed this form's send button in Finish in browser: say on the card whether it was sent. "
+                         "No opens Finish in browser again")
     identity = identity_for(conn, user_id)
     stale_token = ""
     tried_before = False
@@ -2078,6 +2083,10 @@ def submit_contact_form(
         # so, and Finish in browser warns them the form may already have it.
         tried_before = existing["state"] in {"unconfirmed", automation.FORM_HANDED_OVER}
         stale_token = existing["token"]
+    # ... or did so before, and that window closed with nothing pressed (its claim is gone, the history is not).
+    tried_before = tried_before or in_browser and conn.execute(
+        "SELECT 1 FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=? LIMIT 1", (target_id, user_id, SAID_NOT_SENT_EVENT),
+    ).fetchone() is not None
     path = attachment_path()
     attachment = str(path) if path and not attachment_problem(path) else ""
 
@@ -2118,14 +2127,14 @@ def submit_contact_form(
                     (automation.FORM_HANDED_OVER, utc_now(), target_id, token),
                 )
                 conn.execute(
-                    "UPDATE outreach_contact_forms SET state='unconfirmed', note=?, updated_at=? WHERE target_id=? AND user_id=?",
+                    "UPDATE outreach_contact_forms SET state='unconfirmed', note=?, updated_at=? WHERE target_id=? AND user_id=? AND state<>'submitted'",
                     (FORM_PRESSED_NOTE, utc_now(), target_id, user_id),
                 )
 
         submit_options: dict[str, Any] = (
             {"should_continue": hand_over} if automatic else {"on_press": student_pressed, "tried_before": tried_before} if in_browser else {}
         )
-        if tried_before:
+        if retry_unconfirmed and existing is not None and existing["state"] in {"unconfirmed", automation.FORM_HANDED_OVER}:
             with conn:
                 log_event(conn, target_id, user_id, SAID_NOT_SENT_EVENT, detail=json.dumps({"in_browser": in_browser}))
         page_url = fresh["contact_form"]["page_url"]
@@ -2159,11 +2168,13 @@ def submit_contact_form(
                 if outcome == "submitted":
                     conn.execute("UPDATE outreach_send_claims SET state='sent' WHERE target_id=? AND kind='initial' AND token=?", (target_id, token))
                 elif outcome == "unconfirmed":
-                    conn.execute("UPDATE outreach_send_claims SET state='unconfirmed' WHERE target_id=? AND kind='initial' AND token=?", (target_id, token))
+                    conn.execute("UPDATE outreach_send_claims SET state='unconfirmed' WHERE target_id=? AND kind='initial' AND token=? AND state<>'sent'",
+                                 (target_id, token))
                 else:
                     conn.execute("DELETE FROM outreach_send_claims WHERE target_id=? AND kind='initial' AND token=?", (target_id, token))
+                # A Yes the student gave meanwhile (another tab) is kept: a form they said was sent stays sent.
                 conn.execute(
-                    "UPDATE outreach_contact_forms SET state=?, note=?, attempted_at=?, updated_at=? WHERE target_id=? AND user_id=?",
+                    "UPDATE outreach_contact_forms SET state=?, note=?, attempted_at=?, updated_at=? WHERE target_id=? AND user_id=? AND state<>'submitted'",
                     ("found" if held else outcome, result.get("note", "")[:500], timestamp, timestamp, target_id, user_id),
                 )
                 event = {"submitted": SUBMITTED_EVENT, "unconfirmed": UNCONFIRMED_EVENT}.get(outcome, NOT_SENT_EVENT)

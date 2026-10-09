@@ -81,6 +81,7 @@ APPLIED_DIRECTLY = "You marked the company applied directly"
 # What a contact form says from the student's own press of its send button in Finish in browser (outreach/forms.py)
 # until they answer on the card whether it went: the app does not judge that from the page.
 FORM_PRESSED_NOTE = "You pressed the form's send button in the Finish in browser window. Did their page say your message was sent?"
+FORM_SAID_SENT_NOTE = "You said it was sent"
 SET_ASIDE_REASONS = ("", "applied_directly")
 
 
@@ -1144,6 +1145,19 @@ def _write_target_update(
         raise _ConfirmRaced()
     if "status" in values and values["status"] != previous["status"]:
         log_event(conn, target_id, user_id, "status", from_status=previous["status"], to_status=values["status"], detail=status_detail)
+        form = previous.get("contact_form")
+        if values["status"] == "sent" and form and form["state"] == "unconfirmed":
+            # The student said a form that may have gone did ("Yes, it was sent", or "It arrived"): the form and its send
+            # claim say so too, so nothing asks again and nothing sends it again.
+            conn.execute(
+                "UPDATE outreach_contact_forms SET state='submitted', note=?, updated_at=? WHERE target_id=? AND user_id=?",
+                (FORM_SAID_SENT_NOTE, utc_now(), target_id, user_id),
+            )
+            conn.execute(
+                "UPDATE outreach_send_claims SET state='sent' WHERE target_id=? AND user_id=? AND kind='initial' AND state IN ('unconfirmed', 'clicking')",
+                (target_id, user_id),
+            )
+            log_event(conn, target_id, user_id, "form_said_sent", detail=json.dumps({"asked": bool(form.get("asks"))}))
     if "not_interested_at" in values or "set_aside_reason" in values:
         aside = values.get("not_interested_at", previous.get("not_interested_at"))
         reason = values.get("set_aside_reason", previous.get("set_aside_reason"))

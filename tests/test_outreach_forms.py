@@ -606,10 +606,64 @@ class FormSendTests(unittest.TestCase):
         self.assertEqual(len(self.submitter.calls), calls)
         self.assertEqual(self.send(target).status_code, 428, "and no send of the student's either until they answer")
 
-    def test_yes_marks_it_sent(self):
+    def test_yes_marks_it_sent_and_the_form_and_its_history_say_so(self):
         target = self.pressed_in_browser()
-        marked = self.client.patch(f"/api/v1/outreach/{target['id']}", headers=AUTH, json={"status": "sent"})
-        self.assertEqual(marked.json()["status"], "sent", marked.text)
+        for _ in range(2):  # a second Yes (another tab) changes nothing more
+            marked = self.client.patch(f"/api/v1/outreach/{target['id']}", headers=AUTH, json={"status": "sent"})
+            self.assertEqual(marked.json()["status"], "sent", marked.text)
+        form = self.get(target)["contact_form"]
+        self.assertEqual((form["state"], form["asks"]), ("submitted", False))
+        with closing(connect_product(self.platform_path)) as conn:
+            self.assertEqual(conn.execute("SELECT state FROM outreach_send_claims").fetchone()["state"], "sent")
+            said = conn.execute("SELECT user_id FROM outreach_events WHERE target_id=? AND event_type='form_said_sent'", (target["id"],)).fetchall()
+        self.assertEqual([row["user_id"] for row in said], [USER])
+        later = self.send(target, in_browser=True, retry_unconfirmed=True)
+        self.assertEqual(later.status_code, 422, "a No after the Yes is refused")
+
+    def test_the_app_never_presses_send_on_a_form_waiting_on_the_answer(self):
+        target = self.pressed_in_browser()
+        calls = len(self.submitter.calls)
+        refused = self.send(target, retry_unconfirmed=True)
+        self.assertEqual(refused.status_code, 422, refused.text)
+        self.assertIn("Finish in browser", refused.json()["detail"])
+        self.assertEqual(len(self.submitter.calls), calls)
+
+    def test_the_warning_stays_after_a_no_window_closed_without_a_press(self):
+        target = self.pressed_in_browser()
+        self.submitter.outcomes = ["needs_you", "needs_you"]
+        self.send(target, in_browser=True, retry_unconfirmed=True)  # No, and the window closed with nothing pressed
+        self.send(target, in_browser=True)
+        self.assertEqual([call["tried_before"] for call in self.submitter.calls[-2:]], [True, True])
+
+    def test_a_second_no_while_a_window_is_open_is_refused(self):
+        target = self.pressed_in_browser()
+        answers = []
+
+        def another_tab():
+            with closing(connect_product(self.platform_path)) as other:
+                try:
+                    submit_contact_form(other, target["id"], user_id=USER, submitter_factory=self.submitter.factory,
+                                        in_browser=True, retry_unconfirmed=True)
+                except Exception as exc:  # noqa: BLE001 - the answer is the exception
+                    answers.append(type(exc).__name__)
+
+        self.submitter.outcomes = ["student_press"]
+        self.submitter.at_click = another_tab
+        self.send(target, in_browser=True, retry_unconfirmed=True)
+        self.assertEqual(answers, ["SendConflictError"])
+
+    def test_a_yes_from_another_tab_while_the_window_is_open_is_kept(self):
+        target = self.pressed_in_browser()
+
+        def yes_elsewhere():
+            self.client.patch(f"/api/v1/outreach/{target['id']}", headers=AUTH, json={"status": "sent"})
+
+        self.submitter.outcomes = ["needs_you", "student_press"]
+        self.send(target, in_browser=True, retry_unconfirmed=True)
+        self.submitter.at_click = yes_elsewhere
+        self.send(target, in_browser=True)
+        form = self.get(target)["contact_form"]
+        self.assertEqual((self.get(target)["status"], form["state"]), ("sent", "submitted"))
 
     def test_no_opens_finish_in_browser_again_and_the_history_says_they_said_so(self):
         target = self.pressed_in_browser()
