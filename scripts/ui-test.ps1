@@ -54,7 +54,7 @@ if ($Visual -or $UpdateBaselines) { $arguments += @("-m", "visual") }
 if ($UpdateBaselines) { $arguments += "--update-visual-baselines" }
 if ($Headed) { $arguments += @("--headed", "--slowmo", "250") }
 if ($Filter) { $arguments += @("-k", $Filter) }
-$arguments += @("--tracing", "retain-on-failure", "--output", (Join-Path $root "data\ui-artifacts"))
+$arguments += @("--tracing", "retain-on-failure", "--output", (Join-Path $root "output\ui-artifacts"))
 
 Push-Location $root
 try {

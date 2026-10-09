@@ -9,7 +9,7 @@
 
   // From app-ui.js.
   const {
-    HTTP_ADDRESS, announce, autoSaveSelect, browserTimeZone, chip, element, externalLink, formatCalendarDate, formatDate,
+    HTTP_ADDRESS, announce, atsName, autoSaveSelect, browserTimeZone, chip, element, externalLink, formatCalendarDate, formatDate,
     gmailOpenLink, optionElement, plural, profileField, revealRequested, showError, skeletons, toLocalInputValue,
     uniqueLabels,
   } = App;
@@ -25,6 +25,127 @@
 
   // From app-nav.js.
   const { renderSubnav, runViewLoad } = App;
+
+  // Defined in files that load later; looked up when called.
+  const openDetail = (...args) => App.openDetail(...args);
+
+  // What the timeline calls the events Apply for me writes; any other event keeps its own name with the underscores taken out.
+  const EVENT_WORDS = {
+    apply_agent_started: "Apply for me started",
+    apply_agent_submitted: "Submitted with Apply for me",
+    apply_agent_verification: "Confirmation email watch",
+    apply_agent_resolved: "Apply for me attempt settled",
+    apply_agent_unconfirmed: "Apply for me: may have been sent",
+  };
+
+  // Finish in browser's events say whose act each step was: the app only filled the form, the student pressed Submit.
+  function applyEventWords(event, ats) {
+    const detail = event.detail || {};
+    if (detail.mode === "handoff" && event.event_type === "apply_agent_started") return "Finish in browser started";
+    if (detail.mode === "handoff" && event.event_type === "apply_agent_submitted") {
+      return `You submitted in the window${detail.confirmation_path ? ` · ${ats} showed its confirmation page` : ""}`;
+    }
+    return EVENT_WORDS[event.event_type] || event.event_type.replaceAll("_", " ");
+  }
+
+  // Opens the role with the run an event names, so the student can read what that run did.
+  function seeRunButton(opportunityId, runId) {
+    const button = element("button", "text-button apply-see-run", "See the run");
+    button.type = "button";
+    button.addEventListener("click", () => {
+      state.applyRunRequest = { opportunityId, runId, at: Date.now() };
+      openDetail(opportunityId);
+    });
+    return button;
+  }
+
+  // 10.5: what Apply for me did for this application, from item.apply (null when it never touched it). Wording is
+  // careful on purpose: only a seen confirmation page, a confirmation email or the student's own word says "applied",
+  // and an attempt that may have reached Greenhouse never does.
+  function applyBadge(item) {
+    const apply = item.apply;
+    const ats = atsName(apply);
+    const submitted = ["watching", "watch_paused", "email_confirmed", "no_email", "not_watched"].includes(apply.status);
+    const uncertain = apply.status === "may_have_been_sent" || apply.status === "no_email";
+    const box = element("section", `apply-badge${uncertain ? " is-uncertain" : ""}`);
+    box.dataset.applyStatus = apply.status;
+    box.setAttribute("aria-label", `Apply for me: ${item.title} at ${item.company}`);
+    let title = "";
+    if (submitted) title = apply.application_stage === "applied" ? "Applied with Apply for me" : "Submitted with Apply for me";
+    else if (apply.status === "submitting") title = `Submitting to ${ats}…`;
+    else if (apply.status === "security_code") title = `${ats} asked for a security code: finish in the window`;
+    else if (apply.status === "may_have_been_sent") title = `May have been sent. Check your email or the ${ats} portal`;
+    else if (apply.status === "filling") title = "Apply for me is filling the form in a window";
+    else if (apply.status === "your_turn") title = "Your turn: finish the form in the Chromium window and press Submit application";
+    else title = apply.note || "Apply for me stopped before anything was sent";
+    box.appendChild(element("p", "apply-badge-title", title));
+    const lines = [];
+    if (submitted) {
+      const confirmed = apply.resolved_by === "student" ? "You said it went through"
+        : apply.resolved_by === "email" ? "" : `${ats} showed its confirmation page`;
+      if (apply.status === "email_confirmed") {
+        lines.push(`${ats}'s confirmation email arrived ${formatDate(apply.email_received_at)}`);
+      } else if (apply.status === "watching") {
+        lines.push([confirmed, `Looking for its email until ${formatDate(apply.watch_until)}`].filter(Boolean).join(" · "));
+      } else if (apply.status === "watch_paused") {
+        lines.push([confirmed, `Looking for its email: paused, ${apply.paused_reason || "the job-email check isn't running"}`].filter(Boolean).join(" · "));
+      } else if (apply.status === "no_email") {
+        lines.push([confirmed, "No confirmation email yet"].filter(Boolean).join(" · "));
+        lines.push("Some employers don't send one. If you want to be sure, check the employer's portal or your spam folder.");
+      } else if (apply.status === "not_watched") {
+        lines.push([confirmed, "The app isn't checking for a confirmation email"].filter(Boolean).join(" · "));
+      }
+    }
+    if (apply.possible_email_at && apply.status !== "email_confirmed" && (submitted || apply.status === "may_have_been_sent")) {
+      lines.push(`An email from ${apply.company || "the company"} arrived on ${formatDate(apply.possible_email_at)}; it may be for this application.`);
+    }
+    lines.forEach((line) => box.appendChild(element("p", "apply-badge-line", line)));
+    const actions = element("div", "apply-badge-actions");
+    const settle = async (path, body, said) => {
+      try {
+        await api(`/api/v1/apply-agent/claims/${encodeURIComponent(apply.token)}/${path}`, {
+          method: "POST", body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        await Promise.all([loadApplications(), loadStats()]);
+        announce(said);
+      } catch (error) {
+        showError(error.message);
+        await loadApplications().catch(() => {});
+      }
+    };
+    if (apply.ask_mark_applied) {
+      const mark = element("button", "secondary-button", "Mark as applied?");
+      mark.type = "button";
+      mark.addEventListener("click", () => {
+        mark.disabled = true;
+        settle("mark-applied", undefined, `Marked ${item.title} as applied.`);
+      });
+      actions.appendChild(mark);
+    }
+    if (apply.status === "may_have_been_sent") {
+      [["It went through", true, `Recorded that ${item.title} went through.`], ["It didn't go through", false, `Recorded that ${item.title} did not go through.`]]
+        .forEach(([text, wentThrough, said]) => {
+          const button = element("button", "secondary-button", text);
+          button.type = "button";
+          button.disabled = !apply.can_resolve;
+          button.addEventListener("click", () => {
+            actions.querySelectorAll("button").forEach((other) => { other.disabled = true; });
+            settle("resolve", { went_through: wentThrough }, said);
+          });
+          actions.appendChild(button);
+        });
+    }
+    // A run in a window is read in the role it belongs to.
+    if (["filling", "your_turn", "security_code"].includes(apply.status) && item.opportunity_id) {
+      const open = element("button", "secondary-button", "Open");
+      open.type = "button";
+      open.setAttribute("aria-label", `Open ${item.title} at ${item.company}`);
+      open.addEventListener("click", () => openDetail(item.opportunity_id));
+      actions.appendChild(open);
+    }
+    if (actions.children.length) box.appendChild(actions);
+    return box;
+  }
 
   function createApplicationCard(item, { board = false } = {}) {
     const card = element("article", "application-card");
@@ -145,10 +266,13 @@
     detail.appendChild(element("summary", "", "Tasks, contacts, and timeline"));
     const detailBody = element("div", "tracker-detail-body");
     detail.appendChild(detailBody);
+    detail.dataset.opportunityId = item.opportunity_id || "";
     detail.addEventListener("toggle", () => {
       if (detail.open && !detail.dataset.loaded) loadApplicationDetail(item.id, detailBody, detail);
     });
-    card.append(heading, facts, controls, trackerFields, detail);
+    card.append(heading, facts);
+    if (item.apply) card.appendChild(applyBadge(item));
+    card.append(controls, trackerFields, detail);
     return card;
   }
 
@@ -289,18 +413,22 @@
       const timeline = element("section", "tracker-subsection");
       timeline.appendChild(element("h4", "", "Activity timeline"));
       const eventList = element("ol", "timeline-list");
+      // The job system the application went to, as the attempt's first event recorded it (an older one did not: it is Greenhouse's).
+      const ats = atsName({ ats_name: (payload.events || []).map((event) => event.detail?.ats_name).find((name) => typeof name === "string" && name) });
       // Newest first, so the first event an automatic action wrote carries its Undo.
       // Each action id maps to the author line of every event it wrote.
       const automatic = new Map();
       (payload.events || []).forEach((event) => {
         const row = element("li", "");
-        row.appendChild(element("strong", "", event.event_type.replaceAll("_", " ")));
+        row.appendChild(element("strong", "", applyEventWords(event, ats)));
         row.appendChild(element("span", "", formatDate(event.created_at)));
         if (event.from_stage || event.to_stage) row.appendChild(element("p", "", `${event.from_stage || "start"} → ${event.to_stage || "unchanged"}`));
         const source = typeof event.detail?.source === "string" ? event.detail.source : "";
         const who = element("p", "timeline-who");
-        who.appendChild(element("span", "timeline-author", changeAuthor(source)));
+        who.appendChild(element("span", "timeline-author", changeAuthor(source, ats)));
         row.appendChild(who);
+        const runId = event.event_type.startsWith("apply_agent_") ? event.detail?.run_id : "";
+        if (typeof runId === "string" && runId && owner.dataset.opportunityId) row.appendChild(seeRunButton(owner.dataset.opportunityId, runId));
         const actionId = /^automation:(.+)$/.exec(source)?.[1];
         if (actionId) automatic.set(actionId, [...(automatic.get(actionId) || []), who]);
         eventList.appendChild(row);

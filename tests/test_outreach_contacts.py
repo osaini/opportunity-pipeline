@@ -40,6 +40,7 @@ from opportunity_app.outreach.contacts import (
     find_contacts,
     guess_strength,
     list_candidates,
+    store_candidate,
 )
 from opportunity_app.outreach.discovery import run_discovery
 from opportunity_app.outreach.email_search import check_person, search_emails
@@ -499,6 +500,35 @@ class StoredContactTests(DatabaseCase):
         sam = [item for item in list_candidates(self.conn, target["id"], user_id=USER) if item["email"] == "sam.lee@acme.test"]
         self.assertEqual([(item["method"], item["confidence"]) for item in sam], [("site_published", "confirmed")])
 
+    def history(self, target_id, event_type):
+        return [row[0] for row in self.conn.execute(
+            "SELECT detail FROM outreach_events WHERE target_id=? AND event_type=? ORDER BY created_at", (target_id, event_type),
+        )]
+
+    def test_the_history_counts_one_candidate_and_one_page_in_the_singular(self):
+        target = create_target(self.conn, {"company": "Acme", "website": "https://acme.test"}, user_id=USER)
+        self.find(target["id"], {"acme.test": {"/robots.txt": "", "/": "<p>hello@acme.test</p>"}})
+        self.assertEqual(self.history(target["id"], "contacts_searched"), ["1 candidate from 1 page"])
+
+    def test_the_history_says_when_the_email_search_proposed_no_addresses(self):
+        target = create_target(self.conn, {"company": "Acme", "website": "https://acme.test"}, user_id=USER)
+        reply = json.dumps({"companies": [{"company": "Acme", "people": []}]})
+        transport, _ = site_transport(copy.deepcopy(self.SITE))
+        with httpx.Client(transport=transport) as client:
+            search_emails(self.conn, user_id=USER, runner=lambda prompt: reply, fetcher=safe_fetcher(client), target_ids=[target["id"]])
+        self.assertEqual(self.history(target["id"], "email_search"), ["No addresses proposed"])
+
+    def test_the_history_counts_proposed_addresses_in_the_singular(self):
+        target = create_target(self.conn, {"company": "Acme", "website": "https://acme.test"}, user_id=USER)
+        sites = {**copy.deepcopy(self.SITE), "news.test": {"/robots.txt": "", "/a": "<p>Sam Lee, sam.lee@acme.test</p>"}}
+        reply = json.dumps({"companies": [{"company": "Acme", "people": [
+            {"name": "Sam Lee", "role": "CEO", "email": "sam.lee@acme.test", "source_url": "https://news.test/a"},
+        ]}]})
+        transport, _ = site_transport(sites)
+        with httpx.Client(transport=transport) as client:
+            search_emails(self.conn, user_id=USER, runner=lambda prompt: reply, fetcher=safe_fetcher(client), target_ids=[target["id"]])
+        self.assertEqual(self.history(target["id"], "email_search"), ["1 of 1 proposed address printed on their pages"])
+
     def test_an_address_added_by_hand_with_no_name_greets_the_team_and_stays_unverified(self):
         target = create_target(self.conn, {
             "company": "Acme Robotics Inc", "website": "https://acme.test", "contact_name": "Sam Lee",
@@ -606,6 +636,30 @@ class StoredContactTests(DatabaseCase):
         target = create_target(self.conn, {"company": "Acme"}, user_id=USER)
         with self.assertRaisesRegex(ValueError, "Cc"):
             update_target(self.conn, target["id"], {"contact_cc": "not an address"}, user_id=USER)
+
+    def test_the_cc_cannot_be_the_to_address(self):
+        with self.assertRaisesRegex(ValueError, "already in To"):
+            create_target(self.conn, {"company": "Beta", "contact_email": "sam@beta.test", "contact_cc": "Sam@Beta.test"}, user_id=USER)
+        target = create_target(self.conn, {"company": "Acme", "contact_email": "sam@acme.test", "contact_cc": "hello@acme.test"}, user_id=USER)
+        with self.assertRaisesRegex(ValueError, "already in To"):
+            update_target(self.conn, target["id"], {"contact_cc": "SAM@acme.test"}, user_id=USER)
+        with self.assertRaisesRegex(ValueError, "already in To"):
+            update_target(self.conn, target["id"], {"contact_email": "hello@acme.test"}, user_id=USER)
+        unchanged = get_target(self.conn, target["id"], user_id=USER)
+        self.assertEqual((unchanged["contact_email"], unchanged["contact_cc"]), ("sam@acme.test", "hello@acme.test"))
+        # Swapping the two in one change is fine, and so is any edit that leaves them alone.
+        swapped = update_target(self.conn, target["id"], {"contact_email": "hello@acme.test", "contact_cc": "sam@acme.test"}, user_id=USER)
+        self.assertEqual((swapped["contact_email"], swapped["contact_cc"]), ("hello@acme.test", "sam@acme.test"))
+        self.assertEqual(update_target(self.conn, target["id"], {"notes": "n"}, user_id=USER)["notes"], "n")
+
+    def test_applying_a_cc_candidate_with_the_same_address_in_other_case_sets_no_cc(self):
+        target = create_target(self.conn, {"company": "Acme"}, user_id=USER)
+        store_candidate(self.conn, target["id"], USER, candidate("sam@acme.test", name="Sam Lee"), "2026-10-03T00:00:00Z")
+        store_candidate(self.conn, target["id"], USER, candidate("SAM@acme.test", method="site_published", confidence="confirmed"), "2026-10-03T00:00:00Z")
+        rows = {row["email"]: row["id"] for row in list_candidates(self.conn, target["id"], user_id=USER)}
+        applied = apply_candidate(self.conn, target["id"], rows["sam@acme.test"], user_id=USER, cc_candidate_id=rows["SAM@acme.test"])
+        self.assertEqual(applied["contact_email"], "sam@acme.test")
+        self.assertEqual(applied["contact_cc"], "")
 
     def test_the_gmail_draft_carries_the_cc(self):
         raw = _mime("student@example.edu", "sam@acme.test", "Hi", "Body", None, cc="hello@acme.test")

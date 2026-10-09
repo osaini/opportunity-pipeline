@@ -50,8 +50,9 @@ class UrgentFixture(unittest.TestCase):
             "INSERT INTO users(id, email, display_name, role, created_at, updated_at) VALUES(?, ?, ?, 'student', ?, ?)",
             (OTHER, "b@example.com", "Student B", STAMP, STAMP),
         )
-        # The shared fixture saves job-a (listed deadline Sept 1) and applies to
-        # job-b (follow-up Aug 16); every test here seeds its own dated records.
+        # The shared fixture saves job-a (with a listed deadline) and applies to
+        # job-b (with a follow-up), dated relative to today (helpers_platform.FIXTURE_AS_OF);
+        # every test here seeds its own dated records against its fixed NOW instead.
         for statement in (
             "DELETE FROM reminders",
             "DELETE FROM application_events",
@@ -456,6 +457,38 @@ class UrgentPossibleReplyTests(UrgentFixture):
         self.assertEqual(self.rows(self.queue(user_id=OTHER)), [(theirs, "outreach_possible_reply", "2026-09-16")])
 
 
+class UrgentQueuedFollowUpTests(UrgentFixture):
+    """A follow-up the student queued for the recipient's morning is handled: Outreach lists it under Scheduled."""
+
+    def queue_send(self, target_id: str, *, kind: str = "follow_up", state: str = "scheduled", user_id: str = LOCAL_USER_ID) -> None:
+        self.conn.execute(
+            "INSERT INTO outreach_scheduled_sends(target_id, user_id, kind, fingerprint, send_at, timezone, label, state, created_at, updated_at) "
+            "VALUES(?, ?, ?, 'print', ?, 'America/Chicago', 'Mon 9:12 AM', ?, ?, ?)",
+            (target_id, user_id, kind, STAMP, state, STAMP, STAMP),
+        )
+        self.conn.commit()
+
+    def follow_ups(self) -> set[str]:
+        return {item["outreach_target_id"] for item in self.queue()["items"] if item["kind"] == "outreach_follow_up"}
+
+    def test_a_queued_or_sending_follow_up_is_not_due(self):
+        for state in ("scheduled", "sending", "transmitting"):
+            with self.subTest(state=state):
+                target = self.outreach(follow_up=date(2026, 9, 18), status="sent")
+                self.queue_send(target, state=state)
+                self.assertNotIn(target, self.follow_ups())
+
+    def test_a_queued_follow_up_that_stopped_is_due_again(self):
+        target = self.outreach(follow_up=date(2026, 9, 18), status="sent")
+        self.queue_send(target, state="failed")
+        self.assertIn(target, self.follow_ups())
+
+    def test_only_a_queued_follow_up_counts_not_another_email(self):
+        target = self.outreach(follow_up=date(2026, 9, 18), status="sent")
+        self.queue_send(target, kind="thank_you")
+        self.assertIn(target, self.follow_ups())
+
+
 class UrgentTenancyTests(UrgentFixture):
     def test_shared_posting_deadlines_are_shared_and_everything_else_is_private(self):
         self.listed_deadline("job-a", "2026-09-20T00:00:00+00:00")
@@ -672,6 +705,9 @@ class DeadlineApiTests(unittest.TestCase):
 
         with closing(connect_product(self.platform_path)) as conn:
             conn.execute("UPDATE opportunities SET deadline_at='2026-09-20T00:00:00+00:00' WHERE id='job-b'")
+            # The fixture's own listed deadline for job-a moves with today (helpers_platform.FIXTURE_AS_OF); against this test's
+            # fixed today it is pinned to its original date, past, so only the deadline the student entered is reported for it.
+            conn.execute("UPDATE opportunities SET deadline_at='2026-09-01T00:00:00+00:00' WHERE id='job-a'")
             conn.commit()
         self.assertEqual(self.put("job-a", "2026-09-18").status_code, 200)
         with mock.patch.object(student_agent, "_today_local", return_value="2026-09-17"):

@@ -94,9 +94,18 @@
     approval_withdrawn: "Approval withdrawn",
     reply_logged: "Reply logged",
     contacts_searched: "Searched their site for contacts",
+    email_search: "Looked for an email on other sites",
     discovery_follow_through: "Deep search follow-up",
     research_confirmed: "Research confirmed",
     contact_applied: "Contact applied",
+    contact_form_found: "Found a contact form on their site",
+    contact_form_set: "Contact form page set",
+    form_submitted: "Sent through their contact form",
+    form_unconfirmed: "Contact form may have been sent",
+    form_not_sent: "Contact form not sent",
+    form_pressed: "You pressed send on their contact form",
+    form_said_sent: "Contact form sent, you said",
+    form_said_not_sent: "Contact form not sent, you said",
     gmail_draft_created: "Draft created in Gmail",
     gmail_sent: "Sent from Gmail",
     bounced: "Bounced",
@@ -108,6 +117,7 @@
     possible_reply_confirmed: "A reply, you said",
     reply_found: "Found in Gmail",
     contact_recovery: "Looked for another contact after the bounce",
+    resent_after_bounce: "Approved again for the new contact",
     send_scheduled: "Send scheduled",
     send_cancelled: "Scheduled send cancelled",
     scheduled_send_failed: "Scheduled send stopped",
@@ -115,15 +125,24 @@
     gmail_scheduled: "Scheduled in Gmail",
     send_moved: "Scheduled send moved to the next morning",
     follow_up_held: "Follow-up held",
+    follow_up_discarded: "Automatic follow-up draft undone",
     auto_draft_failed: "Automatic draft failed",
+    auto_follow_up_draft_failed: "Automatic follow-up draft failed",
     draft_restored: "Earlier draft restored",
     follow_up_restored: "Earlier follow-up restored",
     // Named apart from an ordinary "location recorded" on purpose: this is what
     // an import file claimed and the tracker refused, not what it accepted.
     location_import_claim: "Import file's unverified location claim",
+    location_recorded: "Location recorded",
+    location_confirmed: "Location confirmed",
+    location_ambiguous: "Location unclear",
     location_entered: "Location entered",
+    sec_form_d: "SEC Form D filing checked",
+    location_line_added: "Location line added to the draft",
+    location_line_removed: "Location line taken out of the draft",
     not_interested: "Marked not interested",
-    interested_again: "Moved back from Not interested",
+    applied_directly: "Marked applied directly",
+    interested_again: "Moved back into outreach",
     call_prep_queued: "Call prep started",
     call_prep_generated: "Call prep written",
     call_prep_replaced: "Call prep replaced",
@@ -131,6 +150,7 @@
     tech_brief_written: "Company research written",
     tech_brief_failed: "Company research failed",
     research_cleared: "Company research cleared",
+    interviewer_read: "Interviewer looked up",
     thank_you_scheduled: "Thank-you scheduled",
     thank_you_reviewed: "Thank-you reviewed",
     thank_you_sent: "Thank-you sent",
@@ -296,10 +316,10 @@
   // A company that publishes no email may still have a contact form on its
   // site. The approved first email goes in through it, as the student, once.
   // Like Send, the first click only asks and a second click sends. Finish in
-  // browser opens a window on this computer with the form filled in, for a
-  // CAPTCHA that asks a person; the app sends the form once it is solved.
+  // browser opens a window on this computer with the form filled in as far as
+  // the app can; the student finishes it and presses its send button there.
   const FORM_STATE_NOTES = {
-    unconfirmed: "The form was sent, but their page did not say it arrived.",
+    unconfirmed: "The form may have been sent.",
     needs_you: "Nothing was sent.",
     failed: "Nothing was sent.",
   };
@@ -322,6 +342,14 @@
     if (form.note && FORM_STATE_NOTES[form.state]) {
       controls.appendChild(element("p", "outreach-note is-wide", `${FORM_STATE_NOTES[form.state]} ${form.note}`));
     }
+    if (form.asks) {
+      // The student pressed send in Finish in browser, and only they saw what the page said: the pane adds "Yes, it was
+      // sent" beside this, and No opens the window again (never an automatic send).
+      controls.appendChild(element("p", "outreach-note is-wide",
+        "Answer No only if their page showed an error or nothing, and no confirmation email came from them."));
+      controls.appendChild(formSendButton(item, { retry: true, inBrowser: true, label: "No, it was not sent" }));
+      return controls;
+    }
     const retry = form.state === "unconfirmed";
     controls.appendChild(formSendButton(item, { retry, inBrowser: false }));
     if (form.state === "needs_you" || form.captcha) controls.appendChild(formSendButton(item, { retry, inBrowser: true }));
@@ -332,28 +360,41 @@
     if (result.outcome === "submitted") {
       if (result.marked === false) return `Sent through ${item.company}'s contact form, but it could not be marked sent. Press "It arrived" to catch it up.`;
       const said = result.confirmation ? ` Their page said: "${result.confirmation}"` : "";
-      return `Sent through ${item.company}'s contact form.${said} ${item.company} is marked sent; replies are read from Gmail.`;
+      // Finish in browser: a box of the app's the student changed before pressing send is named.
+      const changed = result.note ? ` ${result.note}.` : "";
+      return `Sent through ${item.company}'s contact form.${said}${changed} ${item.company} is marked sent; replies are read from Gmail.`;
     }
     if (result.outcome === "unconfirmed") {
-      return `The form was sent, but ${item.company}'s page did not say it arrived. Look for a confirmation email from them; if it came, press "It arrived".`;
+      if (result.asked_again) return `Nothing was sent from that window, but your earlier press may still have sent ${item.company}'s form, so its card still asks.`;
+      if (result.still_possibly_sent) return `Nothing was sent from that window, but ${item.company}'s form may have been sent before: look for a confirmation email from them before sending it again.`;
+      if (result.target?.contact_form?.asks) return `You pressed send in ${item.company}'s form. Say on its card whether their page said your message was sent.`;
+      return `${result.note || `${item.company}'s form may have been sent`}. If ${item.company} confirms it arrived, press "It arrived".`;
     }
     return `Nothing was sent to ${item.company}. ${result.note}`;
   }
 
-  function formSendButton(item, { retry, inBrowser }) {
-    const label = inBrowser ? "Finish in browser" : retry ? "Checked — send the form again" : "Send through contact form";
+  function formSendButton(item, { retry, inBrowser, label: named }) {
+    const label = named || (inBrowser ? "Finish in browser" : retry ? "Checked — send the form again" : "Send through contact form");
+    const again = Boolean(named);
     const button = element("button", inBrowser ? "secondary-button outreach-compose" : "primary-button outreach-compose outreach-send", label);
     button.type = "button";
-    if (inBrowser) button.title = "Opens a browser window on this computer with the form filled in. Solve the CAPTCHA there; the app sends the form once it is solved.";
+    // Finish in browser: the student finishes the form in the window and presses its send button; the app never does.
+    const yourTurn = "Fill in the boxes outlined in orange, solve any CAPTCHA, then press the form's own send button. Nothing is sent until you press it.";
+    if (inBrowser) button.title = `Opens a browser window on this computer with the form filled in as far as the app can. ${yourTurn}`;
     const reset = armConfirm(button, {
       idleLabel: () => label,
-      armedLabel: () => `Send through ${formHost(item)}'s form?`,
-      prompt: () => `Press again to send the approved email through ${item.company}'s contact form as you, from ${item.contact_form.page_url}.`,
+      armedLabel: () => again ? `Open ${formHost(item)}'s form again?` : inBrowser ? `Open ${formHost(item)}'s form?` : `Send through ${formHost(item)}'s form?`,
+      prompt: () => again
+        ? `Press again only if it was not sent: ${item.company}'s form opens again in a window, and if it did go, pressing its send button would send it twice.`
+        : inBrowser
+        ? `Press again to open ${item.company}'s contact form from ${item.contact_form.page_url} in a browser window, filled in as far as the app can (nothing, on a sales form). You press its send button there.`
+        : `Press again to send the approved email through ${item.company}'s contact form as you, from ${item.contact_form.page_url}.`,
       beforeClick: () => refuseUnsavedHandOff(button, "initial"),
       onConfirm: async () => {
         button.disabled = true;
         button.textContent = inBrowser ? "Waiting for you in the browser…" : "Sending…";
-        if (inBrowser) announce("A browser window is opening with the form filled in. Solve the CAPTCHA there; the app sends the form once it is solved.");
+        // 4 minutes is PERSON_WAIT_SECONDS in outreach/forms.py.
+        if (inBrowser) announce(`A browser window is opening with the form filled in as far as the app can. ${yourTurn} The window waits 4 minutes.`);
         try {
           const result = await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/form-submit`, {
             method: "POST",
@@ -389,7 +430,7 @@
       section.appendChild(where);
       if (form.captcha) {
         section.appendChild(element("p", "outreach-note",
-          `It has a ${form.captcha === "recaptcha" ? "reCAPTCHA" : form.captcha === "hcaptcha" ? "hCaptcha" : "Cloudflare Turnstile"}. A checkbox is ticked for you; a picture challenge waits for you under Finish in browser.`));
+          `It has a ${form.captcha === "recaptcha" ? "reCAPTCHA" : form.captcha === "hcaptcha" ? "hCaptcha" : "Cloudflare Turnstile"}. When the app sends the form, it ticks a checkbox CAPTCHA; under Finish in browser, any CAPTCHA is yours to solve.`));
       }
       if (form.state === "submitted") section.appendChild(element("p", "outreach-note", `Your first email went through this form${form.attempted_at ? ` on ${formatCalendarDate(form.attempted_at.slice(0, 10))}` : ""}.`));
       else if (form.note && FORM_STATE_NOTES[form.state]) section.appendChild(element("p", "outreach-note outreach-guess", `${FORM_STATE_NOTES[form.state]} ${form.note}`));
@@ -570,6 +611,299 @@
     return button;
   }
 
+  // A draft waiting for review that could be scheduled once approved: true when
+  // one press can confirm the research, approve the draft and schedule it.
+  function canApproveAndSchedule(context, item) {
+    const schedule = item.scheduled?.initial;
+    return outreachDraftNeedsReview(item, "initial")
+      && Boolean(item.email_subject && item.email_body && item.contact_email)
+      && !item.contact_bounced && !item.cc_bounced
+      && Boolean(context.gmail?.connected && context.gmail.bounce_check && context.automation?.scheduled_sending)
+      && !["scheduled", "sending", "transmitting"].includes(schedule?.state);
+  }
+
+  // The three steps the separate buttons take, in order, after one confirmed
+  // press: Confirm research (when unverified), Approve draft, then Schedule for
+  // their morning. Each step is the same request its own button makes, so
+  // every check still applies, and a step that stops leaves the earlier ones done.
+  function approveAndScheduleButton(item) {
+    const recipients = item.contact_cc ? `${item.contact_email} (Cc ${item.contact_cc})` : item.contact_email;
+    const unverified = item.research_confidence === "unverified";
+    const label = unverified ? "Confirm research, approve and schedule" : "Approve and schedule for their morning";
+    const steps = unverified ? "confirm the research, approve the draft, and schedule it" : "approve the draft and schedule it";
+    const button = element("button", "secondary-button outreach-approve-schedule", label);
+    button.type = "button";
+    const id = encodeURIComponent(item.id);
+    const reset = armConfirm(button, {
+      idleLabel: () => label,
+      armedLabel: () => `Schedule to ${recipients}?`,
+      prompt: () => `Press again to ${steps} to ${recipients} for their next weekday morning.`,
+      beforeClick: () => {
+        if (!unsavedDraftEdits(button, "initial")) return false;
+        showError("The draft text box has unsaved edits. Save them, then try again, so what is approved is what you see.");
+        return true;
+      },
+      onConfirm: async () => {
+        button.disabled = true;
+        const done = [];
+        try {
+          if (unverified) {
+            await api(`/api/v1/outreach/${id}/confirm-research`, { method: "POST" });
+            done.push("confirmed the research");
+          }
+          const approve = (acknowledge) => api(`/api/v1/outreach/${id}/approve`, {
+            method: "POST",
+            body: JSON.stringify({ kind: "initial", fingerprint: item.draft_fingerprint, acknowledge_warnings: acknowledge }),
+          });
+          let approved;
+          try {
+            approved = await approve(false);
+          } catch (error) {
+            if (error.status !== 422 || !String(error.message).startsWith("Review these warnings")) throw error;
+            if (!window.confirm(`${error.message}\n\nApprove anyway and schedule it?`)) {
+              await reloadOutreachAt(item.id);
+              announce(done.length ? `Confirmed the research for ${item.company}. The draft is not approved.` : `The ${item.company} draft is not approved.`);
+              return;
+            }
+            approved = await approve(true);
+          }
+          done.push("approved the draft");
+          const scheduled = await api(`/api/v1/outreach/${id}/schedule`, {
+            method: "POST",
+            body: JSON.stringify({ kind: "initial", fingerprint: approved.draft_fingerprint }),
+          });
+          state.outreachKeep.add(item.id);
+          await reloadOutreachAt(item.id, ".outreach-next .tracker-exports button");
+          announce(`${unverified ? "Confirmed the research, approved" : "Approved"} the ${item.company} draft. ${automationPaused()
+            ? `Scheduled for ${scheduled.label}. Automation is paused, so it goes out after you resume.`
+            : `Scheduled: goes out ${scheduled.label}.`}`);
+        } catch (error) {
+          reset();
+          button.disabled = false;
+          if (!done.length) {
+            showError(error.message);
+            return;
+          }
+          // Reload so the card shows what did happen; the message says where it stopped.
+          await reloadOutreachAt(item.id).catch(() => {});
+          const what = done.join(" and ");
+          showError(`${what.charAt(0).toUpperCase()}${what.slice(1)} for ${item.company}, but it is not scheduled: ${error.message}`);
+        }
+      },
+    });
+    return button;
+  }
+
+  // A follow-up waiting for review that one press can approve and hand to Gmail.
+  // Not while an email from them may be a reply: follow-ups wait for that.
+  function canApproveFollowUpAndSend(context, item) {
+    return outreachDraftNeedsReview(item, "follow_up")
+      && Boolean(context.gmail?.connected && item.contact_email && item.follow_up_subject && item.follow_up_body)
+      && !item.contact_bounced && !item.cc_bounced && !item.possible_reply_count
+      && !["scheduled", "sending", "transmitting"].includes(item.scheduled?.follow_up?.state);
+  }
+
+  // The one-press buttons beside Approve follow-up. With scheduled sending on,
+  // as with Send, the usual press queues it for their next weekday morning and
+  // Approve and send now stays beside it; otherwise one button sends it now.
+  function approveFollowUpButtons(context, item, subjectControl, bodyControl) {
+    if (!canApproveFollowUpAndSend(context, item)) return [];
+    // The check just before a scheduled send reads Gmail, so it needs read access.
+    if (context.automation?.scheduled_sending && context.gmail.bounce_check) {
+      return [
+        approveFollowUpButton(context.gmail, item, subjectControl, bodyControl, "schedule"),
+        approveFollowUpButton(context.gmail, item, subjectControl, bodyControl, "now"),
+      ];
+    }
+    return [approveFollowUpButton(context.gmail, item, subjectControl, bodyControl, "send")];
+  }
+
+  // Approve follow-up, then Send follow-up (or Schedule follow-up for their
+  // morning), after one confirmed press. Each step is the same request its own
+  // button makes, so every check still applies. Edits still in the box are saved
+  // first, as Approve does, so what goes out is the words on screen. A send or a
+  // schedule that stops leaves the follow-up approved, and the bar above can try
+  // again.
+  function approveFollowUpButton(gmail, item, subjectControl, bodyControl, how) {
+    const recipients = item.contact_cc ? `${item.contact_email} (Cc ${item.contact_cc})` : item.contact_email;
+    const attachment = gmail.attachment ? ` with ${gmail.attachment}` : "";
+    const scheduling = how === "schedule";
+    const label = scheduling ? "Approve and schedule for their morning" : how === "now" ? "Approve and send now" : `Approve and send${attachment}`;
+    const button = element("button", `${how === "now" ? "secondary-button" : "primary-button"} outreach-approve-send`, label);
+    button.type = "button";
+    if (scheduling) button.dataset.followUpApproveSchedule = "";
+    else button.dataset.followUpApproveSend = "";
+    if (!scheduling && gmail.attachment_problem) {
+      button.disabled = true;
+      button.title = gmail.attachment_problem;
+    }
+    const verb = scheduling ? "scheduled" : "sent";
+    const id = encodeURIComponent(item.id);
+    const unsaved = () => subjectControl.value !== subjectControl.dataset.initial || bodyControl.value !== bodyControl.dataset.initial;
+    const reset = armConfirm(button, {
+      idleLabel: () => label,
+      armedLabel: () => (scheduling ? `Schedule to ${recipients}?` : `Approve and send to ${recipients}?`),
+      prompt: () => (scheduling
+        ? `Press again to approve the follow-up and schedule it to ${recipients} for their next weekday morning.`
+        : `Press again to approve the follow-up and send it to ${recipients} from ${gmail.account || "Gmail"}.`),
+      onConfirm: async () => {
+        button.disabled = true;
+        button.textContent = scheduling ? "Scheduling…" : "Sending…";
+        let approved = false;
+        try {
+          let print = item.follow_up_fingerprint;
+          const editing = unsaved();
+          if (editing) {
+            const saved = await api(`/api/v1/outreach/${id}`, {
+              method: "PATCH",
+              body: JSON.stringify({ follow_up_subject: subjectControl.value, follow_up_body: bodyControl.value }),
+            });
+            print = saved.follow_up_fingerprint;
+          }
+          const approve = (acknowledge) => api(`/api/v1/outreach/${id}/approve`, {
+            method: "POST",
+            body: JSON.stringify({ kind: "follow_up", fingerprint: print, acknowledge_warnings: acknowledge }),
+          });
+          let result;
+          try {
+            result = await approve(false);
+          } catch (error) {
+            if (error.status !== 422 || !String(error.message).startsWith("Review these warnings")) throw error;
+            if (!window.confirm(`${error.message}\n\nApprove anyway and ${scheduling ? "schedule" : "send"} it?`)) {
+              reset();
+              button.disabled = false;
+              announce(editing ? `Your edits are saved. The follow-up is not approved or ${verb}.` : `The follow-up is not approved or ${verb}.`);
+              return;
+            }
+            result = await approve(true);
+          }
+          approved = true;
+          const payload = JSON.stringify({ kind: "follow_up", fingerprint: result.follow_up_fingerprint });
+          state.outreachOpen = item.id;
+          if (scheduling) {
+            const scheduled = await api(`/api/v1/outreach/${id}/schedule`, { method: "POST", body: payload });
+            state.outreachKeep.add(item.id);
+            await loadOutreach();
+            announce(`Approved the ${item.company} follow-up. ${automationPaused()
+              ? `Scheduled for ${scheduled.label}. Automation is paused, so it goes out after you resume.`
+              : `Scheduled: goes out ${scheduled.label}.`}`);
+            return;
+          }
+          const sent = await api(`/api/v1/outreach/${id}/gmail-send`, { method: "POST", body: payload });
+          watchForBounces();
+          announce(sent.marked === false
+            ? `Approved and sent the follow-up to ${sent.to}, but ${item.company} could not be marked followed up. Press "I sent the follow-up" to catch it up.`
+            : `Approved and sent the follow-up to ${sent.to}. ${item.company} is marked followed up.`);
+          await loadOutreach();
+        } catch (error) {
+          reset();
+          button.disabled = false;
+          if (approved) {
+            // Reload so the card shows the approved follow-up; the message says where it stopped.
+            await reloadOutreachAt(item.id).catch(() => {});
+            showError(`Approved the ${item.company} follow-up, but it is not ${verb}: ${error.message}`);
+            return;
+          }
+          if (error.status === 409) {
+            state.outreachFlash = { id: item.id, kind: "follow_up", message: error.message };
+            await reloadOutreachAt(item.id, '[data-draft-kind="follow_up"] [data-draft-approve]');
+            return;
+          }
+          showError(error.message);
+        }
+      },
+    });
+    return button;
+  }
+
+  // Why a company in a batch of follow-ups is left out, or "" when it can go.
+  // `how` is "queue" or "send". The same conditions as the one-press buttons,
+  // except that a follow-up already approved goes as it stands.
+  function followUpBatchProblem(item, how) {
+    if (!item.follow_up_subject || !item.follow_up_body || !["generated", "approved"].includes(item.follow_up_status)) {
+      return "no follow-up is written yet";
+    }
+    if (item.status !== "sent") return "it is not waiting on a follow-up";
+    if (!item.contact_email) return "it has no email address";
+    if (item.contact_bounced || item.cc_bounced) return "an address bounced";
+    if (item.possible_reply_count) return "an email from them may be a reply";
+    const queued = item.scheduled?.follow_up?.state;
+    if (["sending", "transmitting"].includes(queued)) return "it is being sent now";
+    if (how === "queue" && queued === "scheduled") return "it is already scheduled";
+    return "";
+  }
+
+  // Approve each follow-up that still needs it, then queue it for the
+  // recipient's next weekday morning or send it now, one company at a time,
+  // with the same requests the one-press buttons make, so every server check
+  // still applies. A batch never accepts warnings on its own: the follow-ups
+  // whose approval asks to review warnings wait until the rest have gone, then
+  // one question lists every warning, as Approve's own question does, and only
+  // a yes approves them. Stops when the session ends. Returns
+  // { done, skipped, stopped }.
+  async function runFollowUpBatch(items, how, onProgress) {
+    const epoch = state.sessionEpoch;
+    const ended = () => state.sessionEpoch !== epoch;
+    const done = [];
+    const skipped = [];
+    const held = [];
+    const WARNINGS = "Review these warnings, then approve again to accept them: ";
+    const deliver = async (item, acknowledge) => {
+      const id = encodeURIComponent(item.id);
+      let approved = false;
+      try {
+        let print = item.follow_up_fingerprint;
+        if (item.follow_up_status !== "approved") {
+          const result = await api(`/api/v1/outreach/${id}/approve`, {
+            method: "POST",
+            body: JSON.stringify({ kind: "follow_up", fingerprint: print, acknowledge_warnings: acknowledge }),
+          });
+          approved = true;
+          print = result.follow_up_fingerprint;
+          if (ended()) return;
+        }
+        const payload = JSON.stringify({ kind: "follow_up", fingerprint: print });
+        if (how === "queue") {
+          const scheduled = await api(`/api/v1/outreach/${id}/schedule`, { method: "POST", body: payload });
+          done.push({ item, label: scheduled.label });
+        } else {
+          const sent = await api(`/api/v1/outreach/${id}/gmail-send`, { method: "POST", body: payload });
+          done.push({ item, marked: sent.marked !== false });
+        }
+      } catch (error) {
+        const message = String(error.message);
+        if (!acknowledge && error.status === 422 && message.startsWith(WARNINGS)) held.push({ item, warnings: message.slice(WARNINGS.length) });
+        else skipped.push({ item, reason: approved ? `approved, but not ${how === "queue" ? "scheduled" : "sent"}: ${message}` : message });
+      }
+    };
+    for (const [index, item] of items.entries()) {
+      if (ended()) break;
+      onProgress(index, items.length, item);
+      const problem = followUpBatchProblem(item, how);
+      if (problem) skipped.push({ item, reason: problem });
+      else await deliver(item, false);
+    }
+    if (held.length && !ended()) {
+      const one = held.length === 1;
+      const accept = window.confirm(
+        `${one ? "One follow-up has" : `${held.length} follow-ups have`} warnings to review:\n\n`
+        + `${held.map(({ item, warnings }) => `• ${item.company}: ${warnings}`).join("\n")}\n\n`
+        + `Approve ${one ? "it" : "them"} anyway and ${how === "queue" ? "queue" : "send"} ${one ? "it" : "them"}?`
+      );
+      for (const [index, { item }] of held.entries()) {
+        if (ended()) break;
+        if (!accept) {
+          skipped.push({ item, reason: "its follow-up has warnings to review, so it is not approved" });
+          continue;
+        }
+        onProgress(index, held.length, item);
+        await deliver(item, true);
+      }
+    }
+    if (how === "send" && done.length) watchForBounces();
+    return { done, skipped, stopped: ended() };
+  }
+
   function cancelScheduleButton(item, kind, text = "Cancel") {
     const button = element("button", "secondary-button", text);
     button.type = "button";
@@ -644,7 +978,7 @@
     const email = gmail?.connected
       ? "approved emails send from your Gmail only when you press Send and confirm the recipient"
       : "approved emails open in your own email, where you press Send";
-    const byClick = "only when you press Send through contact form and confirm";
+    const byClick = "only when you press Send through contact form and confirm, or press the form's own send button under Finish in browser";
     const form = automation?.form_submission ? "" : gmail?.connected ? `, and a contact form ${byClick}` : `; a contact form goes out ${byClick}`;
     if (!automatic) return `Nothing sends on its own. ${email.charAt(0).toUpperCase()}${email.slice(1)}${form}.`;
     return `${automatic.running.replace(/\.$/, "")}, while automation is running. Anything else goes out only by your own click: ${email}${form}.`;
@@ -743,8 +1077,8 @@
   Object.assign(App, {
     CALL_PREP_ACTIVE, CALL_PREP_WRITING, CANDIDATE_METHOD_LABELS, CANDIDATE_VERIFICATION_LABELS,
     CONTACT_CONFIDENCE_LABELS, DRAFT_PROVIDER_LABELS, DRAFT_STATUS_LABELS, OUTREACH_EVENT_LABELS, OUTREACH_STATUS_LABELS,
-    automaticSendWords, checkForBounces, composeControl, formHost, formSendControls, installOutreachSend, outreachChoice,
+    approveAndScheduleButton, approveFollowUpButtons, automaticSendWords, canApproveAndSchedule, checkForBounces, composeControl, formHost, formSendControls, installOutreachSend, outreachChoice,
     outreachContactFormSection, outreachDraftNeedsReview, outreachField, outreachReachable, outreachSendStatus, pauseWords, refocusOutreach,
-    refuseUnsavedHandOff, reloadOutreachAt, repaintPauseWords, scheduleText, scheduleWords, sentFolderCheck,
+    refuseUnsavedHandOff, reloadOutreachAt, repaintPauseWords, runFollowUpBatch, scheduleText, scheduleWords, sentFolderCheck,
   });
 })();

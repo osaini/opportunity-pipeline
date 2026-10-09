@@ -10,7 +10,31 @@ press Send, or, with Gmail connected, goes out when you press **Send** in the ap
 and then confirm the recipient. Three opt-in automations send that approved text
 later without another click from you: scheduled sends, the resend after a bounce,
 and contact-form submission (your approved first email, once per company; a field
-the app cannot answer truthfully, or a picture CAPTCHA, leaves it for you). One
+the app cannot answer truthfully, or a picture CAPTCHA, leaves it for you). For a
+form left for you, **Finish in browser** on the company's card opens it in a window,
+filled in as far as the app can: you fill in the boxes it outlines in orange, solve
+any CAPTCHA, and press the form's own send button within 4 minutes. The app never
+presses it there, and nothing that could carry the form leaves the window until it
+has seen your press, so if you close the window without pressing send, nothing was
+sent. Once you press, the app does not judge what the page says: when you close the
+window, the card asks whether their page said your message was sent. **Yes, it was
+sent** marks the company sent; **No, it was not sent** opens Finish in browser again
+(answer No only if their page showed an error or nothing, and no confirmation email
+came). If pressing send does nothing, the app did not recognise the form's send
+button; the window's note says so. A form
+box that requires a street, city, state, ZIP or country is answered only from the
+**Mailing address** you confirmed on the Profile page (About you), never any other
+address. When a form requires your street address, the rest of your confirmed
+address goes into its other address boxes; a form that requires only a country,
+state, city or ZIP gets only that, and a form that requires none gets none. A form
+that asks for an address twice (a second block for a reference or an emergency
+contact) gets no address at all and waits for you, since the app cannot tell
+which block is yours.
+With no address saved, such a form waits for you and says so. A street box with
+no city, state or ZIP box beside it waits for you too: the app does not guess
+how that form wants the whole address written on one line. A box that asks for
+a home or permanent address, a nationality or a country of birth is never
+answered from the mailing address. One
 writes its own: the short thank-you after a plain decline is the only email the
 app composes and sends without your approval, and only when the keyword rules and
 Jev both read the reply as a decline and it passes the sender checks (R1–R7 in
@@ -57,7 +81,23 @@ bounce resend check first.
    seven-day follow-up.
 5. **Follow up and log replies.** Due follow-ups get an in-app reminder (from
    the daily run and the worker) and a **Generate follow-up** draft with the same
-   approval step. Paste a reply into **Log a reply** to get a suggested status
+   approval step. The follow-up has its own **Follow-up** tab on the card, and
+   picking **Follow-ups due** in the rail opens each company there. A due
+   follow-up is listed under Follow-ups due, not Drafts to review. With Gmail
+   connected, **Approve and send** approves the follow-up and sends it from your
+   Gmail in one step; like **Send**, the first click asks you to confirm the
+   recipient and the second sends. With Send on their weekday morning on, the
+   button is **Approve and schedule for their morning** instead, which queues
+   the follow-up for the recipient's next weekday morning (cancellable until it
+   goes, and read by the follow-up reviewer first when that is on), with
+   **Approve and send now** beside it. Under Follow-ups due each company has a
+   box to tick, with **Select all** (Shift ticks a run), and the bar above the
+   list queues the ticked follow-ups for their mornings or sends them now. It
+   asks once more before anything goes, approves any not yet approved, asks in
+   one question about any whose approval raises warnings, and lists every
+   company left out and why. A queued follow-up is handled, so it moves from Follow-ups
+   due (and from Urgent) to Scheduled; one whose scheduled send stopped comes
+   back as due. Paste a reply into **Log a reply** to get a suggested status
    (call, declined, come back later); nothing changes until you click it. After
    a follow-up goes unanswered for 14 days, the card suggests No response.
 
@@ -70,6 +110,14 @@ drafts, sends, follow-ups, thank-yous, reminders, Urgent entries, contact
 searches, or research, and an email already scheduled for it is cancelled.
 Replies from it are still recorded on its card. **Move back to outreach**
 returns it to the tab its status puts it in.
+
+**Applied directly.** A company whose own application form you filled in
+yourself, with no email or contact form from here, gets **Applied directly** on
+its card. It moves to the Applied directly tab and leaves every working tab
+(To contact, Ready to send, and the rest), but All companies still lists it.
+It is kept and left alone exactly as under Not interested: nothing automatic
+writes to it, and Remove company stays hidden until you move it back. The card
+shows the day you marked it, not the day you applied.
 
 Settings in `.env`:
 
@@ -161,6 +209,17 @@ the deep search reported is marked *not yet checked*, and a draft does not say
 you are nearby until the site or a filing agrees or you confirm the research.
 Your own entry is never overwritten; the company's site outranks a filing.
 
+A draft written before its company's location was checked is not written
+again when the location arrives. The app puts its own "(live in ...)" line
+right after your school's name in the opening and changes nothing else, and
+takes that line out again if the company turns out not to be where you live.
+Typing or confirming a location does this at once; with **Write drafts
+automatically** on, a location found by the company's site, a filing, or a web
+search does it within a minute. An approved draft is left as it is: press
+**Add the location line** under it, then approve it again. A draft whose
+opening does not name your school as your profile has it keeps its warning,
+and you add the line yourself or regenerate it.
+
 - **Company site.** Structured data with a postal address, a sentence like
   "headquartered in Austin, TX", or a street address with a ZIP code. A site
   that lists several places at the same level sets none. Failing those, a site
@@ -228,8 +287,14 @@ python -m opportunity_app.launch install-outreach   # any system
 On Windows that registers the task below, `.\scripts\install-outreach-task.ps1`.
 
 It runs through `scripts/run-outreach-discovery.vbs`, so no console window
-appears. A run missed while the laptop was off starts when it is next on, and
-a scheduled run within 48 hours of a successful one is skipped. The log is
+appears. On Windows the task also starts when you sign in, unlock, or wake the
+computer, and each of those starts asks whether the newest Monday or Thursday
+7:00 already past has a successful run (yours from the Outreach tab counts). If
+it has, the start ends at once and writes nothing; if not, the missed search
+runs then. A search that failed, or never finished, is tried again no sooner
+than three hours later. A task installed before this names no slots, and
+there a scheduled run within 48 hours of a successful one is skipped; run
+`.\scripts\install-outreach-task.ps1` again to get the catch-up. The log is
 `data/outreach-discovery.log`. To try it without changing anything:
 
 ```powershell

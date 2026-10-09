@@ -32,6 +32,7 @@ from ...outreach.targets import (
     update_target as update_outreach_target,
 )
 from ...outreach.call_prep import auto_queue_call_prep
+from ...outreach.draft_location import sync_location_line
 from ...outreach.config import sender_account
 from ...outreach.automation import listing_switches
 from ...outreach.gmail import gmail_drafts_status
@@ -170,6 +171,11 @@ def update_outreach(
     try:
         before = get_outreach_target(conn, target_id, user_id=user_id)
         updated = update_outreach_target(conn, target_id, payload.model_dump(exclude_unset=True), user_id=user_id)
+        # A location typed or confirmed puts the draft's "(live in ...)" line in, or takes it out, at once.
+        if (updated["location"], updated["location_verified"]) != (before["location"], before["location_verified"]) and (
+            sync_location_line(conn, target_id, user_id=user_id)
+        ):
+            updated = get_outreach_target(conn, target_id, user_id=user_id)
         # Reaching a reply status starts call prep on its own, when there is a reply to write it from.
         if updated["status"] != before["status"] and auto_queue_call_prep(
             conn, target_id, user_id=user_id, reason=f"Status moved to {updated['status'].replace('_', ' ')}",

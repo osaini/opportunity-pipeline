@@ -62,10 +62,10 @@ in any shell and ignores execution policy:
 | `py -3 scripts/run_api_fuzz.py` | Fuzz every OpenAPI operation for unhandled exceptions |
 | `py -3 scripts/run_api_fuzz.py --strict` | Add response-schema and status-code conformance checks |
 
-Failure traces land in `data/ui-artifacts`. Open one with:
+Failure traces land in `output/ui-artifacts`. Open one with:
 
 ```bash
-.venv-ui/Scripts/playwright show-trace data/ui-artifacts/<test>/trace.zip
+.venv-ui/Scripts/playwright show-trace output/ui-artifacts/<test>/trace.zip
 ```
 
 ## How the suite stays deterministic
@@ -185,7 +185,8 @@ To explore Apply for me (the "what's missing" view on a saved Greenhouse role), 
 `PIPELINE_SANDBOX_FAKE_APPLY=1`. That makes Acme Robotics a Greenhouse role served from a
 fictional listing, gives the sandbox student a name for applications, an email and a résumé,
 and turns the switch on. It uses a fake listing and a fake agent, so no request leaves the
-machine and no browser opens.
+machine and no browser opens. The flag also seeds Harbor Demo Labs, a saved fictional Lever role served by
+`FakeLeverPageClient`, with Apply for me on Lever switched on. Its page shows the read-only check and Finish in browser as its only action: a canned handoff with no window and nothing sent (the fake agent opens no window; the real driver is tested in `tests/test_apply_lever_browser.py`, `tests/test_apply_lever_handoff_browser.py` and `tests/test_apply_lever_handoff_e2e.py`). The résumé choice starts off; turn it on in the Apply for me settings to see the start and the run say the file goes to Lever. `tests/ui/test_apply_lever_handoff.py` drives the same flow.
 
 `.mcp.json` restricts the browser to that origin via `--allowed-origins`, runs
 `--isolated` so no profile is written to disk, and saves traces to

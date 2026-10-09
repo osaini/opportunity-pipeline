@@ -160,8 +160,8 @@ its own rule change, after the one-click version has a track record.
 
 ### Non-goals (v1)
 
-- Lever and Ashby. They come later (section 14). Their forms send data as they are filled, so
-  the Greenhouse rehearsal model does not carry over **[live]**, **[1-src]**.
+- Lever and Ashby. They come later (section 14; Lever has a draft spec, `phase5-lever-handoff-spec.md`). Ashby's forms send data as they are filled **[1-src]**,
+  and Lever's page sends the résumé the moment it is attached **[live]**, so the Greenhouse rehearsal model does not carry over.
 - Workday, iCIMS, SmartRecruiters, Workable, company-built forms that post through the
   employer's own API key, and multi-page flows.
 - LinkedIn Easy Apply or any LinkedIn automation (PLAN.md:1342).
@@ -311,7 +311,7 @@ Finish in browser needs no gate, because the student presses Submit.
 | --- | --- | --- |
 | Time between two agent submissions | 5 / 10 / 30 minutes | **10 minutes** |
 | Agent submissions per day (one-click and unattended) | 3 / 5 / 10 | **5** |
-| Agent submissions per company | 1 per 30 days / 1 per 90 days / none | **1 per 30 days**. One-click and Finish in browser may override it for a single application with an explicit tick: "I know I applied to {company} on {date}. Apply anyway." |
+| Agent submissions per company | 1 per 30 days / 1 per 90 days / none | **1 per 30 days**. One-click and Finish in browser may override it for a single application with an explicit tick: "I know Apply for me handed an application to {company} to Greenhouse on {date} (it may not have gone through). Apply anyway." |
 | Rehearsals and option lookups per day | 10 / 20 / 40 | **20** |
 | Unattended only (if ever, D2) | 1 per hour and 3 per day / 1 per hour and 1 per day | **1 per hour, 3 per day** |
 
@@ -323,6 +323,12 @@ Finish in browser needs no gate, because the student presses Submit.
   under two spellings is still one company.
 - **The same Greenhouse job can never be submitted twice by the agent.** No tick overrides that
   (9.1).
+- **An interview or an offer already in progress at the company, for another role, asks for a tick.**
+  The code is `active_at_company` and the sentence names the stage and the role: "You have an
+  interview in progress at {company} for {role}. Applying to another role there may cross wires with
+  it." Finish in browser and one-click may carry the tick; unattended mode cannot, because the tick is
+  the student's own decision. The company is matched by name (the same key as the company limit), and
+  the stages that count are `interview` and `offer`.
 
 The per-company limit exists because of Greenhouse's application-limit rules and its permanent
 spam marks **[doc]**.
@@ -1691,6 +1697,12 @@ key; otherwise it is a problem, "The form's wording differs from Greenhouse's li
 ({question})". So the browserless preflight, the live plan, and answers saved from the Needs you
 flow all use the same key.
 
+A radio or checkbox with no fieldset legend (a consent box wrapped in its own label) reports no question. Its own words, the scan's
+`label` with the control's name and id taken off, are then compared with the listing instead (`checks._lone_choice_agrees`): they must
+be contained in the listing's label, an option's label or its description, as a statement box is held to before it is ticked. Words that
+differ, or none at all, are the same wording problem, so a box that says something else on the form is left for the student. A statement
+only the form carries (`label_from_page`) has nothing to be compared with.
+
 Each field must join to exactly one visible control, or one field container for react-select and
 file groups. Anything else is a problem:
 
@@ -1841,6 +1853,50 @@ Enabling it later is a code change with a live check and a fixture: the only upl
 hand-over would be to the exact address Greenhouse's own response names, with a body containing
 the planned file's bytes, and 6.10 would check the result.
 
+**As built (M7, 2026-10-08).** Apply for me attaches the approved cover letter for the role, in a rehearsal and in Finish in
+browser. Where it differs from the text above, or the spec left a choice open:
+
+- **Freshness.** `student/artifacts.py` records `content_sha256` (the SHA-256 of the approved text) when it renders, and
+  `ensure_document_artifact` renders again when the stored value differs, when none was recorded (an artifact made before M7),
+  or when the file on disk no longer matches its own `sha256`. The stale file is removed after the new row is written. The
+  edit route is unchanged: it still commits first and deletes the old PDF after, and a failed delete can no longer put a stale
+  PDF in a form.
+- **Which letter.** `policy.cover_letter_for` returns the latest version only. Its answer carries the document id and version,
+  the SHA-256 of the text, the PDF's file name (company, role, kind and version, never a storage name) and the text itself,
+  which only the preview reads. A latest version that is a draft is `cover_letter_draft`, worded "has a newer draft" when an
+  earlier version was approved and "is still a draft" when none was, and it names the draft so the page can open it. Two
+  approved versions are not "two candidates": the latest approved one is the letter.
+- **The plan.** The plan entry names the letter by `source.ref` (`{document id}@{version}`) and `file_sha256` (the text's
+  hash). Both are in `plan_hash`, so a new version, another document or other words in the same version change it. The
+  file name and the letter's text are not in the plan or in the stored row.
+- **Reading the file.** At the start of a run the runner asks `artifacts.attachable_file` for the PDF (rendering it if no
+  current one exists), verifies its bytes against the artifact's `sha256`, and hands the agent a `FilePayload` keyed
+  `cover_letter` with the file name, the media type, the bytes' hash and `content_sha256`. A letter that cannot be rendered
+  or read leaves no payload: a rehearsal reports "The app could not read the file", and Finish in browser leaves the field
+  for the student.
+- **The last look.** Just before the file goes in, the agent checks that the bytes hash to what the runner stored and that
+  the text they were rendered from is the text its plan names, then asks the runner over the pipe (`file_check`, answered by
+  `policy.letter_is_current` from the database) whether that document and version are still the latest, still approved,
+  and still have that text. Only an explicit yes attaches. On a no, a silence, an error or an agent given no way to ask,
+  the field stays empty: a rehearsal records a problem ("Your cover letter for this role changed while the rehearsal ran"),
+  and Finish in browser leaves the field for the student with its own sentence. The agent is given the question only when
+  there is a letter to attach, so an agent written before M7 still runs.
+- **Attaching.** Same as the résumé: a payload with the file's own name, the control's `accept` list respected (a refused
+  type stops a rehearsal and leaves the field in Finish in browser), and the file name, size and the group's text read
+  back. A board that uploads as you attach defers the letter exactly as it defers the résumé (`defer`, "Not attached: this
+  board uploads files as soon as they are attached"), so the letter is never uploaded before the student presses Submit.
+- **Only the named field.** Row L is unchanged: the letter goes to the field named `cover_letter`, and only when it is
+  required (D11 B). A custom "Cover letter" question, a writing sample or any other upload is row U.
+- **The page.** The Needs you row for a required letter has **Draft one** (nothing is approved) or **Open the draft** (the
+  latest version is a draft) and **Try again**. Draft one opens the Prepare page with this role and Cover letter chosen in its
+  own form and the **Generate grounded draft** button focused; the app drafts nothing by itself. A saved role that is not an
+  application yet is added to that form's role list. Open the draft goes to the draft's card with its **Approve version**
+  button focused. Try again asks the app again. The plan preview's Cover Letter row shows the file name, all of the letter's
+  words in a labelled scrollable region, and "Approved cover letter, version {n}"; a letter edited after the rehearsal shows
+  "changed since the rehearsal" and today's words.
+- **Sandbox.** The canned agent counts a file as attached when the runner read one for it. `CANNED["letter_required"]` makes
+  the fictional listing's cover letter a required question.
+
 ### 6.10 The independent pre-submit check
 
 `REQUIRED_CHECK_SCRIPT` is a separate JavaScript string in `apply/checks.py`. It deliberately
@@ -1907,6 +1963,15 @@ The outcome is **rehearsed**. Record the plan, the screenshots, `refused_json`, 
 `clean` (`apply_checks.clean_rehearsal`). Close the browser. When the student opens the preview in
 the one-click stage, the server issues the confirm nonce (4.6) and stores its hash on this run.
 
+**As built (2026-10-08): a form of more than one page is not "rehearsed".** The app reads one page. After the filled form's picture, a
+rehearsal runs `MORE_PAGES_SCRIPT` (`apply/checks.py`, read-only, in the form frame): any visible button, link or role=button on the
+page whose words (text, value, aria-label or title) include next, continue or proceed and not submit ("Continue to step 2", "Next
+section", "Next: Review"), or a step counter ("Step 1 of 3", "Page 1/3", a bare "2 of 4" beside the form, or `aria-current=step`),
+means the app read only the first page. The run then ends **needs_you** with "This form has more than one page, and the app read only the first" (so the view
+says "The rehearsal stopped: ... No application was sent."), `evidence.more_pages` is true, and it is never a clean rehearsal. No
+multi-page Greenhouse form has been recorded, so the script matches words and not a whole text, to fail closed; a Finish in browser
+run is unchanged (the student completes the form in the window).
+
 **Submit runs always start from a fresh page and fill again.** Rehearsal and submit are separate
 runs because:
 
@@ -1957,6 +2022,76 @@ From step 4 on, any exception gives **unconfirmed**, as in outreach/forms.py:101
    (Uploads are refused before hand-over, 4.3, so nothing else could have left either.)
 
 After hand-over both modes continue with 6.14.
+
+**As built (M5b part 2).** Finish in browser (handoff) works end to end. Where it differs from the text above, or the
+spec left a choice open:
+
+- **D1 B holds everywhere.** The agent never presses Submit, including the second Submit after a security code. While the
+  agent types a code the route aborts every submit-path POST without spending the prompt's allowance (`code_post_while_typing`),
+  and after it has typed a code the route aborts the code POST until the student has pressed Submit (below).
+- **The code POST waits for the student's press (decided 2026-10-08, open question Q4).** Once the app has typed the emailed
+  code, `RouteState.code_press_required` is set and the prompt's one code POST is refused (`code_post_before_press`, nothing
+  spent) until a trusted click on the form's submit control has been seen after the typing finished (`RouteState.code_pressed`),
+  however long the widget waits and however often it retries. The press is used up by the code POST it sends and the rule stays on for
+  the rest of the run: a second prompt's code POST (the boxes still hold what the app typed, and a retrying widget keeps sending it)
+  needs a new press made after the last code POST went through. The two-second tail (`CODE_GUARD_S`) is gone: a student who presses
+  at once is not held up, and a widget that sends at 2.5 s is refused like one that sends at 0.3 s. A refusal for either reason is
+  recorded as the widget sending by itself (`auto_submit_blocked`) and the student has been told to press Submit. The press is
+  heard through the one DevTools session the agent opens (`_watch_presses`): a listener in an isolated world
+  (`PRESS_LISTENER_TEMPLATE`, `PRESS_WORLD`) registered on the window in the capture phase before any page script runs, which reports a
+  click only when `event.isTrusted` is true, the target is inside the application form's submit control (Enter in a box becomes
+  such a click in the browser) and the page is a board's own. It reports through a binding that exists in that world only, so a
+  page script cannot call it, find its name, or reach the listener's built-ins; a script click, a made-up event or a submit by
+  script has `isTrusted` false and is ignored (`tests/test_apply_agent_browser.py`, `security_code_forger`). The request can reach
+  this process a few milliseconds before the report of the click that made it, so a code POST refused for want of a press waits up
+  to `PRESS_GRACE_S` for the report and is judged again. If the listener cannot be set up, the app does not type the code (reason
+  `press_unseen`) and the student types it, which needs no press to be seen. The static guard allows the four DevTools calls in
+  `PRESS_CDP_CALLS` and nothing else.
+- **Telemetry.** Greenhouse posts Snowplow telemetry to `c.spl.greenhouse.io`, so step 3 above ("a POST from the page to
+  any other Greenhouse address") cannot be read literally. Only an aborted non-GET to a form host (`job-boards`, `boards`,
+  `boards-api.greenhouse.io`), or any aborted form navigation, ends the turn. Telemetry hosts are refused for every method,
+  silently, and the value guard also checks base64 forms.
+- **The parent answers the security-code op for its own claim**, never a token the child names, and the child types the
+  code only after an `id`-matched reply; "typed" is recorded only on the child's acknowledgment.
+- **Deadline.** `fill_s + handoff_s + code_read_s + security_code_s + 3 x outcome_s + 120` (2910 s), one shared budget for
+  every wait after the press, and every agent wait capped by `job.ends_at`. The watchdog is a backstop for hangs.
+- **Hand-over.** The child stamps a monotonic `expires`; the parent refuses a late commit. Any claim in `clicking` is at
+  most `unconfirmed`, never "nothing was sent". The window is confirmed closed by process id before a claim that is
+  still `claimed` settles with `after_click` 0.
+- **Field failures are cleared and left for the student**, except a select holding a wrong option, which stops the run
+  (`FIELD_TOOK`). A submit POST or an upload refused during the fill ends the run. A challenge frame after the press waits
+  for the student, within the shared budget. No final screenshot after Stop, a closed window, or the timeout.
+- **Cover letters** were never attached in M5b; M7 changed that (see "As built (M7)" under 6.9). A letter the app could not
+  attach is left for the student, with its own sentence.
+- **A student-stopped handoff** is `needs_you`, `detail.stopped_by = 'student'`, with no notice and no Urgent row.
+- **Screenshots and values need the browser session.** The masked pictures show every non-sensitive filled value (D8 (i)),
+  so they and `GET .../values` need the student's own browser session. A handoff result shows only provably unchanged
+  values ("What the app filled").
+- **A posting that differs from the saved role** needs the student's tick (`posting_confirmed`) before Finish in browser.
+- **A pause does not stop a Finish in browser window**, and the pause reply and the health card say so.
+- **Failed outcomes name the field, never the page's error text**, so a value the student typed cannot reach a note.
+- **A send to an address the app does not recognize is said in the turn (2026-10-08).** Only an aborted non-GET to a form host, a
+  file going anywhere, or a form navigation ends the turn (above). Any other refused non-GET that carries a form-like body
+  (multipart, URL-encoded or JSON) within 15 s of the student's press of Submit (`checks.looks_like_a_send`, the press as the
+  listener of 6.13 reports it) is refused as before, the turn goes on, and the agent reports the progress step `form_elsewhere` with
+  the host ("The form tried to send a request to {host}, which the app doesn't recognize, so the app stopped that request. ...") once,
+  and only while the student's turn is still on (a hand-over during the wait for a late press sends nothing). The wording is about that
+  request, never about the application: a tracker that reports the Submit click looks the same, and the form's own submission goes on.
+  The run view shows it as the turn's sentence (phase `form_elsewhere`, still the student's turn), and a run that did not go on to the
+  board lists "While the window was open the form tried to send a request to {host} ... nothing went to that address" beside its ending
+  (`evidence.elsewhere_seen` holds the host only, and is dropped once the hand-over happened, so a submitted or unconfirmed run says
+  nothing of it). A beacon with no form body, Greenhouse's telemetry and a CAPTCHA request say nothing. The board's real submit address for such
+  a form is still unknown: when a live board shows one, add it to `FORM_POST_HOSTS` so the turn ends as it does for the others.
+- **Finish in browser is not offered again after a stop on a property of the board (2026-10-08).** A run that stops before the turn on a
+  property of the board itself (no submit address the app knows, a board that uploads on attach, a hidden field the app would have
+  filled) records `handoff_end` "board". The run view carries `handoff_end` and `finish_again`; the result panel offers Finish in
+  browser again unless the end is "board", where a second try meets the same thing and it offers "Open the posting" instead. Every
+  other stop is offered again, including one with no end of its own (a page that would not open, a Greenhouse error, a résumé file
+  that changed), because the result panel has no other way to start again. It costs no limit either way.
+- **Open question Q4, answered 2026-10-08** (the plan called it Q1, but Q1 in section 13 was already taken; Q4 is listed there too).
+  Does Greenhouse's security-code widget submit by itself when its eighth character is typed? No recording of the live widget exists.
+  The owner decided that it does not matter: the app types the code and the code POST waits for the student's press, whenever the
+  widget sends and however often it retries (the bullet above). A recording of the live widget would still be worth keeping.
 
 ### 6.14 Decide the outcome
 
@@ -2084,6 +2219,40 @@ never suggests applying again, which could send a duplicate.
 Phase 1's confirmation handling then plans `stage_change(current)`, and `_next_applied_at` keeps
 the earlier time (applications/actions.py:544-566). So the email changes nothing, and no ledger row is
 written. The corroboration can only be read from `application_mail_messages`.
+
+**As built (M5b part 1).** `opportunity_app/apply/watch.py` holds the watch, the card states, the statistics and the
+card's two answers; `apply/security_code.py` holds the D10 B reader. Decisions the spec left open:
+
+- The watch is passed to `apply_runs.run_worker_step(watch=...)` by the AutomationWorker, because the watch imports
+  `apply_runs`. Its health row is `apply_agent.watch`.
+- Phase 1 now writes `application_mail_messages.sender_verified` (inbox.py), which the strong match needs. Greenhouse's
+  "Security code for your application to ..." from Greenhouse's own senders is never read as a confirmation, and never
+  sent to a model: `mail_rules.classify` decides it as `unknown` before TypeSafe is asked, so the code in its body is
+  not sent or stored (R4; pinned in `tests/fixtures/application_mail_eval.json`, `security_code`). The classifier rule
+  is that narrow on purpose (a role titled "Security Code ..." keeps its offer or interview label); the watch's own
+  exclusion is the broad `/security code/i`.
+- A stall is added to `watch_until` when it ends, not minute by minute, so `last_ok_at >= watch_until` can hold.
+  `no_email_24h` also needs a pass that began after the deadline to have finished. A watch whose reader stays stalled
+  until 13 days after the submission, or whose extended deadline would pass day 13, becomes `not_watched`
+  (`detail.watch_stopped = 'reader_stalled'`); one still awaiting its email when its 14 days end becomes `not_watched`
+  too (`'window_ended'`). Neither counts. The reader is not "working" while an email it set aside unread (state `error`)
+  falls in the window, or while the Gmail account read is not the application's address: the watch pauses. An error
+  row the reader parsed first records its sender and its match (`matched_by`); it is passed over only when the sender
+  is not Greenhouse and the match is `none` or `ambiguous`, since a company may send Greenhouse's email from its own
+  domain. A row with no match recorded (not parsed, or recorded before this) always stalls.
+- One email confirms one attempt (`detail.email_gmail_id`), the newest attempt first. A tombstone whose application or
+  job has a newer live attempt is not flipped; the student gets a notice instead.
+- Weak evidence also covers a strong-tier email from an unverified sender.
+- The Urgent kinds are the code's `apply_needs_you` and `apply_no_email`.
+- The security-code reader reads Gmail directly (Phase 1 passes are ten minutes apart), at most every 15 seconds, and
+  needs the read scope and the address match of D12, not the `application_mail` switch. Handing the code to the child is
+  recorded as `handed`; only the child's acknowledgement that it typed it (`{"op": "security_code_result", "typed": true}`,
+  the reader's `confirm_typed`) records `typed` (and the notice and the statistic). A result with `typed: false` records
+  the fallback with its reason, and `abandoned` (the agent stopped waiting) drops whatever a look still running finds. A
+  repeat request for a handed, never-acknowledged code falls back to the student (`not_confirmed`), and a window that
+  ends while Gmail could not be read says so (`gmail_unreachable`), not "no email".
+- The reader's record is `detail.security_code_reader`; `detail.security_code` stays the boolean 6.14 settles with, so
+  the shallow merge in `runs.settle` cannot erase the count. The statistics count a prompt from either.
 
 ---
 
@@ -2315,12 +2484,26 @@ only tightens what may be done with a question the classifier called ordinary:
   ("Asian", "White", "$40,000-$50,000"). The lists are best-effort: they do not catch every wording (a fresh one is
   at worst saved for one company), and the extension's Save can only judge the question in front of it plus the chain
   of follow-ups above it (below).
+- **A heading can make every question under it never storable.** The listing reports the demographic, compliance and data
+  compliance blocks as sections of their own, and `classify_sensitive` already sends every field in them through the store. The
+  page shows the same blocks, and a custom question can sit under one, under a heading or an id that says demographic, voluntary
+  self-identification, equal employment opportunity, compliance, background check, criminal or diversity (`NET_SECTION`,
+  repeated as `SECTION_NEVER` and pinned by the `sections` rows of `broad_net.json`). The engine reads the section, fieldset or
+  group around each control (not a heading that is only a sibling of the fields) and marks it `never_storable`; `build_plan` takes
+  that mark from the scan, for a custom question that is not a profile link, and leaves the question for the student. That
+  holds only in a run that has read the page: the check that drives the Needs you view reads none, so it still offers to
+  save such a question. Over-blocking costs a Save button; a title like "Apply for Compliance Analyst" over the whole form
+  is read the same way.
 - **No checkbox or agreement control is filled from the answer library** (D9 B). A checkbox, single or a group, never is;
   nor is a select or multiselect whose option labels, heading or description agree to, accept, acknowledge, consent to,
   certify, attest or confirm something (an agreement word in the heading alone is enough: "Do you certify that your
   answers are true?" with the options "Yes I do" and "No I do not"), a Yes/No-shaped question that hits the agreement
-  topic, or a typed signature or typed initials ("Type your initials to agree"). Only an
-  exact sensitive-store statement ticks or chooses it; otherwise it is left for the student.
+  topic, or a typed signature or typed initials ("Type your initials to agree"). A select with one option is read as a tick
+  box. The broad net's agreement topic is read on a select's heading and on each of its options, not only the narrow list ("I
+  will comply", "I waive my right"), and a single-line text field whose heading states an agreement ("Acknowledged by (your
+  name)", "Signed by") is a signature line, as is a name field whose description signs ("By typing your name, you are
+  electronically signing", "I certify that the information above is true"). Only an exact sensitive-store statement ticks or chooses it; otherwise it is left
+  for the student.
 - **Every stored statement and tick-box entry is per company** (C). An acknowledgment or consent statement, and any
   work-authorization, sponsorship or 18-or-older entry whose `answer_kind` is a tick box, is typed text, or whose question or
   option also agrees to something, is refused for "any company" by `add_entry`, is not offered for it, and is ignored at
@@ -2343,7 +2526,12 @@ only tightens what may be done with a question the classifier called ordinary:
   follow a felony question, as do "Which type?" and then "What is the expiration date of your current status?" under a
   visa question. This mirrors the `own` chain in `build_plan`. A follow-up-shaped field in a chain under a never-storable
   question is marked `never_storable`, so the panel offers no Save for it; an independent question after one is still
-  offered. A checkbox is never pre-ticked from a row saved at another company (an option row never travels).
+  offered. `build_plan` keeps the same chain for the never-storable topics (`follow_up_shaped`, the engine's `followUpShaped`):
+  a child that is short or opens with a question word passes them on even when its own wording does not read as a follow-up,
+  so its own child is never storable too (`tests/fixtures/apply/net_chains.json`, run by both suites). A child that is long and
+  does not open as a follow-up does not pass them on, because the plan cannot tell it from an independent question filed under
+  the same parent; its own follow-up is then ordinary (known-defects). A checkbox is never
+  pre-ticked from a row saved at another company (an option row never travels).
 
 The net over-reads on purpose ("Would you like to opt in to updates?" is immigration wording to it, and a question that
 only comes after a sensitive one takes that one's topics). Over-blocking costs some reuse; under-blocking is the bug. It
@@ -2504,7 +2692,7 @@ Read-only GETs of the public Job Board API (`boards-api.greenhouse.io/v1/boards/
 1. **No solvers, no stealth, no disguise.** A real headed Chromium, honest about what it is, with
    no user-agent, locale or timezone overrides, no automation-hiding flags, and no human-mimicking
    input (4.3). A picture CAPTCHA goes to the student. A CAPTCHA checkbox goes to the student
-   unless they chose D14 B. The security code is typed by the student (D10 A).
+   unless they chose D14 B. The security code is read from Gmail under the reader rules in section 3 (D10 B), and typed by the student (D10 A) when it cannot be.
 2. **Local only.** The agent runs on the student's computer, behind its normal connection. The
    SETUP step says to turn off a VPN before using Apply for me, since VPN exits are often
    data-center addresses. The app cannot detect this reliably, so it is guidance, not a check.
@@ -3271,6 +3459,10 @@ except one the student hook caused.
   was not one.
 - **Open question Q1.** Does Greenhouse ever require an email verification step *before* submit
   for new candidates? No evidence was found. If it appears, it is `needs_you`.
+- **Open question Q4. The emailed security code's widget. Answered 2026-10-08.** Does it submit by itself when its eighth character is
+  typed? No recording of the live widget exists. Owner decision: the app still types the code (D10 B), and the code POST waits for
+  the student's own press of Submit, seen as a trusted click that page scripts cannot forge, after the typing. A widget that sends
+  at once, later, or repeatedly is refused until then. See section 6.13 (as built).
 - **Open question Q2.** Should the bundled Chromium be replaced by the student's installed Google
   Chrome binary (`channel="chrome"`) with a fresh profile? It is not disguise, and it may score
   differently. Evaluate after R1 data exists.
@@ -3304,9 +3496,9 @@ M4s is built only if D5 is B to E.
 | M5a | Rehearsal engine | `apply_agent.py` in lookup and rehearse modes; the child-process runner with deadlines and the watchdog; the start, run and lookup API; Look up options in the UI; `GREENHOUSE_LOOKUP_ENDPOINTS` and `CAPTCHA_ENDPOINTS` confirmed on a live board. | 12.9 M5a tests green. |
 | M5b | Finish in browser and the watch | Handoff mode with hand-over in the route handler; the plan preview with screenshots and review marks; handoff recording with `stage_policy` (`ask` under D1 B); `watch()` with its badges, notices, Urgent kind and paused state; per-ATS statistics; the assisted-apply.md section and the THREAT_MODEL Apply agent row; SETUP.md step (Playwright install, Linux display, VPN off, "your name on every application", name for applications, limits, retention). | 12.9 M5b tests green. |
 | M6 | **Gate: one-click submit** (needs D1 A) | The policy rewrite in the same PR, with the D1 A wording (AGENTS.md "Product invariants", README.md "What it never does" and the Apply Mode bullet of docs/guide/web-app.md, THREAT_MODEL row, assisted-apply.md:5-6 and :36-37, the "Extension safety" row of ACCEPTANCE.md, the "7 — Apply Mode" row of PHASE_VERIFICATION.md; the extension README and manifest stay "never submits"); submit mode; hand-over with pause-after-confirm, Cancel and the 15-minute clock; outcome detection; `record` stage write; two-click confirm with nonce; the rehearsal gate; the 8.8 threshold and warning; D9 B and D14 B if chosen. | 12.9 M6 tests green; sandbox acceptance with the fake agent. |
-| M7 | Cover letters in the flow (D11 B) | The Draft one path wired to preparation; the latest-approved-version rule; `content_sha256` freshness; attaching approved letters. | The cover-letter rows of 7.5 pass. |
+| M7 | Cover letters in the flow (D11 B) | The Draft one path wired to preparation; the latest-approved-version rule; `content_sha256` freshness; attaching approved letters. **Built 2026-10-08** (see "As built (M7)" under 6.9). | The cover-letter rows of 7.5 pass. |
 | M8 | Unattended (**only with a separate yes**, D2) | Its own AGENTS.md rewrite; `auto_apply` feature, shadow, the worker step, limits, `ledger` stage write, breaker, Undo wording, re-consent. | 48 h shadow with 5 reviewed clean rows before `on` is offered. |
-| Later | Lever, then Ashby | Lever: `/parseResume` fires on attach **[live]**, so upload first, then overwrite and verify; hidden `timezone` field; hCaptcha may escalate. Ashby: fields autosave as they are filled **[1-src]**, so rehearsal means "fill-only on a local fixture" or accepting that filling sends data; a puzzle question is always `needs_you`. Each needs its own rehearsal definition first. | Separate specs. |
+| Later | Lever, then Ashby | Lever: `/parseResume` fires on attach **[live]**, so upload first, then overwrite and verify; hidden `timezone` field; hCaptcha may escalate. Ashby: fields autosave as they are filled **[1-src]**, so rehearsal means "fill-only on a local fixture" or accepting that filling sends data; a puzzle question is always `needs_you`. Each needs its own rehearsal definition first. | Separate specs. Lever, Finish in browser only: `phase5-lever-handoff-spec.md` (draft 1, 2026-10-04). Ashby: not yet written; its open points are in that file's Appendix A. |
 
 **Rollout checklist (after merge, in the student's own app; not a PR condition):**
 

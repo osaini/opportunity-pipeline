@@ -1,0 +1,8 @@
+[
+  {"name": "Springfield, Example State, United States", "id": "fake-place-springfield"},
+  {"name": "Springdale, Example State, United States", "id": "fake-place-springdale"},
+  {"name": "Shelbyville, Example State, United States", "id": "fake-place-shelbyville"},
+  {"name": "Harbor City, Example State, United States", "id": "fake-place-harbor-city"},
+  {"name": "Harborview, Sample Province, Canada", "id": "fake-place-harborview"},
+  {"name": "Guessville, Example State, United States", "id": "fake-place-guessville"}
+]

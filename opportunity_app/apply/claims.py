@@ -23,6 +23,10 @@ HELD_HEARTBEAT = timedelta(minutes=2)
 # result is recorded (settle, record_result) or the runner calls forget(); a claim this process made that is not
 # in here was left by a run that ended without settling it.
 RUNNING: set[str] = set()
+# Claims whose settlement was decided as "may have been sent" (a window not confirmed closed, a request that passed while the claim was
+# still 'claimed') and could not be written (the database was busy): {token: the note the student is to read}. The decision is kept in
+# this process so recover_stale settles the claim as 'unconfirmed' and never as the "Nothing was sent" it says of a claim nobody holds.
+UNCONFIRMED_UNWRITTEN: dict[str, str] = {}
 
 
 def claim_held(row: Any, *, now: datetime | None = None) -> bool:
@@ -41,3 +45,18 @@ def claim_held(row: Any, *, now: datetime | None = None) -> bool:
 def forget(token: str) -> None:
     """The run under this claim has ended in this process (the runner's finally)."""
     RUNNING.discard(token)
+
+
+def mark_unconfirmed(token: str, note: str) -> None:
+    """The settlement said the application may have been sent and could not be written: recovery must not say otherwise."""
+    UNCONFIRMED_UNWRITTEN[token] = note
+
+
+def peek_unconfirmed(token: str) -> str | None:
+    """The note kept for this claim by ``mark_unconfirmed``, left in place: a reader that has not yet written it down must not use it up."""
+    return UNCONFIRMED_UNWRITTEN.get(token)
+
+
+def take_unconfirmed(token: str) -> str | None:
+    """The note kept for this claim by ``mark_unconfirmed`` (and forgotten), or None."""
+    return UNCONFIRMED_UNWRITTEN.pop(token, None)

@@ -45,10 +45,10 @@ from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from time import monotonic
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from uuid import uuid4
 
-from pipeline_core.identity import normalized
+from pipeline_core.identity import employer_key, normalized
 
 from .. import SERVER_INSTANCE
 from ..automation import ledger as automation
@@ -60,8 +60,10 @@ from ..core.profile_store import read_stored_profile
 from ..core.settings_store import get_setting, put_setting, setting_updated_at
 from ..core.timestamps import parse_app_instant, utc_now
 from ..core.user_time import UserTimezone, user_timezone
-from .greenhouse import ADAPTER_VERSION, ATS_GREENHOUSE, GREENHOUSE_SENDER_DOMAINS
-from .claims import HELD_HEARTBEAT, RUNNING, claim_held, forget
+from .agent_types import resume_may_be_with_ats, resume_with_ats, with_resume_note
+from .ats import CODE_MODE, claim_refusal, name_of
+from .greenhouse import ADAPTER_VERSION, ATS_GREENHOUSE, is_greenhouse_sender
+from .claims import HELD_HEARTBEAT, RUNNING, claim_held, forget, peek_unconfirmed, take_unconfirmed
 
 LOGGER = logging.getLogger(__name__)
 
@@ -87,6 +89,8 @@ BREAKER_WINDOW = 5
 RUNNER_COMPONENT = "apply_agent.runner"
 # The daily evidence purge's own health row, so a failed purge is not mixed with the runner's status.
 RETENTION_COMPONENT = "apply_agent.retention"
+# The confirmation watch's own health row (apply/watch.py), so a failing watch is not mixed with the runner's status.
+WATCH_COMPONENT = "apply_agent.watch"
 
 # Per-student limits: defaults here, overridable in the profile under "apply_agent", read the way
 # internal_automation.follow_up_days reads its day count. A value that is not an integer in range is the default.
@@ -106,7 +110,16 @@ LIMIT_MAXIMUM = {
 }
 
 LIVE_APPLICATION = "This application is already being submitted, or was submitted."
+HANDOFF_OPEN = "Finish in browser is already open for this role. Stop it, or finish in its window, before starting another."
+CLAIMED_RUNNING = "Apply for me is already working on this application."
 STOPPED_EARLIER = "An earlier attempt stopped before anything was sent. Retry it."
+# Sentences that name the ATS: ``{ats}`` is its display name (apply.ats.name_of of the claim's or run's ats), filled where the sentence is said.
+CONFIRMED_BY_EMAIL = "{ats} already confirmed an application from you on {day}"
+RELEASED_JOB_ASK = "You said the attempt on {day} didn't go through. {ats} may still have it. Send it again anyway."
+OTHER_COPY = "This {ats} job already has an attempt from another saved copy of the role ({title}). Finish or release that one first."
+LATE_CONFIRMATION = "{ats} showed its confirmation page for {company}, after this attempt was marked as not sent. Check it."
+RESULT_SUBMITTED = "{ats} showed its confirmation page for your application to {title} at {company}"
+STOPPED_BEFORE = "The app stopped before handing your application to {ats}. Nothing was sent."
 # A claim that stopped for the student before the hand-over: nothing left the app, so it blocks nothing.
 _STOPPED_UNSENT = "(c.state IN ('needs_you', 'failed') AND c.after_click=0)"
 # The acknowledgments a student can tick (the "ask" refusals): each is a code a start request may carry.
@@ -114,8 +127,10 @@ ASK_COMPANY_LIMIT = "company_limit"
 ASK_RELEASED_JOB = "released_job"
 ASK_UNMATCHED_CONFIRMATION = "unmatched_confirmation"
 ASK_APPLYING_OLD = "applying_old"
+ASK_ACTIVE_AT_COMPANY = "active_at_company"
 
 RUNNING_RUNS: set[str] = set()
+RUN_ID = re.compile(r"run-[0-9a-f]{32}")
 
 
 class ClaimRefused(Exception):
@@ -138,17 +153,38 @@ class ClaimNotFoundError(LookupError):
 # --- Small helpers ------------------------------------------------------------------------
 
 
-def _at(now: datetime | None) -> datetime:
+def at_utc(now: datetime | None) -> datetime:
+    """``now`` (the clock when None) as an aware UTC time. The confirmation watch and the security-code reader use this one."""
     return (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
 
 
-def _stamp(now: datetime | None) -> str:
+def stamp_now(now: datetime | None) -> str:
     """The stamp a write records: utc_now's (never repeated in this process) unless the caller gave a time."""
-    return utc_now() if now is None else _at(now).isoformat(timespec="microseconds")
+    return utc_now() if now is None else at_utc(now).isoformat(timespec="microseconds")
 
 
-def _iso(moment: datetime) -> str:
+def iso_utc(moment: datetime) -> str:
+    """The stamp format every claim, event and notice time is written in (UTC, microseconds): the string comparisons depend on one format."""
     return moment.astimezone(timezone.utc).isoformat(timespec="microseconds")
+
+
+def address_hash(address: str) -> str:
+    """A short hash of an email address as the app compares addresses (trimmed, case folded); '' for no address.
+
+    A claim keeps this, never the address, of the one its application went out under (detail.mailbox_hash), so the
+    confirmation watch can tell whether the Gmail account it reads is that mailbox.
+    """
+    text = str(address or "").strip().casefold()
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:24] if text else ""
+
+
+def application_address(conn: sqlite3.Connection, user_id: str) -> str:
+    """The email in the student's confirmed contact facts, which the application is filled with, or ''."""
+    from ..student import preparation
+
+    contact = preparation.confirmed_facts(conn, user_id).get("contact")
+    email = contact.get("email") if isinstance(contact, dict) else None
+    return email.strip() if isinstance(email, str) else ""
 
 
 def _dumps(value: Any) -> str:
@@ -191,9 +227,15 @@ def user_folder(user_id: str) -> str:
     return hashlib.sha256(user_id.encode()).hexdigest()[:16]
 
 
+def opportunity_folder(opportunity_id: str) -> str:
+    """An opportunity id as one folder name under the student's folder (ids are plain, but a name must never climb out of it)."""
+    cleaned = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in opportunity_id).strip(".")
+    return cleaned[:120] or "role"
+
+
 def _local_day_start(zone: UserTimezone, now: datetime) -> str:
     """The start of today in the student's timezone, as the UTC stamp claims and runs are compared with."""
-    return _iso(zone.localize(datetime.combine(zone.today(now), time.min)))
+    return iso_utc(zone.localize(datetime.combine(zone.today(now), time.min)))
 
 
 def _when_text(zone: UserTimezone, moment: datetime, now: datetime) -> str:
@@ -240,12 +282,17 @@ class Block:
     kind: str
     code: str
     message: str
+    # The company limit only: the student's local date of the latest hand-over ("April 3"), for the tick's own words.
+    date: str = ""
 
 
 def _limit_check(
-    conn: sqlite3.Connection, user_id: str, company: str, board_token: str, mode: str, now: datetime,
+    conn: sqlite3.Connection, user_id: str, company: str, ats: str, board_token: str, mode: str, now: datetime,
 ) -> Block | None:
-    """9.1: the first limit that blocks a hand-over now, or None. Every handed-over claim counts, released ones too."""
+    """9.1: the first limit that blocks a hand-over now, or None. Every handed-over claim counts, released ones too.
+
+    A board token is the name of a board within its ATS: the same name on another ATS is another employer's, so it is matched with ``ats``.
+    """
     zone = user_timezone(conn, user_id)
     values = limits(conn, user_id)
     latest = conn.execute(
@@ -266,7 +313,7 @@ def _limit_check(
     if mode == "unattended":
         hour = conn.execute(
             "SELECT COUNT(*) FROM application_submit_claims WHERE user_id=? AND mode='unattended' AND handed_over_at>=?",
-            (user_id, _iso(now - timedelta(hours=1))),
+            (user_id, iso_utc(now - timedelta(hours=1))),
         ).fetchone()[0]
         if hour >= values["unattended_per_hour"]:
             return Block("failed", "unattended_hour", "Unattended mode sends at most one application an hour")
@@ -276,14 +323,14 @@ def _limit_check(
         ).fetchone()[0]
         if day >= values["unattended_daily_cap"]:
             return Block("failed", "unattended_day", f"Unattended mode sends at most {values['unattended_daily_cap']} applications a day")
-    # The same company under another spelling is still one company: the name's key or the Greenhouse board matches.
+    # The same company under another spelling is still one company: the name's key or the same ATS's board matches.
     recent = conn.execute(
         """
         SELECT c.handed_over_at, o.company FROM application_submit_claims c LEFT JOIN opportunities o ON o.id=c.opportunity_id
-        WHERE c.user_id=? AND c.handed_over_at IS NOT NULL AND ((c.company_key<>'' AND c.company_key=?) OR (c.board_token<>'' AND c.board_token=?))
+        WHERE c.user_id=? AND c.handed_over_at IS NOT NULL AND ((c.company_key<>'' AND c.company_key=?) OR (c.board_token<>'' AND c.ats=? AND c.board_token=?))
         ORDER BY c.handed_over_at DESC LIMIT 1
         """,
-        (user_id, company, board_token),
+        (user_id, company, ats, board_token),
     ).fetchone()
     if recent is not None:
         handed = parse_app_instant(recent["handed_over_at"])
@@ -291,32 +338,32 @@ def _limit_check(
             days = max(0, (now - handed).days)
             name = recent["company"] or "this company"
             return Block("ask", ASK_COMPANY_LIMIT, f"You applied to {name} with Apply for me {days} days ago" if days != 1
-                         else f"You applied to {name} with Apply for me 1 day ago")
+                         else f"You applied to {name} with Apply for me 1 day ago", date=_day_text(zone, recent["handed_over_at"]))
     return None
 
 
 def limit_check(
-    conn: sqlite3.Connection, user_id: str, company: str, board_token: str, mode: str, now: datetime | None = None,
+    conn: sqlite3.Connection, user_id: str, company: str, ats: str, board_token: str, mode: str, now: datetime | None = None,
 ) -> Block | None:
     """The first limit that blocks a hand-over now, with its kind ('ask' can be ticked past, 'failed' cannot), or None."""
-    return _limit_check(conn, user_id, company, board_token, mode, _at(now))
+    return _limit_check(conn, user_id, company, ats, board_token, mode, at_utc(now))
 
 
 def limits_block(
-    conn: sqlite3.Connection, user_id: str, company: str, board_token: str, mode: str, now: datetime | None = None,
+    conn: sqlite3.Connection, user_id: str, company: str, ats: str, board_token: str, mode: str, now: datetime | None = None,
 ) -> str | None:
     """The sentence for the first limit that stops a submit or Finish in browser now, or None (9.1).
 
     ``company`` is employer_key(name). Finish in browser (handoff) counts toward the spacing and the company limit
     but not the daily cap, because the student presses Submit.
     """
-    block = _limit_check(conn, user_id, company, board_token, mode, _at(now))
+    block = _limit_check(conn, user_id, company, ats, board_token, mode, at_utc(now))
     return None if block is None else block.message
 
 
 def rehearsal_block(conn: sqlite3.Connection, user_id: str, now: datetime | None = None) -> str | None:
     """Whether today's rehearsals and option lookups (in the student's timezone) have reached their limit."""
-    moment = _at(now)
+    moment = at_utc(now)
     cap = limits(conn, user_id)["rehearsals_per_day"]
     used = conn.execute(
         "SELECT COUNT(*) FROM apply_runs WHERE user_id=? AND kind IN ('lookup', 'rehearsal') AND started_at>=?",
@@ -333,13 +380,17 @@ def rehearsal_block(conn: sqlite3.Connection, user_id: str, now: datetime | None
 def duplicate_block(
     conn: sqlite3.Connection, user_id: str, *, opportunity_id: str, ats: str, job_ref: str, company: str,
     application_id: str | None = None, acknowledged: tuple[str, ...] | list[str] = (), now: datetime | None = None,
+    reading: bool = False,
 ) -> Block | None:
     """The first reason this posting should not be submitted for the student, from what the app already holds.
+
+    ``reading`` is the read-only check the page shows: a live claim that has handed nothing over is described as what it is (a window
+    that is open) instead of "being submitted, or was submitted". A start that is refused keeps the shorter sentence.
 
     Reads only, and never creates the application (looking changes nothing). A 'failed' block cannot be
     overridden; an 'ask' one is skipped when its code is in ``acknowledged``.
     """
-    moment = _at(now)
+    moment = at_utc(now)
     zone = user_timezone(conn, user_id)
     application = conn.execute(
         "SELECT id, stage, created_at FROM applications WHERE opportunity_id=? AND user_id=?", (opportunity_id, user_id),
@@ -354,7 +405,7 @@ def duplicate_block(
         ).fetchone()
         if confirmation is not None:
             return Block("failed", "confirmed_by_email",
-                         f"Greenhouse already confirmed an application from you on {_day_text(zone, confirmation['received_at'])}")
+                         CONFIRMED_BY_EMAIL.format(ats=name_of(ats), day=_day_text(zone, confirmation["received_at"])))
         session = conn.execute(
             "SELECT updated_at FROM application_form_sessions WHERE user_id=? AND application_id=? AND status='completed' "
             "ORDER BY updated_at LIMIT 1", (user_id, application_id),
@@ -365,7 +416,7 @@ def duplicate_block(
     # (the next attempt releases it, rule 2).
     for row in conn.execute(
         """
-        SELECT c.application_id, c.note, c.opportunity_id FROM application_submit_claims c
+        SELECT c.application_id, c.note, c.opportunity_id, c.state, c.mode FROM application_submit_claims c
         WHERE c.user_id=? AND (c.application_id=? OR (c.ats=? AND c.job_ref=?))
           AND (c.state IN ('claimed', 'clicking', 'submitted', 'unconfirmed') OR (c.state IN ('needs_you', 'failed') AND c.after_click=1))
         ORDER BY c.created_at
@@ -373,30 +424,82 @@ def duplicate_block(
         (user_id, application_id or "", ats, job_ref),
     ).fetchall():
         if application_id and row["application_id"] == application_id:
-            return Block("failed", "application", row["note"] or LIVE_APPLICATION)
-        return Block("failed", "job", _other_copy(conn, row["opportunity_id"]))
+            return Block("failed", "application", row["note"] or (_live_words(row["state"], row["mode"]) if reading else LIVE_APPLICATION))
+        return Block("failed", "job", _other_copy(conn, row["opportunity_id"], ats))
     released = conn.execute(
         "SELECT handed_over_at FROM application_submit_claims WHERE user_id=? AND ats=? AND job_ref=? AND state='released' "
         "AND handed_over_at IS NOT NULL ORDER BY handed_over_at DESC LIMIT 1", (user_id, ats, job_ref),
     ).fetchone()
     if released is not None and ASK_RELEASED_JOB not in acknowledged:
-        return Block("ask", ASK_RELEASED_JOB, f"You said the attempt on {_day_text(zone, released['handed_over_at'])} didn't go through. "
-                     "Greenhouse may still have it. Send it again anyway.")
+        return Block("ask", ASK_RELEASED_JOB, RELEASED_JOB_ASK.format(ats=name_of(ats), day=_day_text(zone, released["handed_over_at"])))
     unmatched = _unmatched_confirmation(conn, user_id, opportunity_id, company)
     if unmatched is not None and ASK_UNMATCHED_CONFIRMATION not in acknowledged:
         name = _title_of(conn, opportunity_id)[1] or "this company"
         return Block("ask", ASK_UNMATCHED_CONFIRMATION,
                      f"An application confirmation from {name} arrived on {_day_text(zone, unmatched)} that the app couldn't match to a role. "
                      "I haven't applied to this role.")
+    active = _active_elsewhere(conn, user_id, opportunity_id, company)
+    if active is not None and ASK_ACTIVE_AT_COMPANY not in acknowledged:
+        stage, name, title = active
+        what = "an offer from" if stage == "offer" else "an interview in progress at"
+        return Block("ask", ASK_ACTIVE_AT_COMPANY,
+                     f"You have {what} {name} for {title}. Applying to another role there may cross wires with it.")
     created = parse_app_instant(application["created_at"]) if application is not None else None
-    if created is not None and moment - created > timedelta(days=1) and ASK_APPLYING_OLD not in acknowledged:
+    if created is not None and moment - created > timedelta(days=1) and ASK_APPLYING_OLD not in acknowledged \
+            and not _made_by_the_app(conn, str(application["id"]), str(application["created_at"])):
         return Block("ask", ASK_APPLYING_OLD, "Did you already apply to this by hand? I haven't applied yet.")
     return None
 
 
-def _other_copy(conn: sqlite3.Connection, opportunity_id: str) -> str:
+def _active_elsewhere(conn: sqlite3.Connection, user_id: str, opportunity_id: str, company: str) -> tuple[str, str, str] | None:
+    """(stage, company name, role) of the student's interview or offer at this company for another role, or None.
+
+    ``company`` is employer_key(name), so the same company under another spelling is the same company. An interview comes
+    before an offer when the student has both: it is the one still moving. A company with no usable name has an empty
+    key, and two roles with no company are not the same company, so it matches nothing.
+    """
+    if not company:
+        return None
+    for row in conn.execute(
+        """
+        SELECT a.stage, o.company, o.title FROM applications a JOIN opportunities o ON o.id=a.opportunity_id
+        WHERE a.user_id=? AND a.opportunity_id<>? AND a.stage IN ('interview', 'offer')
+        ORDER BY CASE a.stage WHEN 'interview' THEN 0 ELSE 1 END, a.updated_at DESC
+        """,
+        (user_id, opportunity_id),
+    ).fetchall():
+        if employer_key(row["company"] or "") == company:
+            return row["stage"], row["company"] or "this company", row["title"] or "another role"
+    return None
+
+
+def _live_words(state: str, mode: str) -> str:
+    """What the read-only check says of a live claim that has no note of its own.
+
+    A claim in 'claimed' has handed nothing over (a Finish in browser run spends its fill and the student's turn here), so it is never
+    said to be "submitted"; "submitted or being submitted" is only for a claim that was handed over or settled.
+    """
+    if state == "claimed":
+        return HANDOFF_OPEN if mode == "handoff" else CLAIMED_RUNNING
+    return LIVE_APPLICATION
+
+
+def _made_by_the_app(conn: sqlite3.Connection, application_id: str, created_at: str) -> bool:
+    """Whether the application row was made by an Apply for me start (R11), not by hand.
+
+    ensure_application_tx writes the row and the apply_agent_started event with one timestamp in one transaction, so an
+    event with the row's own created_at is the start that made it. A first attempt that stopped keeps that row at
+    'applying'; asking the student whether they applied by hand would be asking about the app's own row.
+    """
+    return conn.execute(
+        "SELECT 1 FROM application_events WHERE application_id=? AND event_type='apply_agent_started' AND created_at=? LIMIT 1",
+        (application_id, created_at),
+    ).fetchone() is not None
+
+
+def _other_copy(conn: sqlite3.Connection, opportunity_id: str, ats: str) -> str:
     title = _title_of(conn, opportunity_id)[0] or "this role"
-    return f"This Greenhouse job already has an attempt from another saved copy of the role ({title}). Finish or release that one first."
+    return OTHER_COPY.format(ats=name_of(ats), title=title)
 
 
 def _unmatched_confirmation(conn: sqlite3.Connection, user_id: str, opportunity_id: str, company: str) -> str | None:
@@ -413,8 +516,7 @@ def _unmatched_confirmation(conn: sqlite3.Connection, user_id: str, opportunity_
         "WHERE user_id=? AND kind='application_confirmation' AND application_id='' AND received_at>=? ORDER BY received_at",
         (user_id, saved[0]),
     ).fetchall():
-        domain = str(row["sender_domain"] or "").lower()
-        if not any(domain == known or domain.endswith(f".{known}") for known in GREENHOUSE_SENDER_DOMAINS):
+        if not is_greenhouse_sender(str(row["sender_domain"] or "")):
             continue
         if set(tokens) <= set(normalized(str(row["subject"] or "")).split()):
             return str(row["received_at"])
@@ -470,8 +572,8 @@ def claim(
     """
     if mode not in MODES:
         raise ValueError(f"Unsupported mode: {mode}")
-    stamp = _stamp(now)
-    moment = _at(now)
+    stamp = stamp_now(now)
+    moment = at_utc(now)
     token = uuid4().hex
     acknowledged = tuple(dict.fromkeys(acknowledged))
     # Held from before the insert, so no recovery pass can call the new claim stale in between.
@@ -479,10 +581,14 @@ def claim(
     try:
         with conn:
             lock_user(conn, user_id)
+            # An ATS that supports one way of applying refuses the others here too, inside the transaction, not only in the runner (Lever, spec 6.1).
+            wrong_mode = claim_refusal(ats, mode)
+            if wrong_mode:
+                raise ClaimRefused(wrong_mode, code=CODE_MODE)
             if mode == "unattended" and automation.pause_guard(conn, user_id):
                 raise automation.AutomationPaused()
             application_id = actions.ensure_application_tx(
-                conn, opportunity_id, user_id, event_type="apply_agent_started", detail={"mode": mode, "run_id": run_id},
+                conn, opportunity_id, user_id, event_type="apply_agent_started", detail={"mode": mode, "run_id": run_id, "ats_name": name_of(ats)},
                 timestamp=stamp,
             )
             if retry or mode != "unattended":
@@ -491,12 +597,14 @@ def claim(
                     "WHERE user_id=? AND (application_id=? OR (ats=? AND job_ref=?)) AND after_click=0 AND state IN ('failed', 'needs_you')",
                     (stamp, user_id, application_id, ats, job_ref),
                 )
+            # Unattended mode cannot tick past an interview already in progress: the tick is the student's own decision.
+            ticked = tuple(code for code in acknowledged if not (mode == "unattended" and code == ASK_ACTIVE_AT_COMPANY))
             block = duplicate_block(
                 conn, user_id, opportunity_id=opportunity_id, ats=ats, job_ref=job_ref, company=company,
-                application_id=application_id, acknowledged=acknowledged, now=moment,
+                application_id=application_id, acknowledged=ticked, now=moment,
             )
             if block is None:
-                block = _limit_check(conn, user_id, company, board_token, mode, moment)
+                block = _limit_check(conn, user_id, company, ats, board_token, mode, moment)
                 # The company tick is for a student-started attempt; unattended mode cannot tick past it (9.1).
                 if block is not None and block.code == ASK_COMPANY_LIMIT and ASK_COMPANY_LIMIT in acknowledged and mode != "unattended":
                     block = None
@@ -554,7 +662,7 @@ def _conflict(conn: sqlite3.Connection, user_id: str, opportunity_id: str, ats: 
         ).fetchone()
         if stopped is not None:
             return ClaimRefused(STOPPED_EARLIER, code="stopped_earlier")
-    return ClaimRefused(_other_copy(conn, other["opportunity_id"]) if other else LIVE_APPLICATION, code="job" if other else "application")
+    return ClaimRefused(_other_copy(conn, other["opportunity_id"], ats) if other else LIVE_APPLICATION, code="job" if other else "application")
 
 
 def _claim_row(conn: sqlite3.Connection, token: str, user_id: str, *, lock: bool = False) -> Any:
@@ -579,7 +687,9 @@ def request_cancel(conn: sqlite3.Connection, token: str, *, user_id: str) -> boo
         ).rowcount)
 
 
-def hand_over(conn: sqlite3.Connection, token: str, *, user_id: str, now: datetime | None = None) -> bool:
+def hand_over(
+    conn: sqlite3.Connection, token: str, *, user_id: str, now: datetime | None = None, deadline: float | None = None,
+) -> bool:
     """Just before the click (submit) or inside the route that sees the student's POST (handoff): 5.2 rule 3.
 
     One transaction, after the lock and pause_guard. False, with nothing changed, when the claim is not ours as it
@@ -587,9 +697,15 @@ def hand_over(conn: sqlite3.Connection, token: str, *, user_id: str, now: dateti
     one-click claim when a pause began after the student confirmed (D6 B: the newer intent wins; a pause already on
     at the confirm does not stop it), or when the rehearsal it confirmed is 15 minutes old. Finish in browser is
     not refused by a pause: the student's own press of Submit is the confirm. When unsure, nothing is sent.
+
+    ``deadline`` is a time.monotonic() instant: the child gave up waiting for this answer then (it stamps the instant
+    into its request), so a commit after it would leave a claim 'clicking' with the POST already aborted. It is
+    compared after the lock and the claim read, immediately before the UPDATE, and a later one returns False with the
+    claim still 'claimed'. The same UPDATE clears detail.waiting, so a clicking row never says the student is still
+    working on the form.
     """
-    moment = _at(now)
-    stamp = _stamp(now)
+    moment = at_utc(now)
+    stamp = stamp_now(now)
     with conn:
         lock_user(conn, user_id)
         paused = automation.pause_guard(conn, user_id)
@@ -614,16 +730,25 @@ def hand_over(conn: sqlite3.Connection, token: str, *, user_id: str, now: dateti
             rehearsed = parse_app_instant(rehearsal["finished_at"] or rehearsal["started_at"]) if rehearsal is not None else None
             if rehearsed is None or moment - rehearsed >= CONFIRM_MAX_AGE:
                 return False
+        # The address the application goes out under is the one in the profile now. The watch reads the connected Gmail account against
+        # this, not against whatever the profile says by then (apply/watch.py ``mailbox_reason``). It is read before the deadline
+        # check, which stays the last step before the UPDATE.
+        used = address_hash(application_address(conn, user_id))
+        if deadline is not None and monotonic() > deadline:
+            return False
+        detail = {**json_as(row["detail_json"], {}), "waiting": ""}
+        if used:
+            detail["mailbox_hash"] = used
         return bool(conn.execute(
-            "UPDATE application_submit_claims SET state='clicking', after_click=1, handed_over_at=?, heartbeat_at=?, updated_at=? "
-            "WHERE token=? AND user_id=? AND state='claimed'",
-            (stamp, stamp, stamp, token, user_id),
+            "UPDATE application_submit_claims SET state='clicking', after_click=1, handed_over_at=?, heartbeat_at=?, updated_at=?, "
+            "detail_json=? WHERE token=? AND user_id=? AND state='claimed'",
+            (stamp, stamp, stamp, _dumps(detail), token, user_id),
         ).rowcount == 1)
 
 
 def heartbeat(conn: sqlite3.Connection, token: str, *, now: datetime | None = None) -> bool:
     """From every wait loop, at least every 30 seconds: this claim's run is alive (5.2 rule 4)."""
-    stamp = _stamp(now)
+    stamp = stamp_now(now)
     with conn:
         return bool(conn.execute(
             "UPDATE application_submit_claims SET heartbeat_at=? WHERE token=? AND state IN ('claimed', 'clicking')", (stamp, token),
@@ -634,18 +759,27 @@ def _watch_fields(stamp: str, watch: bool) -> tuple[str, str | None]:
     if not watch:
         return "not_watched", None
     until = parse_app_instant(stamp)
-    return "awaiting_email", _iso(until + WATCH_WINDOW) if until else None
+    return "awaiting_email", iso_utc(until + WATCH_WINDOW) if until else None
 
 
 def _settle_tx(
     conn: sqlite3.Connection, token: str, user_id: str, *, state: str, note: str, after_click: bool | None,
     submitted_at: str | None, resolved_by: str, detail: dict[str, Any] | None, confirmation_seen: bool, watch: bool, stamp: str,
+    expected_states: tuple[str, ...] | None = None,
 ) -> bool:
-    """5.2 rule 5's conditional update, inside a transaction the caller owns."""
+    """5.2 rule 5's conditional update, inside a transaction the caller owns.
+
+    ``expected_states`` names the states the caller decided from (the claim row it read): the write happens only if the
+    claim is still in one of them, so a decision made on 'claimed' never lands on a row that has since been handed over.
+    """
     if state not in ("submitted", "unconfirmed", "needs_you", "failed"):
         raise ValueError(f"A claim is settled to submitted, unconfirmed, needs_you or failed, not {state}")
     # The confirmation page is stronger evidence than a crash recovery, so it may move an unconfirmed row.
     sources = ("claimed", "clicking", "unconfirmed") if state == "submitted" and confirmation_seen else ("claimed", "clicking")
+    if expected_states is not None:
+        if not expected_states or any(item not in CLAIM_STATES for item in expected_states):
+            raise ValueError("expected_states names claim states")
+        sources = tuple(expected_states)
     sets = ["state=?", "note=?", "updated_at=?"]
     params: list[Any] = [state, note, stamp]
     if after_click is not None:
@@ -687,7 +821,7 @@ def _after_missed_settle(conn: sqlite3.Connection, token: str, user_id: str, det
             _submitted_event(conn, row["application_id"], detail, stamp)
             automation.insert_notice(
                 conn, user_id, event_key=f"apply-late-confirmation:{token}", level="warning",
-                title=f"Greenhouse showed its confirmation page for {company}, after this attempt was marked as not sent. Check it.",
+                title=LATE_CONFIRMATION.format(ats=name_of(row["ats"]), company=company),
                 body="", timestamp=stamp,
             )
     except Exception:  # noqa: BLE001 - like send_claims.settle_send_claim: a failed report never hides the result
@@ -717,7 +851,7 @@ def settle(
     apply_agent_submitted event and a notice, and this never raises. A submitted claim starts its confirmation
     email watch ('awaiting_email', for 24 hours), or is 'not_watched' when ``watch`` is False (D12).
     """
-    stamp = _stamp(now)
+    stamp = stamp_now(now)
     settled = False
     try:
         with conn:
@@ -743,7 +877,7 @@ def resolve_uncertain(
     tombstone, which still counts toward the limits and asks before the same job is tried again. Refused with
     ClaimHeldError while the claim is held: its run may still be working.
     """
-    stamp = _stamp(now)
+    stamp = stamp_now(now)
     with conn:
         lock_user(conn, user_id)
         row = _claim_row(conn, token, user_id, lock=True)
@@ -774,17 +908,21 @@ def resolve_uncertain(
     return dict(_claim_row(conn, token, user_id))
 
 
-# What settled a submission, said in the stage event and the ledger row: (event source, ledger basis, sentence).
+# The author of an event the app wrote on its own (a settle after a crash, a recovery): the timeline says "The app, on its own".
+APP_SOURCE = "apply_agent:watch"
+
+# What settled a submission, said in the stage event and the ledger row: (event source, ledger basis, sentence with {ats}).
 _SETTLED_BY = {
-    "page": ("apply_agent:confirmation_page", "confirmation_page", "Greenhouse showed its confirmation page"),
-    "email": ("apply_agent:confirmation_email", "confirmation_email", "Greenhouse's confirmation email arrived"),
+    "page": ("apply_agent:confirmation_page", "confirmation_page", "{ats} showed its confirmation page"),
+    "email": ("apply_agent:confirmation_email", "confirmation_email", "{ats}'s confirmation email arrived"),
     "student": ("apply_agent:student_confirmed", "student_confirmed", "you said it went through"),
 }
 
 
 def _settled_by(row: Any) -> tuple[str, str, str]:
     """How this claim's submission was established, from resolved_by. A claim settled without one had the page."""
-    return _SETTLED_BY.get(row["resolved_by"], _SETTLED_BY["page"])
+    source, basis, how = _SETTLED_BY.get(row["resolved_by"], _SETTLED_BY["page"])
+    return source, basis, how.format(ats=name_of(row["ats"]))
 
 
 def record_stage(
@@ -798,7 +936,7 @@ def record_stage(
     event's source says what settled the submission (the page, the email, or the student) unless one is passed.
     True when the stage was settled one way or the other (stage_recorded is now 1).
     """
-    stamp = _stamp(now)
+    stamp = stamp_now(now)
     row = _claim_row(conn, token, user_id)
     if row is None or row["state"] != "submitted" or row["stage_recorded"]:
         return False
@@ -867,16 +1005,27 @@ def create_run(
     page_url: str,
     company: str,
     deadline_seconds: int,
-    adapter_version: str = ADAPTER_VERSION,
+    adapter_version: str,
     application_id: str | None = None,
     claim_token: str = "",
+    run_id: str | None = None,
+    evidence: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> str:
-    """The row of a run that has started (lookups and rehearsals have no application: they are keyed by opportunity)."""
+    """The row of a run that has started (lookups and rehearsals have no application: they are keyed by opportunity).
+
+    ``run_id`` is given when the claim was made first and carries it (claim(run_id=...)): the runner mints the id, takes
+    the claim, and only then makes the row, so a refused start leaves neither. It must be ``run-`` and 32 hex characters.
+    ``evidence`` is what is known before the agent has said anything (a Lever run the app will attach the résumé for says so, so a crash before
+    the window is ready cannot lose it).
+    """
     if kind not in RUN_KINDS:
         raise ValueError(f"Unsupported run kind: {kind}")
-    stamp = _stamp(now)
-    run_id = f"run-{uuid4().hex}"
+    stamp = stamp_now(now)
+    if run_id is None:
+        run_id = f"run-{uuid4().hex}"
+    elif not RUN_ID.fullmatch(run_id):
+        raise ValueError("A run id is run- and 32 hex characters")
     with conn:
         conn.execute(
             """
@@ -885,8 +1034,10 @@ def create_run(
             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)
             """,
             (run_id, user_id, opportunity_id, application_id, claim_token, kind, started_by, ats, adapter_version, company, board_token,
-             page_url, stamp, _iso(parse_app_instant(stamp) + timedelta(seconds=deadline_seconds)), stamp),
+             page_url, stamp, iso_utc(parse_app_instant(stamp) + timedelta(seconds=deadline_seconds)), stamp),
         )
+        if evidence:
+            conn.execute("UPDATE apply_runs SET evidence_json=? WHERE id=?", (_dumps(evidence), run_id))
     return run_id
 
 
@@ -906,10 +1057,24 @@ def link_run(conn: sqlite3.Connection, *, user_id: str, run_id: str, token: str)
     return bool(run and claim)
 
 
+def add_run_evidence(conn: sqlite3.Connection, run_id: str, extra: dict[str, Any]) -> bool:
+    """Put these keys into the evidence of a run that is still running, keeping what is there. True when the run was found running.
+
+    For something the window learned after it was ready and that must survive the app stopping before the run has a result: a file the student
+    attached in the window (the ATS holds it from then on, and recovery must not say "Nothing was sent").
+    """
+    with conn:
+        row = conn.execute("SELECT evidence_json FROM apply_runs WHERE id=? AND status='running'", (run_id,)).fetchone()
+        if row is None:
+            return False
+        evidence = {**json_as(row["evidence_json"], {}), **extra}
+        return bool(conn.execute("UPDATE apply_runs SET evidence_json=? WHERE id=? AND status='running'", (_dumps(evidence), run_id)).rowcount)
+
+
 def heartbeat_run(conn: sqlite3.Connection, run_id: str, *, now: datetime | None = None) -> bool:
     with conn:
         return bool(conn.execute(
-            "UPDATE apply_runs SET heartbeat_at=? WHERE id=? AND status='running'", (_stamp(now), run_id),
+            "UPDATE apply_runs SET heartbeat_at=? WHERE id=? AND status='running'", (stamp_now(now), run_id),
         ).rowcount)
 
 
@@ -941,7 +1106,7 @@ def finish_run(
     """Finish a running run: outcome, whether the rehearsal was clean, and any of reasons, plan, options, screenshots,
     refused, requests, evidence (JSON documents; never a field value). False if it had already finished."""
     with conn:
-        return _finish_run_tx(conn, run_id, outcome=outcome, clean=clean, plan_hash=plan_hash, stamp=_stamp(now), **documents)
+        return _finish_run_tx(conn, run_id, outcome=outcome, clean=clean, plan_hash=plan_hash, stamp=stamp_now(now), **documents)
 
 
 def get_run(conn: sqlite3.Connection, run_id: str, *, user_id: str) -> dict[str, Any] | None:
@@ -968,16 +1133,33 @@ def record_result(
     requests: list[dict[str, Any]] | None = None,
     refused: list[dict[str, Any]] | None = None,
     event_detail: dict[str, Any] | None = None,
+    plan: list[dict[str, Any]] | None = None,
+    plan_hash: str | None = None,
+    detail: dict[str, Any] | None = None,
+    notify: bool = True,
+    expected_states: tuple[str, ...] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """6.15: settle the claim and finish the run in one transaction, then the stage change and the notice.
 
-    Returns {"settled", "stage_recorded"}. The stage moves only on 'submitted', by the claim's stage_policy, and
-    only forward (record_stage). A result that arrives for a claim no longer ours (released meanwhile) is not
-    applied to it; after a seen confirmation page it is still reported (settle). Notices carry no field values.
+    Returns {"settled", "stage_recorded"} (and "state_now", the claim's state, when it was not settled). The stage moves only on 'submitted', by the claim's
+    stage_policy, and only forward (record_stage). A result that arrives for a claim no longer ours (released
+    meanwhile) is not applied to it; after a seen confirmation page it is still reported (settle). Notices carry no
+    field values.
+
+    Finish in browser adds, all optional: ``plan`` and ``plan_hash`` (stored on the run), ``detail`` (merged into the
+    claim's detail; {"waiting": ""} clears the student's-turn flag), ``notify=False`` (the student's own Stop or
+    closed window writes no notice) and ``expected_states``: the claim states the caller decided from. When the claim
+    has moved on since (a crash recovery, another process), nothing is written to the claim or the run and the answer
+    is {"settled": False, "state_now": <its state>}, so the caller decides again from what is there now.
+
+    An attempt that may have reached Greenhouse (the claim ends 'unconfirmed', or 'needs_you'/'failed' with after_click
+    set on the row) leaves an apply_agent_unconfirmed event in the same transaction (10.5), decided from the row as it
+    is after the settle, so a result that says after_click=None on a row that already has 1 still writes it.
     """
-    stamp = _stamp(now)
+    stamp = stamp_now(now)
     settled = False
+    state_now = ""
     # Only a submission whose confirmation page was seen was settled by the page (5.2, 6.14). A stop for the
     # student, a failure or an uncertain attempt is settled by no one yet: only the email or the student resolves it.
     resolved_by = "page" if state == "submitted" and confirmation_seen else ""
@@ -986,32 +1168,77 @@ def record_result(
             lock_user(conn, user_id)
             settled = _settle_tx(
                 conn, token, user_id, state=state, note=note, after_click=after_click, submitted_at=submitted_at,
-                resolved_by=resolved_by, detail=None, confirmation_seen=confirmation_seen, watch=watch, stamp=stamp,
+                resolved_by=resolved_by, detail=detail, confirmation_seen=confirmation_seen, watch=watch, stamp=stamp,
+                expected_states=expected_states,
             )
-            if run_id:
-                _finish_run_tx(
-                    conn, run_id, outcome=outcome, clean=False, plan_hash=None, stamp=stamp, reasons=reasons or [],
-                    evidence=evidence, screenshots=screenshots, requests=requests, refused=refused,
-                )
             row = _claim_row(conn, token, user_id)
+            state_now = str(row["state"]) if row is not None else ""
+            # Without expected_states the run is finished whatever became of the claim (a released claim, M5a); with it,
+            # a claim that moved is left to the caller's second decision, and its run stays running until then.
+            if run_id and (settled or expected_states is None):
+                _finish_run_tx(
+                    conn, run_id, outcome=outcome, clean=False, plan_hash=plan_hash, stamp=stamp, reasons=reasons or [],
+                    evidence=evidence, screenshots=screenshots, requests=requests, refused=refused, plan=plan,
+                )
             if settled and state == "submitted":
                 _submitted_event(conn, row["application_id"], event_detail, stamp)
+            if settled and (state == "unconfirmed" or (state in ("needs_you", "failed") and row["after_click"])):
+                actions.log_application_event(
+                    conn, row["application_id"], "apply_agent_unconfirmed", None, stamp,
+                    encoded=_dumps({"run_id": run_id or row["run_id"], "mode": row["mode"], "state": state, "note": note, "source": APP_SOURCE}),
+                )
     finally:
         forget(token)
     if not settled:
         if state == "submitted" and confirmation_seen:
             _after_missed_settle(conn, token, user_id, event_detail, stamp)
-        return {"settled": False, "stage_recorded": False}
+        return {"settled": False, "stage_recorded": False, "state_now": state_now}
     stage_recorded = record_stage(conn, token, user_id=user_id, now=now) if state == "submitted" else False
-    title, company = _title_of(conn, row["opportunity_id"])
-    if state == "submitted":
-        text = f"Greenhouse showed its confirmation page for your application to {title} at {company}"
-    elif state == "unconfirmed":
-        text = f"{company}: your application may or may not have gone through"
-    else:
-        text = f"{company}: your application needs you"
-    automation.notice(conn, user_id, event_key=f"apply-result:{token}:{state}", level="info" if state == "submitted" else "warning", title=text)
+    if notify:
+        title, company = _title_of(conn, row["opportunity_id"])
+        if state == "submitted":
+            text = RESULT_SUBMITTED.format(ats=name_of(row["ats"]), title=title, company=company)
+        elif state == "unconfirmed":
+            text = f"{company}: your application may or may not have gone through"
+        else:
+            text = f"{company}: your application needs you"
+        automation.notice(conn, user_id, event_key=f"apply-result:{token}:{state}", level="info" if state == "submitted" else "warning", title=text)
     return {"settled": True, "stage_recorded": stage_recorded}
+
+
+def record_handoff_ready(
+    conn: sqlite3.Connection, *, user_id: str, run_id: str, token: str, plan: list[dict[str, Any]], plan_hash: str,
+    screenshots: list[dict[str, Any]], evidence: dict[str, Any], handoff_until: str = "", now: datetime | None = None,
+) -> bool:
+    """The form is filled and the student's turn begins: store what the page shows for it, in one transaction.
+
+    The run gets the plan the agent actually filled (value-free), the filled picture and the evidence (what is left for
+    the student); the claim gets that plan's hash and detail.waiting = 'student' (the card says Your turn) with the
+    time the window closes. True only when both rows matched: the run is still running and the claim still 'claimed'.
+    """
+    stamp = stamp_now(now)
+    with conn:
+        lock_user(conn, user_id)
+        claim = conn.execute(
+            "SELECT detail_json FROM application_submit_claims WHERE token=? AND user_id=? AND state='claimed'", (token, user_id),
+        ).fetchone()
+        if claim is None:
+            return False
+        ran = conn.execute(
+            "UPDATE apply_runs SET plan_json=?, plan_hash=?, screenshots_json=?, evidence_json=?, heartbeat_at=? "
+            "WHERE id=? AND user_id=? AND status='running'",
+            (_dumps(plan), plan_hash, _dumps(screenshots), _dumps(evidence), stamp, run_id, user_id),
+        ).rowcount
+        if not ran:
+            return False
+        detail = {**json_as(claim["detail_json"], {}), "waiting": "student"}
+        if handoff_until:
+            detail["handoff_until"] = handoff_until
+        return bool(conn.execute(
+            "UPDATE application_submit_claims SET plan_hash=?, detail_json=?, heartbeat_at=?, updated_at=? "
+            "WHERE token=? AND user_id=? AND state='claimed'",
+            (plan_hash, _dumps(detail), stamp, stamp, token, user_id),
+        ).rowcount)
 
 
 # --- Reviews, the rehearsal gate and its breaker ------------------------------------------
@@ -1044,7 +1271,7 @@ def mark_review(
     """
     if verdict not in ("right", "wrong"):
         raise ValueError("A run is marked right or wrong")
-    stamp = _stamp(now)
+    stamp = stamp_now(now)
     tripped = False
     with conn:
         lock_user(conn, user_id)
@@ -1077,7 +1304,6 @@ def mark_review(
 
 # --- Crash recovery -----------------------------------------------------------------------
 
-_STOPPED_BEFORE = "The app stopped before handing your application to Greenhouse. Nothing was sent."
 _STOPPED_DURING = "The app stopped while submitting. Check whether it arrived."
 
 
@@ -1091,7 +1317,7 @@ def recover_stale(conn: sqlite3.Connection, now: datetime | None = None, *, user
     'unconfirmed' when its claim was handed over) with a notice. Never touches an attempt that is already uncertain:
     only the confirmation email or the student settles those.
     """
-    moment = _at(now)
+    moment = at_utc(now)
     scope, args = ("AND user_id=?", (user_id,)) if user_id else ("", ())
     counts = {"failed": 0, "unconfirmed": 0, "stage_retried": 0, "runs_failed": 0}
     for row in conn.execute(
@@ -1099,13 +1325,39 @@ def recover_stale(conn: sqlite3.Connection, now: datetime | None = None, *, user
     ).fetchall():
         if claim_held(row, now=moment):
             continue
-        stopped = row["state"] == "claimed"
+        # A 'claimed' claim whose settlement was decided as "may have been sent" and could not be written is settled that way, with the
+        # note decided then: the window was never confirmed closed, or a request passed. Never as "Nothing was sent".
+        # A mark kept for a claim that turned out to be 'clicking' (the claim could not be read when it was made) is dropped unused: that
+        # state is settled as unconfirmed anyway.
+        # The mark is only read here and used up after the write is committed: a write that fails (the database is busy) must leave it in
+        # place, or the next pass would settle the claim as "Nothing was sent", which the run had decided it could not say.
+        decided = peek_unconfirmed(row["token"])
+        if row["state"] != "claimed":
+            decided = None
+        stopped = row["state"] == "claimed" and decided is None
+        note = STOPPED_BEFORE.format(ats=name_of(row["ats"])) if stopped else (decided or _STOPPED_DURING)
+        if stopped:
+            # Lever holds the file once it is attached: "Nothing was sent" is not the whole truth, and a run that died before its window was
+            # ready may have attached it without anyone recording that it did.
+            seen = _run_resume_state(conn, row["run_id"])
+            if seen:
+                note = with_resume_note(note, name_of(row["ats"]), sure=seen == "sent")
         with conn:
             lock_user(conn, row["user_id"])
+            fresh = conn.execute("SELECT detail_json FROM application_submit_claims WHERE token=?", (row["token"],)).fetchone()
+            detail = {**json_as(fresh["detail_json"] if fresh else "", {}), "waiting": ""}
             changed = conn.execute(
-                "UPDATE application_submit_claims SET state=?, note=?, updated_at=? WHERE token=? AND state=?",
-                ("failed" if stopped else "unconfirmed", _STOPPED_BEFORE if stopped else _STOPPED_DURING, _stamp(now), row["token"], row["state"]),
+                "UPDATE application_submit_claims SET state=?, note=?, updated_at=?, detail_json=?, after_click=CASE WHEN ? = 1 THEN 1 ELSE after_click END "
+                "WHERE token=? AND state=?",
+                ("failed" if stopped else "unconfirmed", note, stamp_now(now), _dumps(detail), 0 if stopped else 1, row["token"], row["state"]),
             ).rowcount
+            if changed and not stopped:
+                # Written with the UPDATE, so a student who sees may-have-been-sent also finds it on the timeline (10.5).
+                actions.log_application_event(
+                    conn, row["application_id"], "apply_agent_unconfirmed", None, stamp_now(now),
+                    encoded=_dumps({"run_id": row["run_id"], "mode": row["mode"], "state": "unconfirmed", "note": note, "by": "recovery", "source": APP_SOURCE}),
+                )
+        take_unconfirmed(row["token"])      # committed: the claim says it now (or another writer settled it, and the mark has no use)
         if not changed:
             continue
         counts["failed" if stopped else "unconfirmed"] += 1
@@ -1121,7 +1373,7 @@ def recover_stale(conn: sqlite3.Connection, now: datetime | None = None, *, user
     ).fetchall():
         if record_stage(conn, row["token"], user_id=row["user_id"], now=now):
             counts["stage_retried"] += 1
-    stale = _iso(moment - HELD_HEARTBEAT)
+    stale = iso_utc(moment - HELD_HEARTBEAT)
     for run in conn.execute(
         f"SELECT * FROM apply_runs WHERE status='running' AND heartbeat_at<? {scope} ORDER BY started_at", (stale, *args),
     ).fetchall():
@@ -1135,8 +1387,12 @@ def recover_stale(conn: sqlite3.Connection, now: datetime | None = None, *, user
         if any(item["state"] in ("claimed", "clicking") and claim_held(item, now=moment) for item in claims):
             continue  # its attempt is still being worked: only the run's own heartbeat went quiet
         outcome, body = _stopped_run(run["kind"], claims)
+        if outcome == "failed":
+            seen = _evidence_resume_state(json_as(run["evidence_json"], {}))
+            if seen:
+                body = with_resume_note(body, name_of(run["ats"]), sure=seen == "sent")
         with conn:
-            done = _finish_run_tx(conn, run["id"], outcome=outcome, clean=False, plan_hash=None, stamp=_stamp(now),
+            done = _finish_run_tx(conn, run["id"], outcome=outcome, clean=False, plan_hash=None, stamp=stamp_now(now),
                                   reasons=["The app stopped during this run"])
         if done:
             counts["runs_failed"] += 1
@@ -1145,6 +1401,21 @@ def recover_stale(conn: sqlite3.Connection, now: datetime | None = None, *, user
                 title="The app stopped during an Apply for me run", body=body,
             )
     return counts
+
+
+def _evidence_resume_state(evidence: Any) -> str:
+    """"sent" when the evidence says the ATS holds the student's résumé, "maybe" when the app was to attach it and nothing says it did, else ""."""
+    if resume_with_ats(evidence):
+        return "sent"
+    return "maybe" if resume_may_be_with_ats(evidence) else ""
+
+
+def _run_resume_state(conn: sqlite3.Connection, run_id: str | None) -> str:
+    """``_evidence_resume_state`` of a run's stored evidence ("" for no run)."""
+    if not run_id:
+        return ""
+    found = conn.execute("SELECT evidence_json FROM apply_runs WHERE id=?", (run_id,)).fetchone()
+    return "" if found is None else _evidence_resume_state(json_as(found["evidence_json"], {}))
 
 
 def _stopped_run(kind: str, claims: list[Any]) -> tuple[str, str]:
@@ -1166,14 +1437,16 @@ def students_to_watch(conn: sqlite3.Connection, now: datetime | None = None) -> 
     """The students the worker's apply step works for, whether or not Apply for me is on (5.6).
 
     A claim in 'claimed' or 'clicking'; an uncertain attempt or a tombstone handed over in the last 14 days; a
-    submitted claim still being watched (or whose stage is not recorded yet); or a run still 'running'.
+    submitted claim still being watched, however old (the watch ends one past its 14 days as not watched), or whose
+    stage is not recorded yet; or a run still 'running'.
     """
-    since = _iso(_at(now) - timedelta(days=WATCH_DAYS))
+    since = iso_utc(at_utc(now) - timedelta(days=WATCH_DAYS))
     rows = conn.execute(
         """
         SELECT user_id FROM application_submit_claims WHERE state IN ('claimed', 'clicking')
            OR (handed_over_at>=? AND (state IN ('unconfirmed', 'released') OR (state IN ('needs_you', 'failed') AND after_click=1)))
-           OR (state='submitted' AND ((verification IN ('awaiting_email', 'no_email_24h') AND submitted_at>=?)
+           OR (state='submitted' AND (verification='awaiting_email'
+                                      OR (verification='no_email_24h' AND submitted_at>=?)
                                       OR (stage_recorded=0 AND stage_policy IN ('record', 'ledger'))))
         UNION SELECT user_id FROM apply_runs WHERE status='running'
         ORDER BY user_id
@@ -1183,14 +1456,19 @@ def students_to_watch(conn: sqlite3.Connection, now: datetime | None = None) -> 
     return [str(row[0]) for row in rows]
 
 
-def run_worker_step(conn: sqlite3.Connection, *, apply_root: Path | None = None, now: datetime | None = None) -> dict[str, Any]:
+def run_worker_step(
+    conn: sqlite3.Connection, *, apply_root: Path | None = None, now: datetime | None = None,
+    watch: Callable[[sqlite3.Connection, str, datetime | None], dict[str, int]] | None = None,
+) -> dict[str, Any]:
     """The AutomationWorker's apply step (5.6): independent of every switch.
 
     For each student students_to_watch returns, recover_stale (a student who turned Apply for me off still gets their
-    open claims finished). Once per local day, for every student, purge_evidence when an ``apply_root`` is given.
-    One student's failure is recorded (apply_agent.runner) and never stops the next.
+    open claims finished), then ``watch`` (apply_watch.watch, passed by the AutomationWorker; run_worker_step cannot
+    import it, since the watch imports this module). Once per local day, for every student, purge_evidence when an
+    ``apply_root`` is given. One student's failure is recorded (apply_agent.runner, or apply_agent.watch for the
+    watch) and never stops the next.
     """
-    report: dict[str, Any] = {"recovered": {}, "purged": []}
+    report: dict[str, Any] = {"recovered": {}, "purged": [], "watched": {}}
     for user_id in students_to_watch(conn, now):
         try:
             counts = recover_stale(conn, now, user_id=user_id)
@@ -1198,19 +1476,33 @@ def run_worker_step(conn: sqlite3.Connection, *, apply_root: Path | None = None,
             LOGGER.exception("Apply for me recovery failed for one student")
             _rollback(conn)
             _record_runner(conn, user_id, ok=False, error=exc)
+        else:
+            if any(counts.values()):
+                report["recovered"][user_id] = counts
+            _record_runner(conn, user_id, ok=True)
+        # The watch runs whether or not recovery did: one claim that keeps failing to recover must not stop the others
+        # from being watched (5.6 names them as two steps).
+        if watch is None:
             continue
-        if any(counts.values()):
-            report["recovered"][user_id] = counts
-        _record_runner(conn, user_id, ok=True)
+        try:
+            seen = watch(conn, user_id, now)
+        except Exception as exc:  # noqa: BLE001 - recorded, and the next student still runs
+            LOGGER.exception("The Apply for me confirmation watch failed for one student")
+            _rollback(conn)
+            _record_runner(conn, user_id, ok=False, error=exc, component=WATCH_COMPONENT)
+            continue
+        if any(seen.values()):
+            report["watched"][user_id] = seen
+        _record_runner(conn, user_id, ok=True, component=WATCH_COMPONENT)
     if apply_root is not None:
         for row in conn.execute("SELECT id FROM users ORDER BY id").fetchall():
             user_id = str(row[0])
             try:
-                if _purged_today(conn, user_id, _at(now)):
+                if _purged_today(conn, user_id, at_utc(now)):
                     continue
                 purge_evidence(conn, now=now, apply_root=apply_root, user_id=user_id)
                 with conn:
-                    put_setting(conn, user_id, PURGE_LAST_RUN_KEY, _iso(_at(now)), _stamp(now))
+                    put_setting(conn, user_id, PURGE_LAST_RUN_KEY, iso_utc(at_utc(now)), stamp_now(now))
                 report["purged"].append(user_id)
                 _record_runner(conn, user_id, ok=True, component=RETENTION_COMPONENT)
             except Exception as exc:  # noqa: BLE001
@@ -1274,11 +1566,11 @@ def purge_evidence(
     old. Only files inside ``apply_root`` are ever deleted, and never anything directly in it (the hash key lives
     there). ``user_id`` limits it to one student's rows and folder.
     """
-    moment = _at(now)
+    moment = at_utc(now)
     root = apply_root.resolve()
     scope, args = ("AND user_id=?", (user_id,)) if user_id else ("", ())
     counts = {"apply_screenshots_removed": 0, "apply_orphan_files_removed": 0, "apply_progress_trimmed": 0}
-    old = _iso(moment - timedelta(days=evidence_days()))
+    old = iso_utc(moment - timedelta(days=evidence_days()))
     for row in conn.execute(
         f"SELECT id, screenshots_json FROM apply_runs WHERE started_at<? AND screenshots_json<>'[]' {scope}", (old, *args),
     ).fetchall():
@@ -1301,7 +1593,7 @@ def purge_evidence(
                 conn.execute("UPDATE apply_runs SET screenshots_json=? WHERE id=?", (_dumps(shots), row["id"]))
             counts["apply_screenshots_removed"] += removed
     counts["apply_orphan_files_removed"] = _remove_orphans(conn, root, user_id, now)
-    trim = _iso(moment - timedelta(days=PROGRESS_KEEP_DAYS))
+    trim = iso_utc(moment - timedelta(days=PROGRESS_KEEP_DAYS))
     for row in conn.execute(
         f"SELECT id, progress_json FROM apply_runs WHERE status='finished' AND started_at<? AND progress_json<>'[]' {scope}", (trim, *args),
     ).fetchall():
@@ -1321,14 +1613,18 @@ def _remove_orphans(conn: sqlite3.Connection, root: Path, user_id: str | None, n
     # Read the working runs first: one that records its screenshots and finishes between the two reads is then in
     # 'referenced' (read second) and cannot fall in neither set. A file made moments ago is left as well; a crash
     # orphan is old by definition.
-    working = {str(row[0]) for row in conn.execute("SELECT id FROM apply_runs WHERE status='running'").fetchall()}
+    working_rows = conn.execute("SELECT id, user_id, opportunity_id FROM apply_runs WHERE status='running'").fetchall()
+    working = {str(row[0]) for row in working_rows}
+    # A run makes its folder before it starts and puts nothing in it until its picture, minutes later, and the agent never makes the
+    # folder again: the folder of a role with a run working is not removed while it is empty.
+    busy_folders = {(user_folder(str(row[1])), opportunity_folder(str(row[2]))) for row in working_rows}
     referenced: set[Path] = set()
     for row in conn.execute("SELECT screenshots_json FROM apply_runs WHERE screenshots_json<>'[]'").fetchall():
         for shot in json_as(row["screenshots_json"], []):
             stored = str(shot.get("path") or "") if isinstance(shot, dict) else ""
             if stored:
                 referenced.add(_screenshot_file(root, stored).resolve())
-    fresh = (_at(now) - HELD_HEARTBEAT).timestamp()
+    fresh = (at_utc(now) - HELD_HEARTBEAT).timestamp()
     removed = 0
     for folder in folders:
         if not folder.is_dir():
@@ -1336,7 +1632,8 @@ def _remove_orphans(conn: sqlite3.Connection, root: Path, user_id: str | None, n
         for path in sorted(folder.rglob("*"), reverse=True):
             if path.is_dir():
                 try:
-                    path.rmdir()  # only if it is empty now
+                    if (folder.name, path.name) not in busy_folders or path.parent != folder:
+                        path.rmdir()  # only if it is empty now
                 except OSError:
                     pass
                 continue
@@ -1475,14 +1772,14 @@ def set_ats_label(
     conn: sqlite3.Connection, user_id: str, field: str, label: str, *, ats: str = ATS_GREENHOUSE, now: datetime | None = None,
 ) -> dict[str, str]:
     """Save the exact text of the option the student picked for a typeahead list. Replaces an earlier one."""
-    from .policy import ALLOWED_ATS_LABEL_FIELDS
+    from .policy import label_fields_for
 
-    if field not in ALLOWED_ATS_LABEL_FIELDS:
+    if field not in label_fields_for(ats):
         raise ValueError(f"Unknown option list: {field}")
     text = " ".join(str(label or "").split())
     if not text or len(text) > 200:
         raise ValueError("An option label is 1 to 200 characters")
-    stamp = _stamp(now)
+    stamp = stamp_now(now)
     with conn:
         conn.execute(
             "INSERT INTO apply_ats_labels(user_id, ats, field, label, confirmed_at) VALUES(?, ?, ?, ?, ?) "

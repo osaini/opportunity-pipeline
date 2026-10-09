@@ -122,7 +122,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
         | _pkg("outreach", ". contact_names replies")
         | _pkg("opportunities", ".")
         | _pkg("applications", ".")
-        | _pkg("apply", ".")
+        | _pkg("apply", ". agent_types runner_child")
         | _pkg("automation", ".")
         | _pkg("student", ".")
         | _pkg("accounts", ".")
@@ -137,7 +137,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
     # L3 domain.
     3: (
         _pkg("applications", "actions extension")
-        | _pkg("apply", "checks claims classify greenhouse policy sensitive schema_client sessions")
+        | _pkg("apply", "ats checks claims classify greenhouse lever lever_form policy sensitive schema_client sessions")
         | _pkg("automation", "ledger health notifications")
         | _pkg("accounts", "auth employer dossier")
         | _pkg("opportunities", "boards captures market early_programs ingestion purge")
@@ -152,7 +152,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
     # L4 workflows. opportunities.refresh is the manual refresh/purge workflow run in a background thread; api (L5) is its only importer.
     4: (
         _pkg("applications", "inbox mail_rules urgent monitored_events")
-        | _pkg("apply", "runs preflight")
+        | _pkg("apply", "runs preflight watch security_code agent lever_adapter runner")
         | _pkg("automation", "background inbox_watcher internal handlers triage desktop_notify")
         | _pkg("accounts", "operations backups")
         | _pkg("opportunities", "refresh")
@@ -160,7 +160,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
         | _pkg(
             "outreach",
             "gmail gmail_sends delivery inbox labels schedule thank_you reply_senders automation recontact review call_prep "
-            "call_questions forms discovery research quote_check drafting interviewer email_search locate company_profile settings",
+            "call_questions forms discovery research quote_check drafting draft_location interviewer email_search locate company_profile settings",
         )
     ),
     # L5 entry points: the top-level commands and the composition root (api, bootstrap, launch, worker, daily, migrate, ops_cli,

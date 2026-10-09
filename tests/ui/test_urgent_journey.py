@@ -308,7 +308,7 @@ def test_application_cards_dedupe_chips_and_flag_missed_follow_ups(owner_page):
     card = owner_page.locator(".application-card").first
     labels = [text.strip().casefold() for text in card.locator(".application-facts .chip").all_inner_texts()]
     assert len(labels) == len(set(labels)), f"duplicate chips: {labels}"
-    # The fixture's follow-up date (Aug 16, 2026) is in the past.
+    # The fixture's follow-up date (about six weeks before today: helpers_platform.FIXTURE_AS_OF) is in the past.
     expect(card.locator(".chip.is-warning", has_text="Overdue follow-up")).to_have_count(1)
     expect(owner_page.locator(".tracker-summary .chip", has_text="overdue")).not_to_have_text("0 overdue")
 

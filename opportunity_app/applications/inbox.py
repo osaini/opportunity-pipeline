@@ -123,7 +123,10 @@ and was not reset since the pass began (note_off); a pass that finds it was
 stops there, so it never writes back a cursor that turning the switch on again
 would take for its own. A database that is busy (locked, a deadlock) stops the
 pass with the message still queued, to be decided on the next one; only a
-message that cannot be read or decided is set aside.
+message that cannot be read or decided is set aside. A message set aside is
+read again after half an hour, then after waits that double, for 14 days
+(ERROR_RETRY_FIRST, ERROR_RETRY_UNTIL), so one that was only unlucky stops
+being an error.
 
 The breaker. One email can make a stage change, a task and a deadline; taking
 all of them back counts once (automation.register_breaker_group), and turning
@@ -196,6 +199,11 @@ AUTO_ACT_FLOOR = 0.85
 MAX_GETS_PER_PASS = 50
 MAX_LIST_PAGES = 10
 PASS_EVERY = timedelta(minutes=10)
+# A message the reader could not decide is set aside as an error and read again: first half an hour after the failure, then after a
+# wait as long as the time since the first failure (30 minutes, 1 hour, 2, 4...), until this long after the first failure. Apply for me's
+# confirmation watch pauses while an error row it may depend on is unread (apply/watch.py), so the row must clear or give up.
+ERROR_RETRY_FIRST = timedelta(minutes=30)
+ERROR_RETRY_UNTIL = timedelta(days=14)
 BACKFILL_DAYS = 60
 RECOVERY_OVERLAP = timedelta(days=1)
 DATE_GAP_LIMIT = timedelta(hours=48)
@@ -243,6 +251,8 @@ class Outcome:
     event_id: str = ""
     action_id: str = ""
     counts: dict[str, int] = field(default_factory=dict)
+    # Whether Gmail vouched for the sender (mail_trust.authenticate). Recorded as application_mail_messages.sender_verified.
+    verified: bool = False
 
 
 def _is_candidate(conn: sqlite3.Connection, user_id: str, mail: Mail) -> bool:
@@ -515,7 +525,7 @@ def plan(
 
 
 def _job_link(mail: Mail) -> str:
-    """A job posting link from the email for the capture form: host and path only, and a Greenhouse job id."""
+    """A job posting link from the email for the capture form: host and path only (a Lever or Ashby posting's uuid is in the path), and a Greenhouse job id."""
     for link in mail.links:
         ids = job_ids(link)
         if not ids:
@@ -597,6 +607,7 @@ def decide(
     kind = acting_label(classification)
     if kind not in ACTIONABLE:
         return Outcome("done", classification.label, linked, match.tier)
+    auth = mail_trust.authenticate(mail.message)
     if kind == "offer":
         # Always, whatever the match and the stage: the most consequential email never passes quietly.
         automation.notice(
@@ -604,8 +615,7 @@ def decide(
             title=f"{match.company or named_company(mail) or 'A company'} may have sent an offer", body="Open Automation to review it.",
         )
     if automation.paused(conn, user_id):
-        return Outcome("awaiting_resume", kind, linked, match.tier)
-    auth = mail_trust.authenticate(mail.message)
+        return Outcome("awaiting_resume", kind, linked, match.tier, verified=auth.ok)
     enabled_at = _enabled_at(sync)
     planned, common = plan(conn, user_id, mail, classification, match, auth, enabled_at=enabled_at, now=now, label=kind)
     if origin == RECLAIMED:
@@ -613,7 +623,7 @@ def decide(
     # Made only when there is something for the card: a change, or an email no application matched.
     existing_event = _event_id(conn, user_id, mail.gmail_id)
     event_id = existing_event or f"event-{uuid4().hex}"
-    outcome = Outcome("done", kind, linked, match.tier, "", counts={"applied": 0, "proposed": 0, "shadow": 0})
+    outcome = Outcome("done", kind, linked, match.tier, "", counts={"applied": 0, "proposed": 0, "shadow": 0}, verified=auth.ok)
     backfill = enabled_at is None or mail.received_at < enabled_at
     basis_parts = [f"classify:{classification.classified_by.get('source', 'rules')}", f"match:{match.tier}"]
     if classification.prior:
@@ -757,28 +767,31 @@ def _record_outcome(conn: sqlite3.Connection, user_id: str, mail: Mail | None, g
     with conn:
         sync = _pass_sync(conn, user_id, expect)
         keep = outcome.state not in ("skipped", "gone", "outreach", "error") and mail is not None
+        asked = outcome.state == "error" and mail is not None  # a message that was read, then failed to be decided
         conn.execute(
             """
             INSERT INTO application_mail_messages(user_id, gmail_id, thread_id, application_id, event_id, action_id, kind,
-                matched_by, state, origin, subject, sender_domain, received_at, recorded_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                matched_by, state, origin, subject, sender_domain, received_at, recorded_at, sender_verified)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, gmail_id) DO UPDATE SET application_id=excluded.application_id, event_id=excluded.event_id,
                 action_id=excluded.action_id, kind=excluded.kind, matched_by=excluded.matched_by, state=excluded.state,
-                recorded_at=excluded.recorded_at,
+                recorded_at=excluded.recorded_at, sender_verified=excluded.sender_verified,
                 thread_id=CASE WHEN ? THEN excluded.thread_id ELSE application_mail_messages.thread_id END,
                 subject=CASE WHEN ? THEN excluded.subject ELSE application_mail_messages.subject END,
                 sender_domain=CASE WHEN ? THEN excluded.sender_domain ELSE application_mail_messages.sender_domain END,
                 received_at=CASE WHEN ? THEN excluded.received_at ELSE application_mail_messages.received_at END
-            WHERE application_mail_messages.state='awaiting_resume'
+            WHERE application_mail_messages.state IN ('awaiting_resume', 'error')
             """,
             (
-                user_id, gmail_id, mail.thread_id if mail and keep else "", outcome.application_id if keep else "",
-                outcome.event_id, outcome.action_id, outcome.kind if keep else "", outcome.matched_by if keep else "",
+                user_id, gmail_id, mail.thread_id if mail and keep else "", outcome.application_id if keep or asked else "",
+                outcome.event_id, outcome.action_id, outcome.kind if keep else "", outcome.matched_by if keep or asked else "",
                 outcome.state, origin, redact(mail.subject)[:300] if mail and keep else "",
-                (mail_trust.registrable_domain(mail.sender_domain) or mail.sender_domain) if mail and keep else "",
-                mail.received_at.isoformat(timespec="seconds") if mail else (received_at or utc_now()), utc_now(),
+                (mail_trust.registrable_domain(mail.sender_domain) or mail.sender_domain) if mail and (keep or asked) else "",
+                # An error row keeps the time it was first set aside (the retry waits count from it), not the email's own date.
+                mail.received_at.isoformat(timespec="seconds") if mail and outcome.state != "error" else (received_at or utc_now()), utc_now(),
+                1 if (mail is not None and keep and outcome.verified) else 0,
                 # A row set aside unread (left to outreach, read while paused) gets what reading it found.
-                bool(mail and keep), bool(mail and keep), bool(mail and keep), mail is not None,
+                bool(mail and keep), bool(mail and keep), bool(mail and (keep or asked)), mail is not None and outcome.state != "error",
             ),
         )
         if queue:
@@ -909,6 +922,40 @@ def _rescan(
         _tally(totals, outcome)
 
 
+def _retry_errors(
+    conn: sqlite3.Connection, gmail: GmailClient, user_id: str, budget: _Budget, decisions: DecisionClient | None,
+    now: datetime, totals: dict[str, int], *, expect: Any = _ANY,
+) -> None:
+    """Read again the messages set aside as errors whose wait is over (ERROR_RETRY_FIRST, ERROR_RETRY_UNTIL).
+
+    A message that fails again keeps its first-failure ``received_at`` and gets a new ``recorded_at``, so the wait doubles. One
+    that is decided stops being an error and takes what reading it found; one Gmail no longer has is recorded as gone.
+    """
+    rows = conn.execute(
+        "SELECT gmail_id, origin, received_at, recorded_at FROM application_mail_messages WHERE user_id=? AND state='error' ORDER BY recorded_at",
+        (user_id,),
+    ).fetchall()
+    sync = None
+    for row in rows:
+        first, last = parse_app_instant(row["received_at"]), parse_app_instant(row["recorded_at"])
+        if first is None or last is None or now - first > ERROR_RETRY_UNTIL or now - last < max(ERROR_RETRY_FIRST, last - first):
+            continue
+        if _outreach_owns(conn, user_id, row["gmail_id"]):
+            _record_outcome(conn, user_id, None, row["gmail_id"], Outcome("outreach"), queue=None, origin=row["origin"], expect=expect)
+            continue
+        if not budget.take():
+            break
+        data = _fetch(gmail, row["gmail_id"])
+        if data is None:
+            _record_outcome(conn, user_id, None, row["gmail_id"], Outcome("gone"), queue=None, origin=row["origin"], expect=expect)
+            continue
+        if sync is None:
+            sync = dict(conn.execute("SELECT * FROM application_mail_sync WHERE user_id=?", (user_id,)).fetchone())
+        mail, outcome = _decide_safely(conn, user_id, data, decisions=decisions, sync=sync, origin=row["origin"], now=now)
+        _record_outcome(conn, user_id, mail, row["gmail_id"], outcome, queue=None, origin=row["origin"], expect=expect)
+        _tally(totals, outcome)
+
+
 def _decide_safely(
     conn: sqlite3.Connection, user_id: str, data: dict[str, Any], *, decisions: DecisionClient | None, sync: dict[str, Any],
     origin: str, now: datetime,
@@ -920,6 +967,7 @@ def _decide_safely(
     Its changes made so far stand, and deciding it again finishes the rest
     (the same idempotency keys).
     """
+    mail: Mail | None = None
     try:
         mail = parse_message(data)
         return mail, decide(conn, user_id, mail, decisions=decisions, sync=sync, origin=origin, now=now)
@@ -929,7 +977,17 @@ def _decide_safely(
         if is_transient_error(exc):
             raise
         LOGGER.warning("An application email could not be decided; it was set aside", exc_info=True)
-        return None, Outcome("error")
+        # A message that was read and then failed to be decided keeps the mail, so its row can say who sent it and which
+        # application it named (apply/watch.py reads both to tell whether it could be a confirmation).
+        outcome = Outcome("error")
+        if mail is not None:
+            try:
+                match = match_application(conn, user_id, mail)
+                outcome.application_id, outcome.matched_by = match.application_id, match.tier
+            except Exception as match_exc:  # noqa: BLE001 - the match is a courtesy to the row; without it the row says nothing about the mail
+                if is_transient_error(match_exc):
+                    raise
+        return mail, outcome
 
 
 def _dequeue(conn: sqlite3.Connection, user_id: str, queue: str, gmail_id: str) -> None:
@@ -1182,6 +1240,7 @@ def run_pass(
                 _reclaim(conn, user_id, expect=expect)
                 _drain(conn, gmail, user_id, "pending_ids_json", "live", budget, decisions, now, totals, expect=expect)
                 _rescan(conn, gmail, user_id, budget, decisions, now, totals, expect=expect)
+                _retry_errors(conn, gmail, user_id, budget, decisions, now, totals, expect=expect)
                 _backfill(conn, gmail, user_id, budget, decisions, now, totals, expect=expect)
         except _Reset:
             if getattr(conn, "in_transaction", False):

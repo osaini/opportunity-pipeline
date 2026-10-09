@@ -118,7 +118,7 @@ from ..core.json_values import json_dict
 from ..mail.message import FULL_TEXT_LIMIT, written_between_quotes
 from .targets import OutreachNotFoundError, log_event, get_target
 from .greeting import contact_first_name, greeting_line, greeting_style, spoken_company
-from .forms import SUBMITTED_EVENT as FORM_SUBMITTED, UNCONFIRMED_EVENT as FORM_UNCONFIRMED
+from .forms import PRESSED_EVENT as FORM_PRESSED, SUBMITTED_EVENT as FORM_SUBMITTED, UNCONFIRMED_EVENT as FORM_UNCONFIRMED
 from .replies import suggest_reply_status
 from ..student.preparation import confirmed_facts
 from ..integrations.gmail_client import GmailAuthError, GmailThrottled
@@ -187,6 +187,7 @@ DETECTION_MARGIN = timedelta(minutes=10)
 WROTE_AGAIN = "They wrote again, so the thank-you was not sent. Read their reply."
 STUDENT_WROTE = "You wrote to them after their reply, so the thank-you was not sent."
 NOT_INTERESTED_STOP = "You marked the company not interested, so the thank-you was not sent."
+APPLIED_DIRECTLY_STOP = "You marked the company applied directly, so the thank-you was not sent."
 DRAFT_STARTED = "You started a reply to them in Gmail, so the thank-you was not sent."
 SWITCHED_OFF = "Send a thank-you when someone declines was turned off before it went, so it was not sent"
 JEV_OFF = "Jev inbox suggestions was turned off before it went, so it was not sent automatically"
@@ -294,8 +295,8 @@ def sent_since(conn: sqlite3.Connection, target_id: str, user_id: str, since: da
     """Whether anything went to the company after ``since``: an email, a thank-you, a form, "I sent it", or a send under way."""
     for row in conn.execute(
         "SELECT event_type, to_status, created_at FROM outreach_events WHERE target_id=? AND user_id=? "
-        "AND event_type IN (?, ?, ?, ?, ?, 'status')",
-        (target_id, user_id, SENT_EVENT, THANK_YOU_SENT_EVENT, THANK_YOU_DRAFT_EVENT, FORM_SUBMITTED, FORM_UNCONFIRMED),
+        "AND event_type IN (?, ?, ?, ?, ?, ?, 'status')",
+        (target_id, user_id, SENT_EVENT, THANK_YOU_SENT_EVENT, THANK_YOU_DRAFT_EVENT, FORM_SUBMITTED, FORM_UNCONFIRMED, FORM_PRESSED),
     ).fetchall():
         at = parse_app_instant(row["created_at"])
         if at is None or at <= since:
@@ -812,7 +813,7 @@ def problem_now(
     if not manual and target["status"] == "paused":
         return "cancelled", "The company is marked Paused, so the thank-you was not sent"
     if not manual and target.get("not_interested_at"):
-        return "cancelled", NOT_INTERESTED_STOP
+        return "cancelled", APPLIED_DIRECTLY_STOP if target.get("set_aside_reason") == "applied_directly" else NOT_INTERESTED_STOP
     if not manual and target["status"] not in ELIGIBLE_STATUSES:
         return "cancelled", f"The company is now marked {target['status'].replace('_', ' ')}, so the thank-you was not sent"
     if target["contact_bounced"] or thank_you["to_email"].casefold() in target["bounced_addresses"] or target.get("bounced_at"):
@@ -1012,8 +1013,9 @@ def on_new_reply(conn: sqlite3.Connection, target_id: str, user_id: str) -> None
 
 
 def on_not_interested(conn: sqlite3.Connection, target_id: str, user_id: str) -> None:
-    """The student marked the company not interested: a thank-you not yet on its way stops, as on_new_reply. Inside the caller's transaction."""
-    _stop_open(conn, target_id, user_id, NOT_INTERESTED_STOP)
+    """The student set the company aside (not interested, or applied directly): a thank-you not yet on its way stops, as on_new_reply. Inside the caller's transaction."""
+    row = conn.execute("SELECT set_aside_reason FROM outreach_targets WHERE id=? AND user_id=?", (target_id, user_id)).fetchone()
+    _stop_open(conn, target_id, user_id, APPLIED_DIRECTLY_STOP if row and row[0] == "applied_directly" else NOT_INTERESTED_STOP)
 
 
 def _stop_open(conn: sqlite3.Connection, target_id: str, user_id: str, why: str) -> None:

@@ -694,8 +694,9 @@ def find_contacts(
             (None if result["mail_domain_ok"] is None else int(result["mail_domain_ok"]),
              json.dumps(company_mail_domains(result["pages"], result["domain"])), timestamp, target_id, user_id),
         )
+        found, pages = len(result["candidates"]), len(result["pages_checked"])
         log_event(conn, target_id, user_id, "contacts_searched",
-             detail=f"{len(result['candidates'])} candidates from {len(result['pages_checked'])} pages"
+             detail=f"{found} candidate{'' if found == 1 else 's'} from {pages} page{'' if pages == 1 else 's'}"
              + (" (rendered in a browser)" if result["rendered"] else ""))
     from .forms import record_contact_form
     from .company_profile import record_site_location
@@ -780,7 +781,7 @@ def apply_candidate(
     cc = ""
     if cc_candidate_id:
         cc_row = load(cc_candidate_id)
-        if cc_row["email"] and cc_row["email"] != row["email"]:
+        if cc_row["email"] and cc_row["email"].casefold() != row["email"].casefold():
             cc = cc_row["email"]
     changes: dict[str, Any] = {
         "contact_email": row["email"],

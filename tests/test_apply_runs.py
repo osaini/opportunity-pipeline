@@ -30,6 +30,7 @@ from opportunity_app.outreach.automation import AutomationWorker
 from opportunity_app.core.schema import ensure_product_schema
 from opportunity_app.core.database import connect_product
 from opportunity_app.core.timestamps import utc_now
+from opportunity_app.student.profile import update_profile
 
 from helpers_platform import build_and_migrate
 from helpers_apply import ApplyCase, BLUEFIN, USER, setUpModule, tearDownModule  # noqa: F401 (module fixtures: unittest and pytest find them here)
@@ -313,6 +314,23 @@ class HandOverTests(ApplyCase):
         self.assertEqual(_parsed(row["handed_over_at"]), self.at(1))
         self.assertFalse(apply_runs.hand_over(self.conn, token, user_id=USER, now=self.at(2)), "only a claimed attempt is handed over")
         self.assertEqual(_parsed(self.claim_row(token)["handed_over_at"]), self.at(1), "and never twice")
+
+    def test_the_hand_over_records_which_address_the_application_used(self):
+        update_profile(self.conn, {"contact": {"email": "Sam.Rivera@Example.test"}}, ["contact"], user_id=USER)
+        token = self.claimed("handoff")
+        self.assertNotIn("mailbox_hash", json.loads(self.claim_row(token)["detail_json"]), "nothing yet: it is the hand-over that fixes the address")
+        self.assertTrue(apply_runs.hand_over(self.conn, token, user_id=USER, now=self.at(1)))
+        recorded = json.loads(self.claim_row(token)["detail_json"])["mailbox_hash"]
+        self.assertEqual(recorded, apply_runs.address_hash(" sam.rivera@example.test "), "trimmed and case folded, as the app compares addresses")
+        self.assertNotIn("example.test", json.dumps(json.loads(self.claim_row(token)["detail_json"])), "a hash, never the address")
+        # Editing the profile afterwards changes nothing already recorded.
+        update_profile(self.conn, {"contact": {"email": "other@example.test"}}, ["contact"], user_id=USER)
+        self.assertEqual(json.loads(self.claim_row(token)["detail_json"])["mailbox_hash"], recorded)
+
+    def test_a_hand_over_with_no_email_in_the_profile_records_no_address(self):
+        token = self.claimed("handoff")
+        self.assertTrue(apply_runs.hand_over(self.conn, token, user_id=USER, now=self.at(1)))
+        self.assertNotIn("mailbox_hash", json.loads(self.claim_row(token)["detail_json"]))
 
     def test_it_refuses_a_token_that_is_not_ours_a_cancelled_claim_and_another_students(self):
         token = self.claimed("handoff")
@@ -682,7 +700,7 @@ class LimitTests(ApplyCase):
         self.base = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
 
     def block(self, *, mode="one_click", company=BLUEFIN, board="bluefin", now=None):
-        return apply_runs.limits_block(self.conn, USER, employer_key(company), board, mode, now or self.at())
+        return apply_runs.limits_block(self.conn, USER, employer_key(company), "greenhouse", board, mode, now or self.at())
 
     def stamp(self, minutes):
         return self.at(minutes).isoformat(timespec="microseconds")
@@ -979,7 +997,9 @@ class WorkerStepTests(ApplyCase):
             (dict(state="released", mode="handoff", handed_over_at=old, after_click=1), False),
             (dict(state="needs_you", mode="handoff", after_click=0), False),
             (dict(state="submitted", mode="handoff", handed_over_at=recent, verification="awaiting_email", submitted_at=recent, stage_recorded=1), True),
-            (dict(state="submitted", mode="handoff", handed_over_at=old, verification="awaiting_email", submitted_at=old, stage_recorded=1), False),
+            # Still awaiting its email after 14 days: the worker comes once more so the watch can end it as not watched.
+            (dict(state="submitted", mode="handoff", handed_over_at=old, verification="awaiting_email", submitted_at=old, stage_recorded=1), True),
+            (dict(state="submitted", mode="handoff", handed_over_at=old, verification="no_email_24h", submitted_at=old, stage_recorded=1), False),
             (dict(state="submitted", mode="one_click", handed_over_at=old, submitted_at=old, stage_policy="record", stage_recorded=0), True),
             (dict(state="submitted", mode="handoff", handed_over_at=old, submitted_at=old, stage_policy="ask", stage_recorded=0), False),
         ]
@@ -1103,6 +1123,30 @@ class RetentionTests(ApplyCase):
         self.assertTrue(kept.exists() and running.exists())
         self.assertEqual((apply_root / "hash-key").read_bytes(), b"k" * 32)
         self.assertTrue((elsewhere / "note.txt").exists())
+
+    def test_the_empty_folder_of_a_role_with_a_run_working_is_kept_so_its_picture_has_somewhere_to_go(self):
+        # The runner makes the folder before the run and the agent never makes it again; the daily purge must not take it mid-run.
+        apply_root = self.root / "apply"
+        working = apply_root / apply_runs.user_folder(USER) / "op-working"
+        idle = apply_root / apply_runs.user_folder(USER) / "op-idle"
+        for folder in (working, idle):
+            folder.mkdir(parents=True)
+        self.make_run(opportunity_id="op-working", started=self.at(-3))   # status 'running'
+        apply_runs.purge_evidence(self.conn, apply_root=apply_root, now=self.at())
+        self.assertTrue(working.is_dir(), "a run is working in it")
+        self.assertFalse(idle.exists(), "nothing is working in this one, and it is empty")
+        # Once that run has finished, the next purge may take the folder if nothing is in it.
+        self.conn.execute("UPDATE apply_runs SET status='finished', outcome='failed', finished_at=? WHERE opportunity_id='op-working'", (apply_runs.iso_utc(self.at()),))
+        self.conn.commit()
+        apply_runs.purge_evidence(self.conn, apply_root=apply_root, now=self.at())
+        self.assertFalse(working.exists())
+
+    def test_the_folder_name_of_a_role_is_one_plain_name_that_cannot_climb_out(self):
+        self.assertEqual(apply_runs.opportunity_folder("job-a"), "job-a")
+        self.assertEqual(apply_runs.opportunity_folder("../../etc/passwd"), "_.._etc_passwd")
+        self.assertNotIn("/", apply_runs.opportunity_folder("a/b\\c"))
+        self.assertEqual(apply_runs.opportunity_folder("..."), "role")
+        self.assertEqual(len(apply_runs.opportunity_folder("x" * 500)), 120)
 
     def test_a_file_made_moments_ago_is_left_even_when_no_run_names_it_yet(self):
         # A run can save a screenshot and finish between the two reads of the sweep; a fresh file is never a crash orphan.

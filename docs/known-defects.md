@@ -18,14 +18,15 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Mail, Gmail and inboxes | 0 | 4 | 6 | 10 |
-| Outreach drafting, research, forms and CLI | 0 | 4 | 2 | 6 |
+| Apply for me | 0 | 4 | 12 | 16 |
+| Mail, Gmail and inboxes | 0 | 4 | 8 | 12 |
+| Outreach drafting, research, forms and CLI | 0 | 8 | 4 | 12 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
 | Web API, auth and storage | 0 | 4 | 1 | 5 |
-| Scoring, scheduling and configuration | 1 | 1 | 4 | 6 |
+| Scoring, scheduling and configuration | 1 | 2 | 8 | 11 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
-| Test tooling | 0 | 0 | 3 | 3 |
-| **Total** | **1** | **22** | **21** | **44** |
+| Test tooling | 0 | 0 | 2 | 2 |
+| **Total** | **1** | **31** | **40** | **72** |
 
 ## Start here: the high-severity entries
 
@@ -109,6 +110,123 @@ The entry flagged for an owner decision is
 - **Suggested fix:** Check `chrome.permissions.contains` first, and call `request` only from the Pair click. Add a `.catch` to the startup flush.
 - **Regression suite:** `node tests/extension/run_tests.mjs` (a permissions stub that rejects without a gesture, plus a stored pending queue); confirm once in real Chrome
 
+## Apply for me
+
+The first three were left open by PR #54 (the fail-closed net) and recorded here on 2026-10-03; each was narrowed on 2026-10-08 (the lists were widened, a page's headings now count, and the chain follows every follow-up-shaped child). Apply for me never carries an answer across companies, so each can at worst affect one company's own saved answer, and the student still presses Submit (D1 B). The next three were found while building the rehearsal engine (M5a), and the next one while building Finish in browser (M5b part 2); none was fixed there. The next four were found on 2026-10-04 and 2026-10-08, and the last one on 2026-10-08 while diagnosing a kill-ordering test flake.
+
+### Agreement-shaped choices and signatures in wordings no list has still fill from a same-company saved answer
+- **Severity:** medium (PR #54 review; narrowed on 2026-10-08)
+- **Where:** `opportunity_app/apply/classify.py` `field_net()` (`_AGREEMENT_OPTION`, `_SIGNATURE`, `_SIGNED_HEADING`); `apps/extension/apply-engine.js` `AGREEMENT_OPTION`, `SIGNATURE`
+- **What happens:** A one-option select is read as a tick box, a select whose options or heading hit the agreement topic is left for the student, and a single-line text field is a signature line when its heading, or its description beside a name heading, says it signs ("By typing your name...", "electronically signing", "I certify that..."). A select that agrees in words none of those lists has ("I honour the policy", "Done" and "Not yet" for "Please indicate your compliance") or a signature line worded in an unusual way still gets no `agreement` mark, so a saved answer the student gave at the same company for another posting fills it. Nothing carries across companies, and the student still presses Submit.
+- **Suggested fix:** Keep adding wordings from real Greenhouse questions as students meet them. A word list cannot be complete; the per-company rule is what bounds a miss.
+- **Regression suite:** tests/ unittest (`test_apply_broad_net`), node tests/extension/run_tests.mjs
+
+### A grandchild of a never-storable question still gets a save form when its parent is long and does not open as a follow-up
+- **Severity:** low (PR #54 review; narrowed on 2026-10-08)
+- **Where:** `opportunity_app/apply/policy.py` `build_plan()` (`never_chain`, `follow_up_shaped`); `apps/extension/apply-engine.js` `netReadings()` (`followsNever`)
+- **What happens:** A never-storable topic runs down every follow-up-shaped child (short, a follow-up wording, or one that opens with a question word). A child of a felony question that is six or more words and does not open that way ("Please list the employer you worked for at the time of the incident") is refused in the plan, because it is filed under the felony question, but it does not pass the topic on, so its own follow-up ("Anything else") is ordinary: the Needs you view offers to save it, and the side panel offers Save on both. The plan cannot tell such a child from a long independent question that happens to sit under the parent ("Tell us about a project you are proud of"), which must not hand a topic on, so passing it on would over-block. A same-company row can fill the grandchild; nothing carries across companies.
+- **Suggested fix:** Give the schema a way to tell a continuation from an independent question (the form's own grouping), then carry what the child took into `never_chain` and the engine's chain.
+- **Regression suite:** tests/ unittest (`test_apply_broad_net`, `tests/fixtures/apply/net_chains.json`), node tests/extension/run_tests.mjs
+
+### The broad never-storable net still misses wordings no list has, and a heading covers only the questions under it
+- **Severity:** medium (PR #54 review; narrowed on 2026-10-08)
+- **Where:** `opportunity_app/apply/classify.py` `NET_TOPICS` / `net_topics()` / `NET_SECTION`; `apps/extension/apply-engine.js` `netTopics` / `inNeverSection`
+- **What happens:** The lists were widened from a fresh set of 128 never-storable wordings (criminal history, demographics, pay, security): the net missed 59 of them before and misses 11 now. Those left have no keyword to read ("Have you ever been fired?", "Do you have a record of any violations?", "Did you grow up in a rural community?", "Do you have relatives who live outside the US?"), or are immigration-status questions the precise classifier already files by category. A question under a demographic, compliance or background heading is now never storable whatever it says, but only in a run that has read the page: the engine reads the section, fieldset, region or group around each control (a heading that is a sibling of the fields, with nothing wrapped around them, is not read), and the plan takes the engine's mark from the scan. The check that drives the Needs you view reads no page, so it still offers to save such a question. A custom question under a plain heading ("Application questions") or none depends on the lists. A missed question is treated as ordinary, so the student can save its answer for that company and a later posting at the same company fills it; nothing carries across companies.
+- **Suggested fix:** Keep adding wordings from real Greenhouse questions as students meet them. A word list cannot be complete; the per-company rule is what bounds a miss.
+- **Regression suite:** tests/ unittest (`test_apply_broad_net`, `tests/fixtures/apply/broad_net.json`), node tests/extension/run_tests.mjs
+
+### A request a page makes while its window is closing skips the route handler, so a hostile script can carry a typed value to one of the allowed hosts
+- **Severity:** medium, privacy (found 2026-10-03, in the M5a recheck)
+- **Where:** `opportunity_app/apply/agent.py` `NO_SIDE_CHANNELS` (the dismissal listeners, `sendBeacon`, keepalive) and `RESOLVABLE_HOSTS`; Playwright's `Page._onRoute` (stalls every request once `page.close()` has been called) with Chromium (lets a stalled request go when the page's session ends)
+- **What happens:** Measured on Playwright 1.62's Chromium: an image, a plain fetch, an XHR, a stylesheet link, a beacon and a keepalive fetch made from a `pagehide`, `unload` or `visibilitychange` handler all reached a listener with no route handler call, with a route that refuses everything. The init script now stops that: the events never reach a page script, `sendBeacon` returns false, `keepalive` is always false, and the resolver rule lists only the hosts a rehearsal needs (not the analytics collector, my.greenhouse.io, www.google.com or the unconfirmed CAPTCHA hosts). What is left: a hostile page script that sends a request carrying a value on a timer, so that one is in flight when the window closes, still has that request released; it can only reach the names this run's own ATS uses (`ApplyAgent.run_launch_options`: for a Greenhouse run, Greenhouse's board, lookup and static hosts, fonts.googleapis.com, fonts.gstatic.com, www.recaptcha.net and www.gstatic.com; for a Lever run, Lever's two hosts, its font and logo hosts and the five hCaptcha hosts of its form, and the fonts), and the value guard refuses every one of its earlier requests. The preview's "nothing leaves the browser" is true of every request the handler judged.
+- **Suggested fix:** Take the page offline before closing it: navigate to `about:blank` and wait while the route handler is still being asked (the agent's own closes), and for a window the student closes, load the form through a proxy the agent runs that sees every request, or cut the board hosts out of the resolver rule once the form is loaded.
+- **Regression suite:** tests/test_apply_agent_browser.py (`SideChannelTests`: a page that sends one request every 20 ms with its value, closed with `page.close()`, with the listener on an allowed host name mapped to loopback)
+
+### A prerender link in a visible window loads a page of Greenhouse's own with no request the request policy sees
+- **Severity:** low (found 2026-10-03, in review of the rehearsal engine, M5a)
+- **Where:** `opportunity_app/apply/agent.py` `NO_SIDE_CHANNELS` (its speculation sweep) and `LAUNCH_ARGS` (the resolver rule)
+- **What happens:** A script on the board can add `<link rel="prerender" href="...">` after it reads a filled field. A visible Chromium (the build the app uses; the headless one ignores it) starts the load as the element is inserted, before the sweep that removes speculation rules can run, and no request reaches the route handler. The resolver rule (`resolver_rule`) means the target has to be one of this run's own ATS's hosts (for a Greenhouse run, Greenhouse's board, lookup and static hosts), so a value in the URL can reach Greenhouse and nothing else: another site, a name made up from a value and an IP address all fail inside Chromium. `<script type="speculationrules">`, the Protected Audience calls, Shared Storage and the DNS and preconnect hints are closed (`SideChannelTests`). The preview still says "the app saw nothing else you entered leave the browser" only after a lookup, and says nothing about this.
+- **Suggested fix:** A Chromium switch or profile preference that turns link prerendering off (none of `Prerender2`, `NoStatePrefetch` or `--disable-prerender` did on Playwright 1.62's Chromium; the preference `net.network_prediction_options` needs a profile directory the launcher does not take), or load the form through a proxy that sees every request.
+- **Regression suite:** tests/test_apply_agent_browser.py (a headed run that adds a prerender link to a page of the board's own host, asserting the listener hears nothing)
+
+### Apply for me's speculation sweep misses rules in a shadow root the page's HTML declares
+- **Severity:** low (found 2026-10-09, in review of the contact-form Finish in browser, PR #97, whose window had the same gap)
+- **Where:** `opportunity_app/apply/agent.py` `NO_SIDE_CHANNELS` (its speculation sweep)
+- **What happens:** The sweep removes `<script type="speculationrules">` from the document and from roots made with attachShadow. A shadow root the page's HTML declares (`<template shadowrootmode>`) is attached by the parser with no call the sweep sees, and the document's observer does not reach into it, so rules there stay, and the browser prefetches what they name with no request the route sees. The resolver rule still keeps any such address to this run's own ATS hosts, as for the prerender link above. The contact-form window (`outreach/forms.py` `CLOSE_GUARD`) walks the tree for open roots on every change and watches roots reached through ElementInternals; a closed root declared in the HTML is out of reach there too.
+- **Suggested fix:** Do as `CLOSE_GUARD` does: walk the tree for open shadow roots on every change and once the document is parsed, and watch a root a script reaches through ElementInternals.
+- **Regression suite:** tests/test_apply_agent_browser.py (a page with a declared open root holding document rules and a link rewritten from a filled field, asserting the listener hears nothing)
+
+### A second app on the same database can close the first one's running rehearsal
+- **Severity:** low (found 2026-10-03, in review of the rehearsal engine, M5a)
+- **Where:** `opportunity_app/apply/runner.py` `orphaned` and `ApplyRunner._finish`, `opportunity_app/web/routers/apply_agent.py` the cancel route, `opportunity_app/apply/runs.py` `recover_stale`
+- **What happens:** `orphaned` decides a "running" row is dead because this process holds no run of that id, on the reasoning that only this server runs rehearsals. Two servers on one database (`python -m opportunity_app.api` on another port beside the launcher's) break that: the second shows the first's live run as stopped after 15 seconds, its Stop closes the row as "The app stopped during this run", and `recover_stale` can do the same after two minutes of failed heartbeat writes. When the first run ends, its result is not stored (the runner now logs that and reports the row's outcome, not its own).
+- **Suggested fix:** Write a server instance id on the run row when it starts, and let `orphaned`, the cancel route and `recover_stale` close only rows that carry this server's id (or none).
+- **Left open on 2026-10-08 (the Apply for me hardening branch):** the id needs a new column on `apply_runs`, so a migration, and a migration number taken now would collide with the migrations other open branches add. Keeping the id in `evidence_json` instead is not safe: `record_ready` and the finish write replace the whole document while the run is going. `recover_stale` also decides by the claim's in-process hold (`claim_held`), which would need the same id. Do it with the next planned migration, as one change with the three readers.
+- **Regression suite:** tests/test_apply_runner.py (two runners on one database; the second does not close the first's running row)
+
+### The answers the student types in the Finish in browser window are not watched by the request guard
+- **Severity:** low (found 2026-10-03, review of Finish in browser, M5b part 2)
+- **Where:** `opportunity_app/apply/checks.py` `RouteState.values`, `leaked_field` and `route_decision`; `opportunity_app/apply/agent.py` `_refresh_values`
+- **What happens:** The request guard looks for the values the app planned and typed (plain, URL-encoded, base64 and escaped forms). A field the app left for the student, and any answer the student types or changes in the window, is not in that set, so a page script that sends it in a request to another address is not stopped. After the press, reads from `job-boards.greenhouse.io` and `boards.greenhouse.io` are not checked (the confirmation page loads from there); every other address still is.
+- **Suggested fix:** None that is cheap: guarding what the student types means reading the form's values in the window, which the app does not do. State it in the student-facing documents (done) and keep the boards' own addresses the only exemption.
+- **Regression suite:** tests/test_apply_checks.py (`test_in_a_handoff_a_get_to_another_host_is_guarded_after_the_press_too`)
+
+### The Greenhouse embed form is never used when a posting redirects to the company's own site
+- **Severity:** low (found 2026-10-04, comparison with another project's ATS notes)
+- **Where:** `opportunity_app/apply/greenhouse.py:48` `canonical_url`; `opportunity_app/apply/checks.py:406` (`offsite_navigation`)
+- **What happens:** A company that embeds Greenhouse on its own domain makes `job-boards.greenhouse.io/<board>/jobs/<id>` redirect to that domain. The run navigates to the canonical URL, sees the redirect leave the Greenhouse hosts, and stops with "This posting sends applicants to {host}". Greenhouse's embed address (`job-boards.greenhouse.io/embed/job_app?for=<board>&token=<id>`) usually reaches the real form, is on `BOARD_HOSTS`, and the parser already accepts it as input, but nothing builds it as a fallback. Whether the form it opens can be filled under the app's browser policy has not been tried.
+- **Suggested fix:** When the canonical URL redirects off the Greenhouse hosts, try the embed address once, and stop as now if that redirects off them too. Check on a rehearsal first that the embed form's file input is reachable.
+- **Regression suite:** tests/test_apply_checks.py (an off-site redirect on the canonical URL falls back to the embed address once)
+
+### An interview the student never moved on keeps asking before every application to that company
+- **Severity:** low (found 2026-10-08, review of PR #81)
+- **Where:** `opportunity_app/apply/runs.py` `_active_elsewhere()` (reads `applications.stage IN ('interview', 'offer')` only), called from `duplicate_block()` (`ASK_ACTIVE_AT_COMPANY`)
+- **What happens:** The check reads the stage alone. An application left at "interview" after the process quietly ended (no rejection email, a stage the student never updated) counts as an interview in progress indefinitely, so every later Apply for me run at that company stops to ask "You have an interview in progress at ...", and unattended mode can never pass it. Nothing is sent and the student can tick past it, so the cost is a repeated question, not a wrong application.
+- **Suggested fix:** Count an interview only while its `updated_at` is recent (for example 60 days), and say "an interview last updated on {date}" so the student can see why it was asked; or offer "this ended" beside the tick, which moves the old application out of the interview stage.
+- **Regression suite:** tests/test_apply_active_interview.py (an interview last updated 90 days ago does not ask, or asks with its date)
+
+### The route handler's value guard never sees cookies
+- **Severity:** low (found 2026-10-08, review of the Lever request policy)
+- **Where:** `opportunity_app/apply/agent.py` the route handler (`RouteRequest(... headers=request.headers ...)`); `opportunity_app/apply/checks.py` `leaked_field()`
+- **What happens:** Playwright's `Request.headers` leaves out cookie headers, so a value a page script writes to `document.cookie` rides on the request to the page's own host and is never checked. `leaked_field` does read a `Cookie` header it is given (the pure-function tests in `tests/test_apply_lever_policy.py` show that), but the handler never gives it one. The cookie goes only to the cookie's own domain, which is the ATS's, so the reach is a value written into the ATS's own cookie jar, not another host.
+- **Suggested fix:** Build the facts from `request.all_headers()` and fall back to refusing the request if that fails. Check first on a live run that `all_headers()` returns inside a route handler before the request is sent, since it waits for the browser's extra header info.
+- **Regression suite:** tests/test_apply_agent_browser.py (a page that sets a cookie holding a planned value; the next request to its host is refused)
+
+### A page script can send the attached résumé as text to an address the fill lets writes through
+- **Severity:** medium, privacy (found 2026-10-08, review of the Lever driver)
+- **Where:** `opportunity_app/apply/checks.py` `route_decision()` (the `upload_elsewhere` rule covers the planned file's own bytes, a multipart file part, an octet-stream body and a body of an odd declared type; after the student's first press only the planned file's own bytes), `LEVER_CLOUDFLARE_PATH_PREFIXES`, `LEVER_CAPTCHA_ENDPOINTS`
+- **What happens:** Once the app has put the résumé in the file input, a script on the page can read `input.files[0]` and send it as a base64 or JSON string in a POST to the Cloudflare challenge path of the Lever host or to a recorded hCaptcha host. A compressed PDF or DOCX holds none of the student's words, so the value guard finds nothing, and the request is not a file upload by its form. The same holds for a GET in pieces. `upload_elsewhere` refuses the file as itself (the planned file's bytes as a whole body or a form part, in every phase), the multipart and octet-stream forms and any body of a declared type that is not text, URL-encoded or JSON (in the fill and until the student's first press, and ends the run); this one passes. So does a body with no declared type that is not the planned file's exact bytes, and, after the student's first press, anything that is not those bytes (a file the student chose, a re-encoded copy), since hCaptcha is running by then and a wrong reading would close the turn in the middle of it. Cloudflare's allowed path is wider than the one beacon path the recording saw (`/cdn-cgi/challenge-platform/h/g/jsd/oneshot/`) because no interstitial has been recorded and its own requests are unseen.
+- **Suggested fix:** After a recording of a Cloudflare interstitial, narrow the allowed writes to the paths it and the beacon use. Refuse a write to these addresses whose body is longer than a beacon needs (a few hundred bytes), or whose bytes decode to the file's digest; or attach the résumé last, after the checks, for the page that does not read it on attach.
+- **Regression suite:** tests/test_apply_lever_browser.py (`GuardTests`: a script that sends `input.files[0]` as text to each allowed write address ends the run)
+
+### A Lever form over the text budget counts as "1 question" while every question is left to the student
+- **Severity:** low (found 2026-10-08, review of Lever LV2)
+- **Where:** `opportunity_app/apply/lever_form.py` `parse_lever_form()` (the `MAX_FORM_TEXT_CHARS` branch), which makes one plan row; the what's-missing view counts plan rows
+- **What happens:** A page whose labels and answers carry more than 100,000 characters between its controls is not read at all. The parser returns one unreadable question named "Every question on the form" and the student is told, in words, that the page has too much text. Every real question is left to the student, but the what's-missing view counts the plan's rows, so it says "1 question".
+- **Suggested fix:** Give the unreadable question a marker the view reads ("every question") and word the count from it, for example "Every question is yours to answer".
+- **Regression suite:** tests/test_lever_form.py (a form over the budget; the count the view shows says every question is the student's)
+
+### Lever's budget of text exempts card questions, and nothing limits how many card templates a page carries
+- **Severity:** low (found 2026-10-08, review of Lever LV2)
+- **Where:** `opportunity_app/apply/lever_form.py` `_text_spent()` and `_left_to_the_student()` (the `section == "custom"` exemptions), `_template()` (`MAX_TEMPLATE_BYTES`, `MAX_TEMPLATE_FIELDS`, `MAX_FIELD_OPTIONS` limit one template)
+- **What happens:** The exemption says a card question's words are its own and the template's size limits them. That limit covers one template; a page can carry any number of them. Only the page cap of `LeverPageClient` (4 MB) bounds the total, so the text a plan reads is linear in the page and never multiplied by controls the way a shared label is. No test times a page of many large templates, and a page just under the cap is not counted against the budget at all.
+- **Suggested fix:** Count a card question's label and options in `_text_spent()` against a budget of its own, sized from the largest real template (a university dropdown of about 3,300 options), and read the form as unreadable above it. Time a page of many templates first.
+- **Regression suite:** tests/test_lever_form.py (many large card templates under the page cap are read in under three seconds, or the form is left to the student)
+
+### A field the student types in the same moments as the page reads their file is named as filled by Lever
+- **Severity:** low (found 2026-10-08, build of Lever LV4)
+- **Where:** `opportunity_app/apply/agent.py` `_watch_student_read()`
+- **What happens:** After the student attaches a file in the window, the agent names the fields Lever's reader changed by comparing what they held at the last look (every 250 ms) with what they hold once the page has applied its answer. A parser field the student types into between those two looks, and that the reader leaves alone because the student made it theirs, is named too: "Lever filled Current company ... Check it". It says check, and nothing is changed, but the sentence is not true of that field.
+- **Suggested fix:** Have the press listener's world also report a trusted `input` on the form's named controls (their names, never their values) and leave those out of the comparison.
+- **Regression suite:** tests/test_apply_lever_handoff_browser.py (the student types into the company box while the page reads their file; only the fields the reader changed are named)
+
+### A process only the kill's own listing found is killed but never checked, so the close can be confirmed while it runs
+- **Severity:** low, latent (found 2026-10-08, diagnosing the KillOrderingTests flake)
+- **Where:** `opportunity_app/apply/runner.py` `_end_child()` (`killed = kill_tree(pid)`, then `_kill_survivors(outcome.pids, ...)`); `kill_tree()` lists the tree again through `descendants()`
+- **What happens:** `_end_child` lists the processes below the child, records them in `outcome.pids`, then calls `kill_tree`, which lists the tree a second time and kills what it finds. `_kill_survivors` re-checks only `outcome.pids` (and the child), so a process that started between the two listings is killed by pid but never looked at again; `killed_pids` names it and `closed_confirmed` can be True while it is still running. With `_process_table` returning the second listing only for the kill, a process that survives the kill, and `process_alive` True for it, `_end_child` sets `closed_confirmed` True. For a claim still `claimed`, row 7 ("couldn't confirm the window closed") is then skipped. It needs a process born within milliseconds of the kill that also survives `SIGKILL` or `taskkill /F`. Chromium's main process is listed long before (the ready snapshot), so this has not been seen.
+- **Suggested fix:** Pass `kill_tree`'s targets to `_kill_survivors` with the recorded pids (record their start times first, as `_remember` does), or list the tree once more after the kill and repeat until nothing new appears.
+- **Regression suite:** tests/test_apply_handoff.py (a process that only the second listing finds and that survives the kill leaves `closed_confirmed` False)
+
 ## Mail, Gmail and inboxes
 
 ### Application inbox: a "Last, First" From name empties the sender, so the email is skipped
@@ -174,6 +292,20 @@ The entry flagged for an owner decision is
 - **Suggested fix:** Reuse `is_throttle` from `opportunity_app/integrations/gmail_client.py`.
 - **Regression suite:** tests/ unittest (`test_pipeline_mailbox`)
 
+### Apply for me's confirmation watch cannot tell that the reader was in another mailbox for part of the window
+- **Severity:** low (found in review of the confirmation watch, M5b part 1; narrowed on 2026-10-08)
+- **Where:** `opportunity_app/apply/watch.py` `mailbox_reason()` and `reader_health()`; `opportunity_app/applications/inbox.py` (`application_mail_sync` records no account)
+- **What happens:** The claim now records the address it went out under (`detail.mailbox_hash`), and the watch compares the connected account with that at each watch pass, so editing the profile email after submitting no longer pauses it. A student who reconnects as another account and then back between two watch passes is not told the reader was in the wrong mailbox for part of it: the inbox reader's passes leave no record of the account they read, so the watch can still end as "no email in 24 hours".
+- **Suggested fix:** Record the account hash each reader pass ran under (in `application_mail_sync`), and pause or extend the watch when any pass since the hand-over ran under another account.
+- **Regression suite:** tests/ unittest (`test_apply_watch`: switch the account and back between two watch passes and expect a pause)
+
+### An email that might be a confirmation and keeps failing to be decided stalls every Apply for me watch until its 13-day give-up
+- **Severity:** low (found in review of the confirmation watch, M5b part 1; narrowed on 2026-10-08)
+- **Where:** `opportunity_app/applications/inbox.py` `_retry_errors()` and `_decide_safely()`; `opportunity_app/apply/watch.py` `reader_health()` (`READER_SET_ASIDE`)
+- **What happens:** A message set aside as an error is read again after half an hour, then after waits that double, for 14 days, and an email the reader parsed before the decision failed carries its sender and the match it found, so one that is not from Greenhouse and named none of the student's applications no longer holds the watch. An email that could be the confirmation (from Greenhouse, or from the company's own domain and naming one of the applications) or that could not even be parsed, and whose reading fails every time, because something in its content breaks the parse or the decision, stays an error until a code change ships, so the watch stays paused until it gives up as not watched, and the row also pauses watches for applications handed over before it. The retries end after 14 days, a day after the give-up, so they never release a watch.
+- **Suggested fix:** Decide a Greenhouse email whose decision keeps failing as "not a confirmation" after a few tries, or let the student dismiss the pause from the card.
+- **Regression suite:** tests/ unittest (`test_application_inbox`, `test_apply_watch`)
+
 ### The Gmail labelling worker can write label rows for an account that was just deleted
 - **Severity:** medium, privacy; left by design for an owner decision (found in review of the PR #60 erase fix, which closed the missing-tables gap but not this race)
 - **Where:** `opportunity_app/outreach/labels.py:311` `_add_thread()` (called at `:308`, `:892` and `:1052`) and the `outreach_label_searches` insert at `:894`; the step is `opportunity_app/automation/inbox_watcher.py:179`; `opportunity_app/accounts/operations.py:302-307` `delete_account()` and `ACCOUNT_EXPLICIT_DELETES` at `:240`; `migrations/0044_outreach_sent_labels.sql` (both tables)
@@ -183,12 +315,56 @@ The entry flagged for an owner decision is
 
 ## Outreach drafting, research, forms and CLI
 
-### FormSubmitter does not block WebSockets, so page scripts get past the request guard
-- **Severity:** medium, privacy (notes 15, 97)
-- **Where:** `opportunity_app/outreach/forms.py:816-824` `FormSubmitter._start()` (compare `opportunity_app/outreach/render.py:80-84`)
-- **What happens:** `context.route()` does not intercept WebSockets, and only the renderer closes them. A contact page loaded for submission or rehearsal can open ws:// connections to loopback or private hosts, such as the local app. It can also stream typed form fields out during a rehearsal that promises nothing leaves the page. The class docstring claims the renderer's guard.
-- **Suggested fix:** After `route()`, add `route_web_socket('**/*', lambda s: s.close())`. Better, build both browser contexts with one shared guarded-context helper.
-- **Regression suite:** tests/ unittest (`test_outreach_forms`: a fake context asserts that `route_web_socket` is installed)
+### A required box about the company (its address, website, size) is typed with the student's school
+- **Severity:** medium, wrong value sent (found while adding the mailing address to contact forms)
+- **Where:** `opportunity_app/outreach/forms.py`: the `company` entry of `_ROLE_PATTERNS` (it matches before `link`), and the `company`/`phone`/`link`/`job_title` branch of `plan_fill`
+- **What happens:** the `company` role matches any text box whose label, name or id says company, organization, business, employer, school, university or institution, and a required one is typed with `identity["school"]`. A required "Company website", "Company address" or "Company size" box therefore gets the school's name, which answers none of those questions, and the form goes out with it when the page accepts any text. A `type="url"` box is read as a link first, so only text boxes are affected. (A box whose label is only address words, such as "Address" or "City", and whose name or id says company, school, business or the like is no longer affected: `_role` makes it unanswerable. A label that itself says company still is.)
+- **Suggested fix:** Give the `company` role only to a label that asks for the name ("Company", "Company name", "Organization", "School"). A label that also says address, website, phone, email, size or industry is unanswerable, so the form waits for the student.
+- **Regression suite:** tests/ unittest (`test_outreach_forms`: required "Company website", "Company address" and "Company size" text boxes are named as unanswerable and nothing is typed in them)
+
+### The app's own contact-form send does not block WebSockets or workers, so page scripts get past the request guard
+- **Severity:** medium, privacy (notes 15, 97; narrowed 2026-10-09 by PR #97)
+- **Where:** `opportunity_app/outreach/forms.py` `FormSubmitter._start()` (compare `opportunity_app/outreach/render.py`)
+- **What happens:** `context.route()` does not intercept WebSockets, and no route sees a worker's requests. When the app itself sends a form ("Send through contact form", and the automatic path), a contact page can open ws:// connections, from the page or a worker, to loopback or private hosts such as the local app, and stream what was filled out. Finish in browser and a rehearsal refuse them (`SOCKET_GUARD`); the app's own send was left as it was, since refusing them there turned a page whose form sends over a socket from sent into a false "submitted" or a silent failure. Also as it was: a form that goes only over a socket and shows no thank-you the app recognises is recorded as failed ("The form did not send"), though it may have gone.
+- **Suggested fix:** in the app's own send, refuse a WebSocket only to a loopback or private address (a `route_web_socket` handler that connects to the server otherwise), and say so in the outcome when the form needed one.
+- **Regression suite:** tests/ unittest under Chromium (`test_outreach_forms`: a contact page in the app's own send opens a WebSocket to a loopback listener, which hears nothing)
+
+### The app's own contact-form send records a thank-you that comes with nothing sent as submitted
+- **Severity:** medium, wrong visible state (named in review of PR #97, 2026-10-09; the behaviour predates it)
+- **Where:** `opportunity_app/outreach/forms.py` `FormSubmitter._await_outcome` (the "Send through contact form" and automatic paths, not Finish in browser)
+- **What happens:** after the app presses send, fresh thank-you wording on the page is taken as the form having arrived, whether or not anything left the page. A page that thanks optimistically (it shows its message before, or without, a send that then fails) is recorded as submitted, and the company is marked sent though nothing reached them. Finish in browser does not judge this way: it asks the student.
+- **Suggested fix:** take "submitted" only when a request that could carry the form left after the press, as the same check counts one; otherwise record unconfirmed and let the student look.
+- **Regression suite:** tests/ unittest under Chromium (`test_outreach_forms.BrowserSubmitTests`: a page that thanks the student and sends nothing is not submitted)
+
+### The renderer hangs on a page that opens a WebSocket
+- **Severity:** medium, a crash (a hang) (found 2026-10-09, while closing the form submitter's WebSockets the same way)
+- **Where:** `opportunity_app/outreach/render.py` (`route_web_socket("**/*", lambda socket: socket.close())` where the renderer starts its browser)
+- **What happens:** the handler calls `socket.close()` from inside Playwright's own event dispatch, which deadlocks the sync API: the first page the renderer loads that opens a WebSocket stops the render (and whatever called it, such as a contact search) for good. The form submitter had the same handler and hung its tests for nine hours. It now makes a page's WebSocket fail as a blocked connection does (`SOCKET_GUARD`), and its backstop handler only notes a socket and leaves it unconnected, closing it later from the main greenlet.
+- **Suggested fix:** as in `FormSubmitter._start`: `SOCKET_GUARD` as an init script, and a `route_web_socket` handler that makes no Playwright call.
+- **Regression suite:** tests/ unittest under Chromium (render a page that opens a WebSocket to a loopback listener: it returns, and the listener hears nothing)
+
+### Finish in browser for contact forms: sends it holds back, and what its gate cannot see
+- **Severity:** low (found while making the window the student's to finish, and in six reviews of it, 2026-10-08/09). Gaps (1), (2), (4), (5) and (7) hold the form back, so nothing is sent and the record says so; (3) concerns what a page could send that is not the form; (6) could record a send as unsent, but needs a form sent only as an encoded image address, which no site the app has met does; (8) concerns only pages from the CAPTCHA hosts themselves; (9) needs a page doing it on purpose.
+- **Where:** `opportunity_app/outreach/forms.py`: `FormSubmitter._route`, `_could_carry` and `_needles` (the gate), `PRESS_LISTENER`, `CLOSE_GUARD`, `FormSubmitter._hand_to_student`
+- **What happens:** Finish in browser fails closed. From page load, nothing carrying the student's details leaves the window: their email, name, phone (as typed or as digits), school, link, street address, the subject, and the message's opening words, found as typed or once form-decoded, whatever the request and wherever it goes (gaps (3) and (9) aside). From the app's first fill, nothing but reads leaves either (CAPTCHA calls aside), nor a script's read of the form's own site. What a closing page would send is kept from it, and speculation rules (in the document and in every shadow root a script can reach: open ones, those the page's HTML declares included, and closed ones made with attachShadow or reached through ElementInternals; a closed root made with attachShadow is never clonable, and every closed root the guard knows is swept before the page copies anything), prerender and prefetch links, browser sign-in (FedCM) and worklet modules are refused (`CLOSE_GUARD`), and a page's own `Speculation-Rules` or prefetch `Link` header comes to nothing: what they load is a request the browser calls "other", and none goes until the press (`FormSubmitter._route`). A page's WebSocket fails as a blocked connection does, and workers are removed outside a CAPTCHA's own frames (`SOCKET_GUARD`). Both apply to Finish in browser and a rehearsal; the app's own send leaves the page as it is (the WebSocket entry above). So with no press seen, "Nothing was sent" is true. After the press, what may carry the form goes and is recorded, and the card asks the student whether their page said it was sent. It says "nothing was sent" instead when the app itself held back what the press sent (it could not record the press), or when nothing left, nothing went to another site after the press, and the page's way of sending was a WebSocket the app refused: one to the form's own site, however written, or one the page opened after the press and sent on. A chat widget's socket elsewhere decides nothing, and is not named before the press. A socket the page sends on after the press is named in the question, which then says, when nothing the app could see left, that if the page sends that way nothing went. After the press, the page's own styles and fonts from another site do not count as something going there. Nine gaps remain:
+  (1) A send control the listener does not recognise (a link, a plain `<div>` with a click handler, a button outside the form) is no press. Nor is a `<button>` with no type once a redraw or reload has dropped the app's mark from it (unmarked, only an explicit `type="submit"` counts), and the note then speaks of what was held back "before your press". Neither is a press that another site's frame stops with a listener it registered before the app's, since that frame is watched only from when it is found. Either way the form is held back: nothing is sent, the record says so, and the window's note names what was held back. The student then has to send it from the page outside the app.
+  (2) A form whose own checks run before the press (an email lookup, a field check) has them held back, and may then never let the student send. The note and the result name the host. A request the browser calls "other" is refused before the press too (a speculation rules file, a prefetch, a favicon, a preload `as=fetch`; a CAPTCHA's own scripts aside). The page's own later fetch of an address it preloaded fails with the preload, so a form drawn from preloaded data never appears in the window: the result then names what was held back that the page preloads instead of "No contact form on the page" (a favicon or a prefetch hint held back leaves the plain note).
+  (3) A read (GET) to another site carrying only what the student typed into a box the app left for them, or carrying a detail in an encoding the app does not check (base64, double encoding), passes the gate before the press. It cannot be the form's own send without the app's details too, but it can carry an answer of theirs off the page unrecorded.
+  (4) Under one process per site (as the headed window runs), the app's own tick of a box in another site's frame sometimes does not take. The note names it and the student ticks it.
+  (5) A frame that shares the page's process is handed over on the page's own "ready", not its own, so a frame a script wrote into the page (about:blank) may lack the listener. Its form then cannot be sent.
+  (6) After the press, anything but a read of an image, style, font or media file counts as the form leaving (and the card asks), and so does the form going from the page. A form sent as an image's address carrying the student's values in an encoding the app does not read, on a page that then stays as it was, would end as "Nothing was sent". So would one sent as an image to the form's own site, thanks and all, on a page whose own-site socket the app refused (the socket is then taken as its way).
+  (7) A CAPTCHA that computes in the page's own workers rather than in its own frame (Friendly Captcha, for one) cannot finish in the window, since workers are removed there outside a CAPTCHA's frames: the form cannot be sent from Finish in browser.
+  (8) Workers stay in frames on the CAPTCHA hosts, which for Google is all of google.com, so an embedded Google Form's frame keeps them too. A worker's requests go through the route like any other (checked in Chromium), but `SOCKET_GUARD` is a page script and does not reach a worker, and whether `route_web_socket` does was not checked. A WebSocket a worker opens in such a frame may be one no route sees. Only those hosts' own pages run there.
+  (9) Speculation rules in a closed shadow root the page's HTML declares (`<template shadowrootmode="closed">`) are out of reach: the parser attaches the root with no call any script sees, and no script of the page can reach it. Such rules stay, and the browser prefetches and prerenders what they name with no request the route sees, before the press too: document rules matching a link a script rewrites with the filled name carry the name off the page, and the window then says "Nothing was sent". Only a page doing it on purpose. `SpeculationShadowTests` pins it with an expected failure.
+- **Suggested fix:** (7) Allow workers whose script comes from a known CAPTCHA host, with the WebSocket replacement put at the start of their script. (1) Recognise send links and click handlers in the listener from what EXTRACT_SCRIPT reads, count an unmarked typeless button that is its form's default button, and attach to another site's frame before its scripts run (auto-attach with the frame paused). (2) Allow a check that carries only the email to the form's own site, once there is evidence it is needed. (3) Hold every read to another site that a script makes after the first fill, once it is clear what that breaks. (4) Find why the tick fails in an out-of-process frame. (5) Require each frame's own "ready". (8) Keep workers on google.com only in reCAPTCHA's own frames (a `/recaptcha/` path), and check whether `route_web_socket` reaches a worker. (9) Read each top-level page's HTML as it is routed (the navigation's own response, not a second fetch) and refuse to fill one that declares a closed shadow root holding speculation rules; no launch switch or profile preference turned them off on Playwright 1.62's Chromium.
+- **Regression suite:** tests/ unittest under Chromium (`test_outreach_forms.FinishInBrowserTests`, `FinishInBrowserGateTests`, `SpeculationHeaderTests`, `SpeculationShadowTests`; (9) is pinned there with `expectedFailure`, to come off with the fix)
+
+### One address block can read as two, so a contact form that wants the student's address waits for them
+- **Severity:** low, the send stops when it could have gone (found in review of the mailing-address change)
+- **Where:** `opportunity_app/outreach/forms.py` `plan_fill()` (the pre-pass that sets `two_blocks` when an address part appears in more than one box)
+- **What happens:** a box hinted `autocomplete="street-address"` counts as both street lines, so a separate "Apt / Suite" box in the same block looks like a second line 2; a "State" list with a "State/Province" text fallback looks like two state boxes. Either way every required address box is named unanswerable and nothing is filled. Nothing wrong is sent.
+- **Suggested fix:** do not count a `street_address` box and a line-2 box as a repeat; count a state list and a state text box as one only when both are visible.
+- **Regression suite:** tests/ unittest (`test_outreach_forms` `AddressPlanTests`)
 
 ### outreach_cli recontact crashes with KeyError('') when PIPELINE_OUTREACH_DISCOVERY_PROVIDER is blank (the .env.example default)
 - **Severity:** medium, crash (notes 12, 18, 98, 99)
@@ -224,6 +400,13 @@ The entry flagged for an owner decision is
 - **What happens:** The read-then-unconditional-UPDATE sequence lets both callers enqueue. One job id overwrites the other, and the orphaned job still runs a second, untracked model and research run.
 - **Suggested fix:** Use the conditional-claim pattern from `queue_research` (`opportunity_app/outreach/research.py:441-457`) and cancel the job that loses.
 - **Regression suite:** tests/ unittest (`test_outreach_call_prep`: two interleaved calls leave one active job)
+
+### The web-capable model calls can fetch any address, so a hostile page can carry the student's profile out in a URL
+- **Severity:** medium, privacy (found 2026-10-04, prompt-injection audit)
+- **Where:** `opportunity_app/outreach/agents.py:29` `claude_runner` (`--tools WebSearch,WebFetch`) and `:44` `codex_runner`; the prompts in `outreach/discovery.py` (`PROMPT`, `build_prompt`), `research.py` and `email_search.py`
+- **What happens:** The deep search prompt carries the student's school, degree, skills, projects, experience, regions and home location, and the agent may fetch any URL. A page it reads can tell it to fetch an attacker's address with those facts in the query string. Every model call now says that text from pages is evidence and not instructions (`agent_providers.UNTRUSTED_TEXT_NOTICE`), which lowers the odds and stops nothing: no code limits where the agent fetches. `SafeFetcher` guards only the fetches Python makes itself. A search that went wrong this way would also write the page's `summary`, `fit_rationale` and `activity_signal` as written, and a later draft reads them as unverified research.
+- **Suggested fix:** Run the web agent with a fetch allowlist if the CLI offers one, or split the work: one call with no profile reads pages and returns what it found, and a second call with the profile, and no web tools, judges fit. Failing both, send only the facts the search needs (field, regions) and keep projects, experience and home location out of the web call.
+- **Regression suite:** a test that the discovery prompt holds none of the student's projects, experience or home location
 
 ## Agents and notifications
 
@@ -322,6 +505,41 @@ The entry flagged for an owner decision is
 - **Suggested fix:** Reuse `profile.validate_profile_types` for type errors, and downgrade an empty `state_markers` or `places` to a warning.
 - **Regression suite:** tests/ unittest (`test_setup`: a profile shaped like the web form's output is ok)
 
+### Confirming "contact" in résumé review replaces the whole contact object, wiping a confirmed mailing address and a hand-typed phone
+- **Severity:** low (found while adding the mailing address to contact forms)
+- **Where:** `opportunity_app/student/profile.py` `update_profile()` (`merged = {**_stored_profile(...), **updates}` replaces each top-level key); `opportunity_app/student/resumes.py` `confirm_resume()`; `opportunity_app/static/app-profile.js` `createResumeCard()` (the "Confirm selected facts" submit sends the résumé's whole `contact` suggestion)
+- **What happens:** the résumé's `contact` suggestion holds only the email, the phone it found (or an empty one) and links. Ticking it in résumé review saves that object in place of the profile's `contact`, so the mailing address the student confirmed on the Profile page, and a phone they typed there, are gone. No wrong value is sent: a contact form that requires an address box then waits for the student, as it does with no address on file.
+- **Suggested fix:** Merge `contact` key by key when it comes from a résumé (keep stored keys the résumé has no answer for), or leave the address keys out of what a résumé confirm may replace.
+- **Regression suite:** tests/ unittest (`test_bugfix_profile_save` or `test_resumes`: confirm a résumé's contact after saving an address and a phone; both are kept)
+
+### Greenhouse's posted_at is its updated_at, so any edit makes an old posting look fresh
+- **Severity:** medium, source integrity and freshness (found 2026-10-04, board adapter audit)
+- **Where:** `pipeline_core/sources.py` `greenhouse_jobs` (`"posted_at": detail.get("updated_at") or item.get("updated_at")`); `pipeline_core/scoring.py` `score_job` (the recency block)
+- **What happens:** Greenhouse also returns `first_published`, and the two differ whenever a posting is edited. One live posting was first published on 2024-12-20 and last updated on 2026-08-21, so it gets "+10 updated within 7 days" the week after an edit and is never "over 60 days old". The reason says "updated", which is true, but the same column is the posting date the `posted_since` filter and the freshness text show, so a long-open role reads as new. Ashby and Lever give their publication and creation times.
+- **Suggested fix:** Store `first_published` as `posted_at` and keep `updated_at` for the "updated" reasons, or add a second column. Decide first which one the "recency" bonus should follow, since using `first_published` lowers the score of every long-open role.
+- **Regression suite:** tests/test_pipeline.py (a Greenhouse listing with a `first_published` far older than its `updated_at`)
+
+### Board discovery reads a throttled or blocked board as "no board"
+- **Severity:** low (found 2026-10-04, board adapter audit)
+- **Where:** `pipeline_core/discovery.py` `_probe_greenhouse` (`:64`), `_probe_ashby` (`:81`), `_probe_lever` (`:97`)
+- **What happens:** Each probe calls `request_json(..., retries=0)` and catches `RuntimeError`, so an HTTP 429, a 403 or a body that fails to parse returns None, the same as a board that does not exist. A live board that was probed during a throttle is reported unresolved. Discovery only suggests boards and removes nothing, so the cost is a missed suggestion.
+- **Suggested fix:** Return a third answer for a throttle or a parse failure, and have the caller retry once after a pause or report "could not check".
+- **Regression suite:** tests/test_boards.py (a 429 from a probe is reported as unchecked, not as no board)
+
+### The sponsorship reader still misreads some wording, both ways
+- **Severity:** low (found 2026-10-08, third review of the posting-language fixes; every version of the reader, main included, gets these wrong)
+- **Where:** `pipeline_core/scoring.py` `sponsorship_closure()`, `_NO_SPONSORSHIP_RE`, `_also_sponsors_a_visa()` (`_ROLE_KIND_RE`)
+- **What happens:** three kinds of wording are read wrongly. (1) Welcoming CPT or OPT wording is read as closed: in "Candidates authorized to work in the US, including F-1 students on CPT who can intern without visa sponsorship, are welcome; we sponsor H-1B after graduation" the role-kind check matches the verb "intern", so the "we sponsor H-1B" clause does not soften it and a student who needs sponsorship loses 35 points. (2) A refusal limited to green cards ("we do not sponsor green cards") is read as closed for an internship, which needs no green card. (3) Some refusals are not read at all, so no flag and no penalty: "Must not require sponsorship now or in the future", "This role is not eligible for visa sponsorship", "We are not sponsoring visas for this role", and "without the need for employer sponsorship" (`employer` is not in `_VISA_KIND`).
+- **Suggested fix:** Match only role nouns in `_ROLE_KIND_RE` (interns, internship, co-op, this role or position), not the verb "intern" after "can" or "to". Treat a refusal that names only green cards or permanent residence as a FLAG without the penalty. Add "not require sponsorship", "not eligible for (visa) sponsorship", "not sponsoring" and `employer` to the refusal patterns, each with a test that the welcoming forms ("no sponsorship required to apply") stay open.
+- **Regression suite:** tests/test_scoring_posting_language.py (each sentence above, with `requires_sponsorship` true)
+
+### The unpaid reader is a wording heuristic and misreads some sentences
+- **Severity:** low (found 2026-10-08, fifth review of the posting-language fixes; it applies only to a student whose profile sets `compensation_preferences.paid_only` true)
+- **Where:** `pipeline_core/scoring.py` `_calls_the_role_unpaid()`, `_UNPAID_ROLE_RE`, `_asks_about_the_past()`, `_THIS_ROLE_BEFORE_RE`
+- **What happens:** the reader decides from the words around "unpaid <role>" whether the posting calls this role unpaid, and some sentences fall on the wrong side. "Unpaid community service opportunity: interns volunteer one Friday a month." costs 35 although the role is not unpaid. "Experience such as an unpaid internship or volunteer work is a plus." costs 35 for a sentence about the candidate's past (the reader before PR #81 did the same). "Do not miss this unpaid internship opportunity" is not read as unpaid, because "not" within three words reads as a negation. Each rule added for one wording moves the line for others, so more cases of both kinds are likely.
+- **Suggested fix:** Give the 35 points only for an unambiguous statement about this role ("this is an unpaid internship", "the internship is unpaid", "this role carries no compensation"), and turn every other "unpaid <role>" match into a FLAG ("mentions an unpaid role—verify pay") with no change to the score, so a misread costs a look rather than a rank.
+- **Regression suite:** tests/test_scoring_pay_preferences.py (the three sentences above: the first two flagged without the penalty, the third flagged)
+
 ## Packaging and docs
 
 ### .dockerignore lets personal config, private terms and extra .env files into the image
@@ -360,10 +578,3 @@ The entry flagged for an owner decision is
 - **What happens:** `shutil.copyfile` truncates and rewrites the live file in place, so a request still in flight can open an empty or half-written database. The observed "no such table: users" setup error in `test_responsive` fits this, but there is no traceback to confirm it.
 - **Suggested fix:** Copy to a temporary file in the same directory and `os.replace` it over the live file, retrying on Windows PermissionError.
 - **Regression suite:** tests/ui (full run with no flake)
-
-### test_switching_two_kinds_quickly_keeps_both_changes asserts database state after a fixed 1000 ms wait
-- **Severity:** low (notes 157)
-- **Where:** `tests/ui/test_apply_sensitive.py:247`
-- **What happens:** On a loaded machine the second PUT may not have committed when the database is read, so the test fails intermittently. The other flaky tests named in the note did not reproduce.
-- **Suggested fix:** Poll for the database condition, or wait for both responses with `page.expect_response`.
-- **Regression suite:** tests/ui

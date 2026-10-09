@@ -25,20 +25,20 @@
 
   // From app-outreach-send.js.
   const {
-    CALL_PREP_ACTIVE, CALL_PREP_WRITING, CONTACT_CONFIDENCE_LABELS, DRAFT_PROVIDER_LABELS, DRAFT_STATUS_LABELS, automaticSendWords,
-    OUTREACH_STATUS_LABELS, composeControl, formHost, formSendControls, outreachChoice, outreachContactFormSection,
-    outreachDraftNeedsReview, outreachField, outreachReachable, pauseWords, refocusOutreach, refuseUnsavedHandOff,
-    reloadOutreachAt, scheduleText, scheduleWords, sentFolderCheck,
+    CALL_PREP_ACTIVE, CALL_PREP_WRITING, CONTACT_CONFIDENCE_LABELS, DRAFT_PROVIDER_LABELS, DRAFT_STATUS_LABELS, approveAndScheduleButton,
+    approveFollowUpButtons, automaticSendWords, canApproveAndSchedule, OUTREACH_STATUS_LABELS,
+    composeControl, formHost, formSendControls, outreachChoice, outreachContactFormSection, outreachDraftNeedsReview, outreachField,
+    outreachReachable, pauseWords, refocusOutreach, refuseUnsavedHandOff, reloadOutreachAt, scheduleText, scheduleWords, sentFolderCheck,
   } = App;
 
   // From app-outreach-drafts.js.
   const {
-    draftAssistant, loadOutreachTimeline, outreachContactsSection, outreachManualContactSection, outreachReplySection,
-    renderDraftChecks,
+    draftAssistant, loadOutreachTimeline, outreachContactsSection, outreachManualContactSection, outreachRecipients,
+    outreachReplySection, renderDraftChecks,
   } = App;
 
   // From app-outreach-tools.js.
-  const { outreachNotInterested } = App;
+  const { outreachAppliedDirectly, outreachSetAside } = App;
 
   // Defined in files that load later; looked up when called.
   const loadOutreach = (...args) => App.loadOutreach(...args);
@@ -105,7 +105,10 @@
   // The one thing to do next, in the words the bar and the list row use.
   // `tab` is where that work happens; the bar offers to go there.
   function outreachNextStep(item) {
-    if (outreachNotInterested(item)) {
+    if (outreachAppliedDirectly(item)) {
+      return { label: "Applied directly", hint: "You applied through their own site. It is kept here, and nothing automatic goes to it. Move it back to outreach to pick it up again.", tab: null };
+    }
+    if (outreachSetAside(item)) {
       return { label: "Nothing while not interested", hint: "It is kept here, and nothing automatic goes to it. Move it back to outreach to pick it up again.", tab: null };
     }
     if (item.possible_reply_count) {
@@ -133,9 +136,16 @@
       return { label: "Keep the conversation going", hint: `Log each reply so the history stays complete.${revisit}`, tab: "history" };
     }
     if (item.follow_up_due) {
+      const queued = item.scheduled?.follow_up;
+      if (queued?.state === "scheduled") {
+        const suffix = ". Cancel it or send it now below.";
+        return { label: "Follow-up scheduled", hint: `${scheduleWords(queued.label)}${suffix}`, schedule: { label: queued.label, suffix }, tab: null, tone: "is-region" };
+      }
+      if (queued?.state === "sending" || queued?.state === "transmitting") return { label: "Sending the follow-up", hint: "It is going out now.", tab: null, tone: "is-region" };
+      if (queued?.state === "failed") return { label: "Scheduled follow-up stopped", hint: `${queued.error}.`, tab: "follow-up", tone: "is-warning" };
       return item.follow_up_status === "approved"
         ? { label: "Send the follow-up", hint: "It is approved; open it in your email and send it.", tab: null, tone: "is-warning" }
-        : { label: "Follow up now", hint: "The follow-up date has passed. Draft and approve a short follow-up.", tab: "draft", tone: "is-warning" };
+        : { label: "Follow up now", hint: "The follow-up date has passed. Draft and approve a short follow-up.", tab: "follow-up", tone: "is-warning" };
     }
     if (item.status === "sent" || item.status === "followed_up") {
       return { label: "Wait for a reply", hint: item.follow_up_at ? `Follow up on ${formatCalendarDate(item.follow_up_at)} if nothing arrives.` : "Log their reply here when it arrives.", tab: "history" };
@@ -157,7 +167,8 @@
       const form = item.contact_form;
       if (form.state === "needs_you") return { label: "Finish the contact form", hint: form.note || "The form needs you before it can go.", tab: null, tone: "is-warning" };
       if (form.state === "failed") return { label: "Contact form did not send", hint: form.note || "Nothing was sent. Try again.", tab: null, tone: "is-warning" };
-      if (form.state === "unconfirmed") return { label: "Check the form arrived", hint: "It was sent, but their page did not confirm it. Look for a confirmation email.", tab: null, tone: "is-warning" };
+      if (form.asks) return { label: "Did the form go?", hint: "You pressed its send button in Finish in browser. Say whether their page said your message was sent.", tab: null, tone: "is-warning" };
+      if (form.state === "unconfirmed") return { label: "Check the form arrived", hint: "It may have been sent: their page did not confirm it. Look for a confirmation email.", tab: null, tone: "is-warning" };
       return { label: "Send through their contact form", hint: "They publish no email. The approved draft goes in through the form on their site, as you.", tab: null, tone: "is-region" };
     }
     return { label: "Send it from your email", hint: "Open the approved draft in your email, send it, then mark it sent here.", tab: null, tone: "is-region" };
@@ -165,17 +176,20 @@
 
   const OUTREACH_PANE_TABS = [
     ["draft", "Draft"],
+    ["follow-up", "Follow-up"],
     ["research", "Research"],
     ["contact", "Contact"],
     ["timing", "Timing"],
     ["history", "Replies and history"],
   ];
 
+  // A follow-up has somewhere to go once the first email is out, and keeps it while one is written.
+  const outreachHasFollowUp = (item) => item.status === "sent" || item.status === "followed_up" || Boolean(item.follow_up_body);
+
   // Call prep appears once a company writes back, and stays while it holds notes.
   function outreachPaneTabs(item) {
-    return OUTREACH_CALL_PREP.includes(item.status) || item.call_prep
-      ? [["prep", "Call prep"], ...OUTREACH_PANE_TABS]
-      : OUTREACH_PANE_TABS;
+    const tabs = OUTREACH_PANE_TABS.filter(([id]) => id !== "follow-up" || outreachHasFollowUp(item));
+    return OUTREACH_CALL_PREP.includes(item.status) || item.call_prep ? [["prep", "Call prep"], ...tabs] : tabs;
   }
 
   // The tab a company opens on: the one you last used for it, else where its next step lives.
@@ -275,11 +289,11 @@
     row.type = "button";
     row.dataset.rowId = item.id;
     row.setAttribute("aria-pressed", String(selected));
+    // The name keeps the whole line, with the priority beside it; the place goes under it, so a long name never cuts it off.
     const top = element("span", "outreach-row-top");
-    top.append(
-      element("strong", "outreach-row-company", item.company),
-      element("span", "outreach-row-meta", [item.location_region || item.location, item.priority].filter(Boolean).join(" · "))
-    );
+    top.appendChild(element("strong", "outreach-row-company", item.company));
+    if (item.priority) top.appendChild(element("span", "outreach-row-priority", item.priority));
+    const where = item.location_region || item.location;
     const contact = element("span", "outreach-row-contact");
     const health = item.contact_email ? (item.contact_confidence === "confirmed" ? "is-good" : "is-soon") : item.contact_form ? "is-soon" : "is-bad";
     contact.append(
@@ -291,7 +305,7 @@
     const next = outreachNextStep(item);
     const bottom = element("span", "outreach-row-bottom");
     bottom.append(chip(next.label, next.tone || ""), element("span", "outreach-row-status", OUTREACH_STATUS_LABELS[item.status] || item.status));
-    row.append(top, contact, bottom);
+    row.append(...[top, where ? element("span", "outreach-row-meta", where) : null, contact, bottom].filter(Boolean));
     if (item.tags?.length) {
       row.appendChild(element("span", "outreach-row-tags", item.tags.map((tag) => `#${tag.tag}`).join(" ")));
     }
@@ -1059,28 +1073,37 @@
     }
     const side = element("div", "outreach-head-side");
     side.appendChild(chip(OUTREACH_STATUS_LABELS[item.status] || item.status, item.status === "replied" || item.status === "call_scheduled" || item.status === "offer" ? "is-region" : ""));
-    const setAside = outreachNotInterested(item);
-    if (setAside) side.appendChild(chip(`Not interested since ${formatDate(item.not_interested_at)}`, "is-warning"));
+    const setAside = outreachSetAside(item);
+    const applied = outreachAppliedDirectly(item);
+    if (setAside) side.appendChild(chip(`${applied ? "Applied directly, marked" : "Not interested since"} ${formatDate(item.not_interested_at)}`, applied ? "is-region" : "is-warning"));
     const link = safeExternalUrl(item.website) || item.source_urls.map(safeExternalUrl).find(Boolean);
     if (link) {
       const site = externalLink(link, "Research source ↗", { className: "secondary-button" });
       side.appendChild(site);
     }
-    // Filed under Not interested, never deleted; automation leaves it alone until it is moved back.
-    const interest = element("button", "secondary-button outreach-interest", setAside ? "Move back to outreach" : "Not interested");
-    interest.type = "button";
-    interest.addEventListener("click", async () => {
-      interest.disabled = true;
-      try {
-        await patchOutreach(item, { not_interested: !setAside }, setAside
-          ? `${item.company} moved back into your outreach.`
-          : `${item.company} moved to Not interested. It is kept there, and nothing automatic goes to it.`, ".outreach-interest");
-      } catch (error) {
-        showError(error.message);
-        interest.disabled = false;
-      }
-    });
-    side.appendChild(interest);
+    // Filed under Not interested or Applied directly, never deleted; automation leaves it alone until it is moved back.
+    const setAsideButton = (label, payload, message) => {
+      const button = element("button", "secondary-button outreach-interest", label);
+      button.type = "button";
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+          await patchOutreach(item, payload, message, ".outreach-interest");
+        } catch (error) {
+          showError(error.message);
+          button.disabled = false;
+        }
+      });
+      side.appendChild(button);
+    };
+    if (setAside) {
+      setAsideButton("Move back to outreach", { not_interested: false }, `${item.company} moved back into your outreach.`);
+    } else {
+      setAsideButton("Applied directly", { applied_directly: true },
+        `${item.company} moved to Applied directly. It is kept there, and nothing automatic goes to it.`);
+      setAsideButton("Not interested", { not_interested: true },
+        `${item.company} moved to Not interested. It is kept there, and nothing automatic goes to it.`);
+    }
     heading.append(identity, side);
 
     const facts = element("div", "application-facts");
@@ -1223,6 +1246,8 @@
       });
       actions.appendChild(confirmResearch);
     }
+    // One press for the usual path; the separate buttons above and in the Draft tab stay.
+    if (canApproveAndSchedule(context, item)) actions.appendChild(approveAndScheduleButton(item));
     const awaitingReply = item.status === "sent" || item.status === "followed_up";
     const deliverable = !item.contact_bounced && !item.cc_bounced;
     if (item.contact_email && deliverable && item.draft_status === "approved" && !awaitingReply && !["replied", "call_scheduled", "offer", "declined", "no_response"].includes(item.status)) {
@@ -1242,9 +1267,12 @@
     }
     // With no email, the approved draft goes through the company's contact form.
     if (!item.contact_email && item.contact_form && item.draft_status === "approved" && !item.sent_at && ["not_started", "drafted", "paused"].includes(item.status)) {
-      actions.appendChild(formSendControls(item));
+      const controls = formSendControls(item);
+      actions.appendChild(controls);
       if (item.contact_form.state === "unconfirmed") {
-        const arrived = element("button", "secondary-button", "It arrived");
+        // Asked after the student's own press in Finish in browser, "It arrived" is their answer: Yes, it was sent.
+        const asks = Boolean(item.contact_form.asks);
+        const arrived = element("button", asks ? "primary-button" : "secondary-button", asks ? "Yes, it was sent" : "It arrived");
         arrived.type = "button";
         arrived.addEventListener("click", async () => {
           arrived.disabled = true;
@@ -1255,7 +1283,8 @@
             arrived.disabled = false;
           }
         });
-        actions.appendChild(arrived);
+        if (asks) controls.insertBefore(arrived, controls.querySelector("button"));
+        else actions.appendChild(arrived);
       }
     }
     // One follow-up per company; after it, the card suggests No response in time.
@@ -1376,15 +1405,10 @@
       to.append(element("strong", "", "To "), document.createTextNode(`${item.company}'s contact form (${formHost(item)})`));
       draft.appendChild(to);
     }
+    // A company reached only through its form has no To to choose until an address turns up.
+    const recipients = item.contact_email || !item.contact_form ? outreachRecipients(item) : null;
+    if (recipients) draft.appendChild(recipients.element);
     if (item.contact_email) {
-      const to = element("p", "outreach-to is-wide");
-      to.append(element("strong", "", "To "), document.createTextNode(item.contact_name ? `${item.contact_name} <${item.contact_email}>` : item.contact_email));
-      draft.appendChild(to);
-      if (item.contact_cc) {
-        const cc = element("p", "outreach-to is-wide");
-        cc.append(element("strong", "", "Cc "), document.createTextNode(item.contact_cc));
-        draft.appendChild(cc);
-      }
       if (item.contact_confidence === "unverified") {
         draft.appendChild(element("p", "outreach-note outreach-guess is-wide", item.contact_cc
           ? `${item.contact_email} is a guessed address, not confirmed. ${item.contact_cc} is in Cc, so a wrong guess still reaches the company.`
@@ -1426,12 +1450,17 @@
     draft.appendChild(sendNote);
 
     let followUpGroup = null;
-    if (item.status === "sent" || item.status === "followed_up" || item.follow_up_body) {
+    if (tabNames["follow-up"]) {
       followUpGroup = element("fieldset", "outreach-group is-draft");
       followUpGroup.appendChild(element("legend", "", "Follow-up draft"));
+      if (item.contact_email) {
+        const to = element("p", "outreach-to is-wide");
+        to.append(element("strong", "", "To "), document.createTextNode(item.contact_cc ? `${item.contact_email} (Cc ${item.contact_cc})` : item.contact_email));
+        followUpGroup.appendChild(to);
+      }
       const followSubject = outreachField(followUpGroup, "Subject", "follow_up_subject", item.follow_up_subject, { wide: true });
       const followBody = outreachField(followUpGroup, "Body", "follow_up_body", item.follow_up_body, { multiline: true, wide: true });
-      followBody.rows = 6;
+      followBody.rows = 8;
       const followChecks = element("div", "outreach-checks");
       followChecks.setAttribute("aria-live", "polite");
       const refreshFollowChecks = () => renderDraftChecks(followChecks, followSubject.value, followBody.value);
@@ -1439,40 +1468,51 @@
       followBody.addEventListener("input", refreshFollowChecks);
       refreshFollowChecks();
       followUpGroup.appendChild(followChecks);
-      draftAssistant(followUpGroup, item, "follow_up", followSubject, followBody);
+      draftAssistant(followUpGroup, item, "follow_up", followSubject, followBody, { extra: approveFollowUpButtons(context, item, followSubject, followBody) });
     }
 
     const notesGroup = element("fieldset", "outreach-group");
     notesGroup.appendChild(element("legend", "", "Notes"));
     outreachField(notesGroup, "Private notes", "notes", item.notes, { multiline: true, wide: true });
 
-    // Draft sits beside a summary of who it goes to and when, so the other tabs
-    // are only needed to change those details.
+    // Each draft sits beside a summary of who it goes to and when, so the other
+    // tabs are only needed to change those details.
+    const draftAside = () => {
+      const aside = element("aside", "outreach-aside");
+      aside.setAttribute("aria-label", "Contact and timing");
+      aside.append(
+        outreachSummaryCard("Contact", item.contact_email || item.contact_name ? [
+          [item.contact_name || item.contact_email, "outreach-aside-strong"],
+          item.contact_role ? [item.contact_role] : null,
+          item.contact_name && item.contact_email ? [item.contact_email] : null,
+          [CONTACT_CONFIDENCE_LABELS[item.contact_confidence], `outreach-aside-tag is-${item.contact_confidence}`],
+        ] : item.contact_form ? [["Contact form", "outreach-aside-strong"], [formHost(item)]] : [["No contact yet. Find one under Contact."]]),
+        outreachSummaryCard("Timing", [
+          [`Deadline: ${item.deadline_date ? formatCalendarDate(item.deadline_date) : item.deadline_label || "none recorded"}`],
+          [item.sent_at ? `Sent ${formatCalendarDate(item.sent_at)}` : "Not sent yet"],
+          OUTREACH_REVISIT.includes(item.status)
+            ? [item.follow_up_at ? `Revisit ${formatCalendarDate(item.follow_up_at)}` : "No revisit date set"]
+            : [item.follow_up_at ? `Follow up ${formatCalendarDate(item.follow_up_at)}` : "Follow-up is set when you mark it sent"],
+        ])
+      );
+      return aside;
+    };
     const draftPanel = panel("draft");
     const draftMain = element("div", "outreach-draft-main");
-    draftMain.append(draft, ...(followUpGroup ? [followUpGroup] : []));
-    const aside = element("aside", "outreach-aside");
-    aside.setAttribute("aria-label", "Contact and timing");
-    aside.append(
-      outreachSummaryCard("Contact", item.contact_email || item.contact_name ? [
-        [item.contact_name || item.contact_email, "outreach-aside-strong"],
-        item.contact_role ? [item.contact_role] : null,
-        item.contact_name && item.contact_email ? [item.contact_email] : null,
-        [CONTACT_CONFIDENCE_LABELS[item.contact_confidence], `outreach-aside-tag is-${item.contact_confidence}`],
-      ] : item.contact_form ? [["Contact form", "outreach-aside-strong"], [formHost(item)]] : [["No contact yet. Find one under Contact."]]),
-      outreachSummaryCard("Timing", [
-        [`Deadline: ${item.deadline_date ? formatCalendarDate(item.deadline_date) : item.deadline_label || "none recorded"}`],
-        [item.sent_at ? `Sent ${formatCalendarDate(item.sent_at)}` : "Not sent yet"],
-        OUTREACH_REVISIT.includes(item.status)
-          ? [item.follow_up_at ? `Revisit ${formatCalendarDate(item.follow_up_at)}` : "No revisit date set"]
-          : [item.follow_up_at ? `Follow up ${formatCalendarDate(item.follow_up_at)}` : "Follow-up is set when you mark it sent"],
-      ])
-    );
-    draftPanel.append(draftMain, aside);
+    draftMain.appendChild(draft);
+    draftPanel.append(draftMain, draftAside());
+    const followUpPanels = [];
+    if (followUpGroup) {
+      const followUpPanel = panel("follow-up");
+      const followUpMain = element("div", "outreach-draft-main");
+      followUpMain.appendChild(followUpGroup);
+      followUpPanel.append(followUpMain, draftAside());
+      followUpPanels.push(followUpPanel);
+    }
 
     const researchPanel = panel("research");
     researchPanel.append(research, outreachTechBrief(item, context), notesGroup);
-    const contactsSection = outreachContactsSection(item);
+    const contactsSection = outreachContactsSection(item, { onCandidates: recipients?.update });
     const contactPanel = panel("contact");
     contactPanel.append(contact, outreachManualContactSection(item), outreachContactFormSection(item), contactsSection.element);
     const timingPanel = panel("timing");
@@ -1480,9 +1520,11 @@
     const historyPanel = panel("history");
     const contacted = Boolean(item.sent_at) || !["not_started", "drafted"].includes(item.status);
     const timeline = element("section", "tracker-subsection outreach-history");
-    timeline.appendChild(element("h4", "", "History"));
+    const timelineHead = element("div", "outreach-history-head");
+    const timelineCount = element("span", "outreach-history-count");
+    timelineHead.append(element("h4", "", "History"), timelineCount);
     const timelineBody = element("div");
-    timeline.appendChild(timelineBody);
+    timeline.append(timelineHead, timelineBody);
     if (contacted) historyPanel.appendChild(outreachReplySection(item));
     else historyPanel.appendChild(element("p", "outreach-note", "Replies can be logged once the email is sent."));
     historyPanel.appendChild(timeline);
@@ -1492,7 +1534,7 @@
     save.type = "submit";
     const remove = element("button", "danger-button", "Remove company");
     remove.type = "button";
-    remove.hidden = outreachNotInterested(item);
+    remove.hidden = outreachSetAside(item);
     const formStatus = element("p", "form-status");
     formStatus.setAttribute("aria-live", "polite");
     footer.append(save, remove, formStatus);
@@ -1502,8 +1544,8 @@
       prepPanel.appendChild(outreachCallPrep(item));
       prepPanels.push(prepPanel);
     }
-    form.append(...prepPanels, draftPanel, researchPanel, contactPanel, timingPanel, historyPanel, footer);
-    loadOutreachTimeline(item.id, timelineBody);
+    form.append(...prepPanels, draftPanel, ...followUpPanels, researchPanel, contactPanel, timingPanel, historyPanel, footer);
+    loadOutreachTimeline(item.id, timelineBody, timelineCount);
     contactsSection.load();
 
     form.addEventListener("submit", async (event) => {

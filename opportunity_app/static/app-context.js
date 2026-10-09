@@ -51,6 +51,10 @@
     // The company shown in the split view's pane, and the tab picked per company.
     outreachSelected: null,
     outreachTabs: {},
+    // Set when the student picks an outreach tab in the rail, until the load it starts reads it.
+    outreachRailPicked: false,
+    // Companies ticked in a list that takes batch actions (Follow-ups due), by id.
+    outreachPicked: new Set(),
     outreachOpen: null,
     outreachFlash: null,
     // Text typed into the open pane but not saved yet, carried across the one

@@ -434,6 +434,150 @@
       "status_code": null
     },
     {
+      "endpoint": "start_apply_rehearsal",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "start_apply_rehearsal_api_v1_apply_agent_opportunities__opportunity_id__rehearsals_post",
+      "path": "/api/v1/apply-agent/opportunities/{opportunity_id}/rehearsals",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 202
+    },
+    {
+      "endpoint": "start_apply_lookup",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "start_apply_lookup_api_v1_apply_agent_opportunities__opportunity_id__lookups_post",
+      "path": "/api/v1/apply-agent/opportunities/{opportunity_id}/lookups",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 202
+    },
+    {
+      "endpoint": "start_apply_handoff",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "start_apply_handoff_api_v1_apply_agent_opportunities__opportunity_id__handoffs_post",
+      "path": "/api/v1/apply-agent/opportunities/{opportunity_id}/handoffs",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 202
+    },
+    {
+      "endpoint": "list_apply_runs",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "list_apply_runs_api_v1_apply_agent_opportunities__opportunity_id__runs_get",
+      "path": "/api/v1/apply-agent/opportunities/{opportunity_id}/runs",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "get_apply_run",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_apply_run_api_v1_apply_agent_runs__run_id__get",
+      "path": "/api/v1/apply-agent/runs/{run_id}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "cancel_apply_run",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "cancel_apply_run_api_v1_apply_agent_runs__run_id__cancel_post",
+      "path": "/api/v1/apply-agent/runs/{run_id}/cancel",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "front_apply_run",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "front_apply_run_api_v1_apply_agent_runs__run_id__front_post",
+      "path": "/api/v1/apply-agent/runs/{run_id}/front",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "get_apply_run_values",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_apply_run_values_api_v1_apply_agent_runs__run_id__values_get",
+      "path": "/api/v1/apply-agent/runs/{run_id}/values",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "review_apply_run",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "review_apply_run_api_v1_apply_agent_runs__run_id__review_post",
+      "path": "/api/v1/apply-agent/runs/{run_id}/review",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "get_apply_screenshot",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_apply_screenshot_api_v1_apply_agent_runs__run_id__screenshots__index__get",
+      "path": "/api/v1/apply-agent/runs/{run_id}/screenshots/{index}",
+      "response_model": null,
+      "status_code": null
+    },
+    {
+      "endpoint": "resolve_apply_claim",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "resolve_apply_claim_api_v1_apply_agent_claims__token__resolve_post",
+      "path": "/api/v1/apply-agent/claims/{token}/resolve",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "mark_apply_claim_applied",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "mark_apply_claim_applied_api_v1_apply_agent_claims__token__mark_applied_post",
+      "path": "/api/v1/apply-agent/claims/{token}/mark-applied",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
       "endpoint": "get_urgent",
       "include_in_schema": true,
       "kind": "route",
@@ -1078,6 +1222,18 @@
       ],
       "operation_id": "restore_outreach_draft_api_v1_outreach__target_id__drafts__version_id__restore_post",
       "path": "/api/v1/outreach/{target_id}/drafts/{version_id}/restore",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "add_outreach_location_line",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "add_outreach_location_line_api_v1_outreach__target_id__location_line_post",
+      "path": "/api/v1/outreach/{target_id}/location-line",
       "response_model": "dict[str, typing.Any]",
       "status_code": null
     },

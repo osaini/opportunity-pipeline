@@ -10,4 +10,5 @@
 #
 #   pip install -r requirements-optional.txt
 #   python3 -m playwright install chromium
-playwright>=1.40
+# The apply agent (opportunity_app/apply/agent.py) uses context.route_web_socket, which needs 1.48 or later.
+playwright>=1.48

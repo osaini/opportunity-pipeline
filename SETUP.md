@@ -109,6 +109,7 @@ into `config/profile.json`. The field names are the keys in
 | --- | --- | --- |
 | Name, school, degree | `name`, `school`, `degree` | e.g. "B.S. Chemical Engineering". Start with the level (B.S., M.S., Ph.D., MBA): a posting whose title asks only for another level, such as "MS/PhD", scores lower. |
 | How is their name written on an application? | `name_parts` | `{"first": ..., "last": ..., "preferred": ...}`. Apply for me (see 7c) types `first` and `last` into an employer's two name boxes, and `preferred` only where a form has a preferred-name box. It never splits a longer name itself, so ask for it whenever the name has more than two words. Editable on the Profile page as **Name for applications**. |
+| Mailing address (optional) | `contact`: `address_line1`, `address_line2`, `city`, `state`, `postal_code`, `country` | Some company contact forms require an address box. The app types this into a form's address boxes only when the form requires one, only once the student has confirmed it, and nowhere else (never a home, permanent, nationality or birth box, nor any box on a form that asks for an address twice, such as one with a reference's address block): when a form requires the street address, the rest of the confirmed address goes into its other address boxes; a form that requires only a country, state, city or ZIP gets only that; with none on file such a form waits for the student. Ask whether they are happy for that, and if so have them enter it on the Profile page (**About you › Mailing address**) rather than writing the file, because saving the page is what confirms it. Never guess one from a résumé or a school. |
 | Graduation year | `graduation_year` | a number |
 | Words that name their field in a posting | `degree_keywords` | e.g. `["chemical engineering", "process engineering"]`. Postings that match rank higher. |
 | Kinds of roles they want | `preferred_role_types` | from `internship`, `externship`, `co-op`, `research`, `part_time`, `early_career` |
@@ -121,7 +122,7 @@ into `config/profile.json`. The field names are the keys in
 | Titles to push down | `deprioritize_title_keywords` | disciplines they don't want, e.g. `["sales", "software"]` |
 | Authorized to work in the US? US citizen? Need sponsorship? | `work_authorized_us`, `us_citizen`, `requires_sponsorship` | `true` / `false` / `null`. Never infer these. |
 | Home during breaks and summers | `break_location` | "City, ST", or the name of one of their `regions`. Used only for the outreach "(live in …)" note (see below) |
-| Pay expectations | `compensation_preferences` | free text or `null` |
+| Pay expectations | `compensation_preferences` | `null`, or an object: `paid_only` (`true`, `false` or `null`), `minimum_hourly` (dollars an hour as a number, or `null`) and `currency` (text; pay is compared only when it is blank or `USD`). A string here is refused by the Profile page and ignored by the score. |
 | How they open an email | `greeting_word`, `unnamed_greeting` | Their word before a name (`"Hi"`, `"Hello"`, `"Dear"`), and how they greet a shared inbox with no name: `"{company} team"`, `"there"`, or `"{company} hiring team"`. Drafts and contact changes use these; left out, they are `"Hi"` and `"{company} team"`. Editable later on the Profile page. |
 
 **Regions** decide which locations score up. Each is a metro area with a
@@ -361,8 +362,8 @@ themselves (rule 3). The details:
   **Contact forms** reach companies that publish no email: the crawl notes the
   form on the company's contact page, and the approved first email goes in
   through it as the student, filled only from their confirmed profile (name,
-  and `PIPELINE_OUTREACH_ACCOUNT` as the reply address; school, phone, and a
-  link only when a form insists). It runs in Playwright's Chromium, so install
+  and `PIPELINE_OUTREACH_ACCOUNT` as the reply address; school, phone, a
+  link, and the mailing address from step 3 only when a form insists). It runs in Playwright's Chromium, so install
   it if this computer does not have it yet: `pip install -r requirements-optional.txt`
   then `python -m playwright install chromium`. Tell them it is their name on every
   form it sends, and that it sends only a draft they approved: the switch sends
@@ -582,16 +583,23 @@ web app's PATH, set `PIPELINE_MCPORTER` in `.env` to its full path.
 
 ## 7c. Apply for me (optional)
 
-**Apply for me** reads a saved Greenhouse role's public application form and
+**Apply for me** reads a saved Greenhouse role's public application form (and,
+once the student turns it on in item 7 below, a saved Lever role's) and
 shows the student what it would fill from their confirmed facts and saved
 answers, and which questions it cannot answer yet. The student answers a
 missing question once, on the role, and it is saved for that company only: Apply
 for me never carries an answer from one company to another, so there is no "use
-for any company" tick there. Later
-steps will fill the form in a window that the student watches; the student
-always presses Submit themselves, and nothing here sends an application. It is
-off until they turn it on under Profile › Automation. Ask before turning it on
-for them, and set up these things with the student:
+for any company" tick there. A **rehearsal** opens a Chromium window and fills the
+form to check it, sends nothing (the app blocks every request that could submit
+the form), and takes a picture of the filled form with the sensitive fields
+covered; the pictures are kept 90 days. A form that does not look like the saved
+role (another company or title) is rehearsed, or filled for **Finish in browser**,
+only after the student ticks "This is the right posting". Tell the student to turn
+a VPN off before a rehearsal or Finish in browser, since a form can refuse a visit
+that comes through one. Every application goes out under the student's own name and
+is their own act: the app only fills the form, and they press Submit. It is off
+until they turn it on under Profile › Automation. Ask before turning it on for
+them, and set up these things with the student:
 
 1. **Their name on an application.** Ask how they write it and set
    `name_parts` (see step 3), or fill in **Name for applications** on the
@@ -625,8 +633,8 @@ for them, and set up these things with the student:
 The limits in force are listed, read only, under Profile › Automation › Apply
 for me settings. That page also keeps the **exact options** the student picks
 for lists only the form knows (school, location, degree): the app uses such an
-option word for word and never guesses one. Screenshots of a filled form,
-when a later step takes them, are deleted after 90 days
+option word for word and never guesses one. Screenshots of a filled form
+are deleted after 90 days
 (`PIPELINE_APPLY_EVIDENCE_DAYS` in `.env` changes that). Run
 `python -m opportunity_app.setup validate` after editing; it checks these
 fields too.
@@ -683,6 +691,68 @@ fields too.
    That is a guard against a stray script, not a lock against anyone who holds
    the access token (it can sign in a browser session), and the account export
    includes the stored answers. Say so if they share the machine or the token.
+
+6. **Finish in browser.** On a saved role a **Finish in browser** button sits next to
+   the rehearsal. It opens a Chromium window and fills the form; what the app
+   cannot fill (a cover letter with none approved, any CAPTCHA box, a field it could not read back)
+   is listed as **Left for you**, and every consent box it ticked is listed with
+   the addresses the statement links to. If the student has approved a cover letter
+   for the role, the app attaches that one to the form's cover letter field after a
+   last check that it is still the latest approved version. The student finishes the form in the
+   window and presses **Submit application** there themselves. Tell them: the
+   application is not sent until they press it (to find the options for typeahead
+   fields such as location and school, the app sends the text typed there to
+   Greenhouse's lookup service, and it does not watch what they type in the window
+   themselves); **Stop**, closing the window, or 20
+   minutes without a press closes it and sends nothing; if the window doesn't
+   come forward, click Chromium in the taskbar; and the app never moves the
+   tracker by itself: when Greenhouse shows its confirmation page the card asks
+   **Mark as applied?**, and only their click does it. If Greenhouse asks for its
+   emailed security code, the app reads it from Gmail (read-only, after they
+   press Submit) and types it into the window, and they press Submit again; that
+   needs the email on their applications to be the Gmail account the app reads
+   (Profile › Email for applications), otherwise they type the code themselves.
+   The confirmation-email watch is optional for Finish in browser: without Gmail
+   connected the card says the app isn't checking for a confirmation email.
+   Pausing automation does not close a window they opened; Stop does.
+
+7. **Lever (optional; ask, never turn on for them).** A saved Lever posting
+   (`jobs.lever.co`, or `jobs.eu.lever.co`) gets the same "what's missing" view as a
+   Greenhouse role, read from the posting's own application page. Its only action is
+   **Finish in browser** (no rehearsal, no Look up options): the app fills the form in
+   a window and the student presses Submit application, as on Greenhouse. Two switches
+   in Profile › Automation, both off until the student turns them on, and the app never
+   turns either on itself:
+
+   - **Apply for me on Lever** lets Apply for me read a saved Lever role. It needs
+     **Apply for me** on first.
+   - **Let the app attach my résumé on Lever** is their answer to one question only
+     they can answer: Lever reads a résumé the moment it is attached, which sends the
+     file to Lever before they press Submit (the same happens when they attach it
+     themselves in the window). Say that plainly and ask. On, the start of every
+     Finish in browser says "The app will attach your résumé. Lever reads it as soon as it
+     is attached, so it is sent to Lever before you press Submit." and the run records it.
+     Off, the app attaches nothing and the start says the résumé is left for them to attach in
+     the window; it stays on their "left for you" list only if the form requires it. A run that ends before Submit
+     then reads "Your application was not sent. Lever received your résumé." once a résumé
+     has gone. It needs the first switch on.
+
+   Say two more things when you set this up. If the student attaches a résumé in the
+   window themselves, Lever reads it at once too: the window then names the fields Lever
+   filled from it (never their values), and the student checks them before pressing
+   Submit. And Lever shows an hCaptcha when Submit is pressed; it is the student's,
+   and the app never touches it. The first Finish in browser at a posting they really
+   want is the first time anyone sees what Lever answers after Submit, so sit with them
+   for it, with the confirmation email, and write down what you saw (the spec's open
+   questions Q1 and Q2).
+
+   Lever's lists have one that matters here: **Location**. The student types the
+   exact name as Lever's list spells it under Profile › Automation › Apply for me
+   settings › **Exact options for lists the Lever form owns**, or on the role. The
+   app never guesses one. Pronouns, the disability question (answering it makes Lever
+   require a typed signature and a date) and a marketing consent are never filled.
+   Nothing about the student is written into the app for this: the switches, the
+   location and the answers all live in their own copy.
 
 ## 8. First run and daily use
 

@@ -61,6 +61,19 @@ class VectorTests(unittest.TestCase):
             self.assertEqual(possibly_sensitive(row["text"]), row["possibly_sensitive"], row["text"])
             self.assertEqual(never_storable(row["text"]), row["never_storable"], row["text"])
 
+    def test_the_section_headings_match_the_shared_vectors_the_javascript_engine_also_runs(self):
+        rows = json.loads((FIXTURES / "broad_net.json").read_text(encoding="utf-8"))["sections"]
+        self.assertGreaterEqual(len(rows), 15)
+        for row in rows:
+            self.assertEqual(apply_classify.section_never(row["text"]), row["never"], row["text"])
+        self.assertFalse(apply_classify.section_never(None))
+
+    def test_the_standard_profile_fields_and_common_prompts_the_net_was_widened_around_are_not_caught(self):
+        for label in ("First name", "Last name", "Preferred first name", "Email", "Phone", "LinkedIn Profile", "Website", "GitHub", "Portfolio URL", "Resume/CV",
+                      "Cover Letter", "Address", "Describe your experience with fraud detection systems", "How do you identify bottlenecks in a system?",
+                      "Describe a cross-disciplinary project", "Why do you want to make an impact here?"):
+            self.assertEqual(net_topics(label), (), label)
+
     def test_every_topic_and_every_never_storable_topic_is_covered_by_the_vectors(self):
         seen = {topic for row in net_vectors() for topic in row["topics"]}
         self.assertEqual(seen, set(apply_classify.NET_TOPICS) | {"adult"})
@@ -84,6 +97,44 @@ class VectorTests(unittest.TestCase):
         for text in ("Why are you interested in this role?", "Tell us about yourself", "Describe a time you worked on a team", "Are you willing to relocate?",
                      "What is your expected graduation date?", "LinkedIn profile", "Portfolio URL", "What programming languages do you know?"):
             self.assertEqual(net_topics(text), (), text)
+
+
+class PageSectionTests(unittest.TestCase):
+    """A question the page shows under a demographic, compliance or background heading is never storable (the engine reads the page)."""
+
+    LABEL = "Tell us about your experience"
+
+    def test_the_engines_never_storable_mark_leaves_the_question_for_the_student_at_every_company(self):
+        field = F("q", self.LABEL, "textarea", parent="Resume/CV")
+        rows = [answer(self.LABEL, "Robots", COMPANY), answer(self.LABEL, "Robots", OTHER, ["reusable"])]
+        plain = plan(BASE + [field], sources(answers=rows)).get("q")
+        self.assertEqual((plain.source.kind, plain.net_never), ("answer", ()), "without the mark it fills here")
+        for scan in ([{"name": "q", "never_storable": True}], [{"id": "q", "never_storable": True}]):
+            for company in (COMPANY, OTHER):
+                got = plan(BASE + [field], sources(answers=rows), company=company, scan=scan).get("q")
+                self.assertEqual((got.source.kind, got.value, got.problem_kind), ("none", None, "sensitive_never"), company)
+                self.assertIn("personal", got.net_never)
+                self.assertEqual(apply_preflight._action(got, {})["type"], "manual", "no form offers to save it")
+        marked_false = plan(BASE + [field], sources(answers=rows), scan=[{"name": "q", "never_storable": False}]).get("q")
+        self.assertEqual(marked_false.source.kind, "answer")
+
+    def test_the_mark_is_the_fields_own_what_follows_it_is_marked_by_the_engine_by_the_same_chain_and_a_profile_link_is_not_touched(self):
+        parent = F("q", self.LABEL, "textarea", parent="Resume/CV")
+        child = F("c", "Please tell us more about that", "textarea", parent=self.LABEL)
+        got = plan(BASE + [parent, child], scan=[{"name": "q", "never_storable": True}])
+        self.assertEqual(got.get("c").net_never, (), "an unmarked field after a marked one takes nothing from the mark")
+        got = plan(BASE + [parent, child], scan=[{"name": "q", "never_storable": True}, {"name": "c", "never_storable": True}])
+        self.assertIn("personal", got.get("c").net_never)
+        link = F("l", "LinkedIn profile", "input_text", parent="Resume/CV")
+        facts = copy.deepcopy(apply_helpers.FACTS)
+        facts["contact"]["linkedin"] = "https://linkedin.example/in/sam"
+        kept = plan(BASE + [link], sources(facts=facts), scan=[{"name": "l", "never_storable": True}]).get("l")
+        self.assertEqual((kept.source.kind, kept.net_never), ("profile", ()))
+
+    def test_a_scan_that_is_a_generator_is_still_joined_to_the_listing(self):
+        field = F("q", self.LABEL, "textarea", parent="Resume/CV")
+        scan = [{"name": "q", "id": "q", "type": "textarea", "question": self.LABEL, "required_any": False, "visible_css": True}]
+        self.assertEqual(kinds(plan(BASE + [field], scan=iter(scan))), kinds(plan(BASE + [field], scan=scan)))
 
 
 class OrdinaryQuestionsFillOnlyAtTheirOwnCompanyTests(unittest.TestCase):
@@ -510,7 +561,7 @@ class NoCrossCompanyReuseTests(unittest.TestCase):
     """A. In Apply for me an answer library row is used at the company it was saved for, and never at another, whatever it is tagged."""
 
     # Wordings no list in this repo recognizes as personal: the safety must not rest on a list.
-    UNLISTED = ("Have you ever been refused a licence by a professional board?", "Have you ever been dismissed from a program for a rules violation?",
+    UNLISTED = ("Have you ever been refused a licence by a professional board?", "Have you ever been removed from a program for breaking its rules?",
                 "Is there anything in your past that could embarrass an employer?")
 
     def test_a_wording_no_list_recognizes_still_never_travels(self):
@@ -660,6 +711,91 @@ class NoBoxOrAgreementFromTheLibraryTests(unittest.TestCase):
                         self.assertEqual((got.source.kind, got.value), ("none", None))
                         self.assertIn("agreement", got.net_never)
                         self.assertEqual(apply_preflight._action(got, {})["type"], "manual")
+
+    def test_a_select_with_one_option_works_as_a_tick_box_and_is_never_filled_from_the_library(self):
+        for label, options in (("Work arrangement", ("Hybrid, three days on site",)), ("Interview format", ("Video call",)), ("Start", ("Noted",))):
+            for kind in (SINGLE, MULTI):
+                with self.subTest(label=label, kind=kind):
+                    field = F("q", label, kind, options=options, parent="Resume/CV")
+                    keyed = plan(BASE + [field]).get("q").answer_key
+                    for company in (COMPANY, OTHER):
+                        rows = [answer(keyed, options[0], COMPANY), answer(keyed, options[0], OTHER, ["reusable"]), answer(label, options[0], COMPANY)]
+                        got = plan(BASE + [field], sources(answers=rows), company=company).get("q")
+                        self.assertEqual((got.source.kind, got.value), ("none", None), company)
+                        self.assertIn("tick", got.net_never)
+                        self.assertEqual(apply_preflight._action(got, {})["type"], "manual", "no form offers to save it")
+
+    def test_a_select_whose_options_or_heading_hit_the_agreement_topic_in_words_the_narrow_list_lacks_is_left_for_the_student(self):
+        cases = (
+            ("Code of conduct", ("I will comply", "I will not comply")), ("Handbook", ("I will abide by it", "I will not")),
+            ("Waiver", ("I waive my right", "I keep my right")), ("Declaration", ("True", "Not true")),
+            ("Please indicate your compliance with the code", ("Done", "Not yet")), ("Data sharing", ("I authorize this", "I do not")),
+        )
+        for label, options in cases:
+            for kind in (SINGLE, MULTI):
+                with self.subTest(label=label, kind=kind):
+                    field = F("q", label, kind, options=options, parent="Resume/CV")
+                    keyed = plan(BASE + [field]).get("q").answer_key
+                    rows = [answer(keyed, options[0], COMPANY), answer(keyed, options[0], OTHER, ["reusable"])]
+                    for company in (COMPANY, OTHER):
+                        got = plan(BASE + [field], sources(answers=rows), company=company).get("q")
+                        self.assertEqual((got.source.kind, got.value), ("none", None), company)
+                        self.assertIn("agreement", got.net_never)
+                        self.assertEqual(apply_preflight._action(got, {})["type"], "manual")
+
+    def test_a_signature_line_worded_unusually_is_never_filled_from_the_library(self):
+        for label, kind in (("Signed by", "input_text"), ("Sign below", "input_text"), ("Countersignature", "input_text"), ("Applicant declaration (full name)", "input_text"),
+                            ("Acknowledged by (your name)", "input_text"), ("Name of signatory", "input_text"), ("Sign below to complete your application", "textarea")):
+            with self.subTest(label=label):
+                field = F("q", label, kind, parent="Resume/CV")
+                keyed = plan(BASE + [field]).get("q").answer_key
+                for row in (answer(keyed, "Sam Rivera", COMPANY), answer(label, "Sam Rivera", COMPANY), answer(keyed, "Sam Rivera", OTHER, ["reusable"])):
+                    got = plan(BASE + [field], sources(answers=[row])).get("q")
+                    self.assertEqual((got.source.kind, got.value), ("none", None))
+                    self.assertTrue(got.sensitive is not None or "agreement" in got.net_never, "left for the student, by the classifier or the net")
+
+    def test_a_name_line_whose_description_says_it_signs_is_never_filled_from_the_library(self):
+        # The heading is an ordinary "Full Name"; the attestation is in the description, in the wordings forms use most.
+        for label, description in (
+            ("Full Name", "By entering your full name, you are electronically signing this application."),
+            ("Full Name", "By typing your name, you certify that the information above is accurate."),
+            ("Applicant Name", "I certify that the information in this application is true and complete."),
+            ("Legal name", "Your typed name below is your electronic signature."),
+            ("Name", "I hereby declare that my answers are correct."),
+        ):
+            with self.subTest(label=label, description=description):
+                field = SchemaField(name="q", label=label, required=True, type="input_text", description=description, parent="Resume/CV")
+                keyed = plan(BASE + [field]).get("q").answer_key
+                for row in (answer(keyed, "Sam Rivera", COMPANY), answer(label, "Sam Rivera", COMPANY), answer(keyed, "Sam Rivera", OTHER, ["reusable"])):
+                    got = plan(BASE + [field], sources(answers=[row])).get("q")
+                    self.assertEqual((got.source.kind, got.value), ("none", None))
+                    self.assertIn("agreement", got.net_never)
+
+    def test_a_plain_name_line_with_an_ordinary_description_still_fills_at_its_own_company(self):
+        field = SchemaField(name="q", label="Preferred pronunciation of your name", required=True, type="input_text", description="Spell it the way you would like us to say it.", parent="Resume/CV")
+        got = plan(BASE + [field], sources(answers=[answer("Preferred pronunciation of your name", "Sam", COMPANY)])).get("q")
+        self.assertEqual((got.source.kind, got.value, got.net_never), ("answer", "Sam", ()))
+
+    def test_a_select_that_follows_or_releases_something_is_left_for_the_student(self):
+        for label, options in (("Release", ("I release the company from liability", "No")), ("Code of conduct", ("I will follow it", "I will not")),
+                               ("Policies", ("I will adhere to them", "I will not"))):
+            for kind in (SINGLE, MULTI):
+                with self.subTest(label=label, kind=kind):
+                    field = F("q", label, kind, options=options, parent="Resume/CV")
+                    keyed = plan(BASE + [field]).get("q").answer_key
+                    rows = [answer(keyed, options[0], COMPANY), answer(label, options[0], COMPANY)]
+                    got = plan(BASE + [field], sources(answers=rows)).get("q")
+                    self.assertEqual((got.source.kind, got.value), ("none", None))
+                    self.assertTrue({"agreement", "tick"} & set(got.net_never), "left for the student by the agreement or the tick mark")
+
+    def test_ordinary_single_line_questions_and_longer_choice_lists_still_fill_at_their_own_company(self):
+        for label, kind, options in (("Your favourite programming language", "input_text", ()), ("Preferred pronunciation of your name", "input_text", ()),
+                                     ("Which team are you most interested in?", SINGLE, ("Perception", "Controls", "Planning")), ("Tell us about yourself", "textarea", ())):
+            with self.subTest(label=label):
+                field = F("q", label, kind, options=options, parent="Resume/CV")
+                value = options[0] if options else "Answer"
+                got = plan(BASE + [field], sources(answers=[answer(label, value, COMPANY)])).get("q")
+                self.assertEqual((got.source.kind, got.value, got.net_never), ("answer", value, ()))
 
     def test_an_ordinary_select_still_fills_at_its_own_company(self):
         field = F("q", "Which team are you most interested in?", SINGLE, options=("Perception", "Controls"), parent="Resume/CV")
@@ -995,6 +1131,27 @@ class FollowUpInheritanceTests(unittest.TestCase):
         got = plan(BASE + fields, sources(answers=[answer(keyed, "Details", COMPANY)])).get("g")
         self.assertIn("criminal", got.net_never)
         self.assertEqual((got.source.kind, got.problem_kind), ("none", "sensitive_never"))
+
+    def test_a_never_storable_chain_runs_through_a_child_the_wording_alone_does_not_call_a_follow_up(self):
+        """The shared chain vectors: the engine marks the same fields never storable (reusable_and_sensitive.mjs)."""
+        chains = json.loads((FIXTURES / "net_chains.json").read_text(encoding="utf-8"))["chains"]
+        for chain in chains:
+            fields = [yes_no(chain["parent"], name="p", parent="Resume/CV")]
+            above = chain["parent"]
+            for index, label in enumerate(chain["children"]):
+                fields.append(F(f"c{index}", label, "textarea", parent=above))
+                above = label
+            got = plan(BASE + fields)
+            for index, label in enumerate(chain["children"]):
+                with self.subTest(parent=chain["parent"], child=label):
+                    entry = got.get(f"c{index}")
+                    never = bool(entry.net_never) or entry.sensitive is not None
+                    self.assertEqual(never, chain["never"][index])
+                    if never:
+                        rows = [answer(entry.answer_key, "Details", COMPANY), answer(label, "Details", COMPANY)]
+                        filled = plan(BASE + fields, sources(answers=rows)).get(f"c{index}")
+                        self.assertNotEqual(filled.source.kind, "answer")
+                        self.assertEqual(apply_preflight._action(filled, {})["type"], "manual")
 
     def test_a_question_after_an_ordinary_one_takes_nothing(self):
         fields = [yes_no("Are you willing to relocate?", name="p", parent="Resume/CV"), F("q", "Please tell us more about your plans", "textarea", parent="Are you willing to relocate?")]

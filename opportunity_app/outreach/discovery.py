@@ -30,9 +30,9 @@ import os
 import sqlite3
 import subprocess
 from contextlib import ExitStack, closing
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 from uuid import uuid4
 
 import httpx
@@ -55,7 +55,7 @@ from .company_profile import SecUnavailableError, form_d_lookup, record_form_d, 
 from .render import PlaywrightRenderer, default_renderer
 from ..student.preparation import confirmed_facts
 from ..core.database import connect_product
-from ..core.timestamps import utc_now
+from ..core.timestamps import parse_app_instant, utc_now
 from ..integrations.web_fetch import UNVERIFIABLE_STATUSES, FetchResult, SafeFetcher, default_fetcher
 
 # Briefs are templates filled from the student's confirmed profile, so every
@@ -124,6 +124,10 @@ DEFAULT_SCOPES = tuple(SCOPES)
 MAX_PER_SCOPE = 10
 MAX_TARGETS = 25
 SCHEDULED_MIN_GAP = timedelta(hours=48)
+# A catch-up start (due_since) that finds the slot's run failed, or still marked running, waits this long before trying
+# again, so an unlock or wake does not start a new search every time. The task's own limit is two hours.
+CATCH_UP_RETRY_AFTER = timedelta(hours=3)
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 # Three scopes at up to 45 minutes each, plus contacts and drafts.
 LOCK_STALE_AFTER = timedelta(hours=4)
 REPORT_DIR = ROOT / "data"
@@ -416,6 +420,56 @@ def last_runs(conn: Any, *, user_id: str, limit: int = 5) -> list[dict[str, Any]
     return runs
 
 
+def latest_scheduled_slot(days: Sequence[str], at: time, now: datetime) -> datetime:
+    """The newest day-and-time slot, among the named weekdays at ``at``, that is not after ``now``.
+
+    Naive local times in and out: the Task Scheduler works in the computer's clock, and a naive
+    time converted with ``astimezone()`` follows that day's daylight saving rule.
+    """
+    wanted = set()
+    for name in days:
+        key = str(name).strip().casefold()
+        if key not in WEEKDAYS:
+            raise ValueError(f"{name!r} is not a day of the week")
+        wanted.add(WEEKDAYS.index(key))
+    if not wanted:
+        raise ValueError("Name at least one day of the week")
+    for back in range(8):
+        slot = datetime.combine(now.date() - timedelta(days=back), at)
+        if slot.weekday() in wanted and slot <= now:
+            return slot
+    raise AssertionError("a weekday always falls within the last eight days")  # pragma: no cover
+
+
+def _scheduled_skip_reason(conn: Any, user_id: str, now: datetime, due_since: datetime | None) -> str:
+    """Why a scheduled start has nothing to do, or "" when it should search.
+
+    Without ``due_since`` (the task as first installed) a success in the last 48 hours is
+    enough. With it, the start is a catch-up for the slot that began at ``due_since``: the
+    slot is settled by any successful run since then, the student's own included. A run
+    that failed or never finished waits CATCH_UP_RETRY_AFTER before the next try.
+    """
+    if due_since is None:
+        latest = conn.execute(
+            "SELECT MAX(started_at) FROM outreach_discovery_runs WHERE user_id=? AND status='succeeded'", (user_id,)
+        ).fetchone()[0]
+        if latest and datetime.fromisoformat(str(latest)) > now - SCHEDULED_MIN_GAP:
+            return f"A deep search already succeeded at {latest}"
+        return ""
+    for status, started in conn.execute(
+        "SELECT status, started_at FROM outreach_discovery_runs WHERE user_id=? ORDER BY started_at DESC LIMIT 20", (user_id,)
+    ).fetchall():
+        began = parse_app_instant(started)
+        if began is None or began < due_since:
+            continue
+        if status == "succeeded":
+            return f"A deep search already succeeded at {started}, after the slot that began {due_since.isoformat(timespec='minutes')}"
+        if began > now - CATCH_UP_RETRY_AFTER:
+            hours = int(CATCH_UP_RETRY_AFTER.total_seconds() // 3600)
+            return f"A deep search ({status}) began at {started}; the next try waits {hours} hours after it"
+    return ""
+
+
 def run_discovery(
     conn: Any,
     *,
@@ -426,6 +480,7 @@ def run_discovery(
     max_targets: int = MAX_PER_SCOPE,
     dry_run: bool = False,
     trigger: str = "manual",
+    due_since: datetime | None = None,
     report_dir: Path | None = None,
     lock_path: Path | None = None,
     provider_factory: Callable[[str, str], Any] | None = None,
@@ -441,6 +496,9 @@ def run_discovery(
     agent_note: str = "",
 ) -> dict[str, Any]:
     """Run one search per scope and import what passes the checks. max_targets is per scope.
+
+    due_since, with trigger "scheduled", makes the start a catch-up (see _scheduled_skip_reason): the task names the slot
+    it was owed, so a start at sign-in, unlock or wake searches only when that slot has no run yet.
 
     agent_note says why the runner is not the agent the student chose (agents.resolve_discovery_agent). It is stored with
     the run, so the deep search panel shows it for a search the web app started and for one the scheduled task ran.
@@ -460,12 +518,12 @@ def run_discovery(
     now = now or datetime.now(timezone.utc)
     today = today or local_today(conn, user_id, now)
 
+    if due_since is not None and (due_since.tzinfo is None or due_since.utcoffset() is None):
+        raise ValueError("due_since needs a time zone")
     if trigger == "scheduled" and not dry_run:
-        latest = conn.execute(
-            "SELECT MAX(started_at) FROM outreach_discovery_runs WHERE user_id=? AND status='succeeded'", (user_id,)
-        ).fetchone()[0]
-        if latest and datetime.fromisoformat(str(latest)) > now - SCHEDULED_MIN_GAP:
-            return {"skipped": True, "reason": f"A deep search already succeeded at {latest}"}
+        reason = _scheduled_skip_reason(conn, user_id, now, due_since)
+        if reason:
+            return {"skipped": True, "reason": reason}
 
     with _RunLock(lock_path or report_dir / "outreach-discovery.lock"):
         run_id = f"discovery-{uuid4().hex}"

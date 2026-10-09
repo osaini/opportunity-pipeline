@@ -197,8 +197,54 @@
         "title": "ApplyAnswerRequest",
         "type": "object"
       },
+      "ApplyClaimResolveRequest": {
+        "properties": {
+          "went_through": {
+            "title": "Went Through",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "went_through"
+        ],
+        "title": "ApplyClaimResolveRequest",
+        "type": "object"
+      },
+      "ApplyHandoffRequest": {
+        "properties": {
+          "acknowledged": {
+            "items": {
+              "enum": [
+                "company_limit",
+                "released_job",
+                "unmatched_confirmation",
+                "applying_old",
+                "active_at_company"
+              ],
+              "type": "string"
+            },
+            "maxItems": 5,
+            "title": "Acknowledged",
+            "type": "array"
+          },
+          "posting_confirmed": {
+            "default": false,
+            "title": "Posting Confirmed",
+            "type": "boolean"
+          }
+        },
+        "title": "ApplyHandoffRequest",
+        "type": "object"
+      },
       "ApplyLabelRequest": {
         "properties": {
+          "ats": {
+            "default": "greenhouse",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Ats",
+            "type": "string"
+          },
           "label": {
             "maxLength": 200,
             "minLength": 1,
@@ -210,6 +256,62 @@
           "label"
         ],
         "title": "ApplyLabelRequest",
+        "type": "object"
+      },
+      "ApplyLookupRequest": {
+        "properties": {
+          "key": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Key",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "text"
+        ],
+        "title": "ApplyLookupRequest",
+        "type": "object"
+      },
+      "ApplyRehearsalRequest": {
+        "properties": {
+          "posting_confirmed": {
+            "default": false,
+            "title": "Posting Confirmed",
+            "type": "boolean"
+          }
+        },
+        "title": "ApplyRehearsalRequest",
+        "type": "object"
+      },
+      "ApplyReviewRequest": {
+        "properties": {
+          "note": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Note",
+            "type": "string"
+          },
+          "verdict": {
+            "enum": [
+              "right",
+              "wrong"
+            ],
+            "title": "Verdict",
+            "type": "string"
+          }
+        },
+        "required": [
+          "verdict"
+        ],
+        "title": "ApplyReviewRequest",
         "type": "object"
       },
       "ApplySensitiveAnswerRequest": {
@@ -2152,6 +2254,17 @@
               }
             ],
             "title": "Activity Signal"
+          },
+          "applied_directly": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied Directly"
           },
           "call_prep": {
             "anyOf": [
@@ -5589,6 +5702,18 @@
             }
           },
           {
+            "in": "query",
+            "name": "ats",
+            "required": false,
+            "schema": {
+              "default": "greenhouse",
+              "maxLength": 40,
+              "minLength": 1,
+              "title": "Ats",
+              "type": "string"
+            }
+          },
+          {
             "in": "header",
             "name": "authorization",
             "required": false,
@@ -5753,6 +5878,196 @@
           }
         },
         "summary": "Put Apply Ats Label"
+      }
+    },
+    "/api/v1/apply-agent/claims/{token}/mark-applied": {
+      "post": {
+        "description": "Mark as applied?: move the application forward after a Finish in browser submission, which never moves it by itself.",
+        "operationId": "mark_apply_claim_applied_api_v1_apply_agent_claims__token__mark_applied_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_user_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline User Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Mark Apply Claim Applied Api V1 Apply Agent Claims  Token  Mark Applied Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mark Apply Claim Applied"
+      }
+    },
+    "/api/v1/apply-agent/claims/{token}/resolve": {
+      "post": {
+        "description": "It went through / It didn't go through, for an attempt that may have reached Greenhouse.",
+        "operationId": "resolve_apply_claim_api_v1_apply_agent_claims__token__resolve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_user_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline User Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyClaimResolveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Resolve Apply Claim Api V1 Apply Agent Claims  Token  Resolve Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve Apply Claim"
       }
     },
     "/api/v1/apply-agent/opportunities/{opportunity_id}/answers": {
@@ -5945,6 +6260,453 @@
         "summary": "Apply Agent Check"
       }
     },
+    "/api/v1/apply-agent/opportunities/{opportunity_id}/handoffs": {
+      "post": {
+        "description": "Finish in browser: fill this Greenhouse form in a window and leave the Submit button to the student.\n\nNeeds the student's own browser session: starting one is the student's act, and the application goes out under their\nname only when they press Submit application in the window. The ticks the student gave (an earlier application, a\nreleased attempt, an old row) are named by their codes, and ``posting_confirmed`` says they checked a posting that\ndoes not look like the saved role.",
+        "operationId": "start_apply_handoff_api_v1_apply_agent_opportunities__opportunity_id__handoffs_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "opportunity_id",
+            "required": true,
+            "schema": {
+              "title": "Opportunity Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_user_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline User Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyHandoffRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Start Apply Handoff Api V1 Apply Agent Opportunities  Opportunity Id  Handoffs Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Apply Handoff"
+      }
+    },
+    "/api/v1/apply-agent/opportunities/{opportunity_id}/lookups": {
+      "post": {
+        "description": "Type this text into one of the form's lists and read the options Greenhouse offers. The text goes to Greenhouse's lookup service.",
+        "operationId": "start_apply_lookup_api_v1_apply_agent_opportunities__opportunity_id__lookups_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "opportunity_id",
+            "required": true,
+            "schema": {
+              "title": "Opportunity Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_user_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline User Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyLookupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Start Apply Lookup Api V1 Apply Agent Opportunities  Opportunity Id  Lookups Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Apply Lookup"
+      }
+    },
+    "/api/v1/apply-agent/opportunities/{opportunity_id}/rehearsals": {
+      "post": {
+        "description": "Fill this Greenhouse form in a window the student can watch, to check it. Nothing is sent: the app never presses Submit, and it refuses every request it can see that could send the form.\n\nA form that does not look like the saved role is refused (409) until the body says ``posting_confirmed``.",
+        "operationId": "start_apply_rehearsal_api_v1_apply_agent_opportunities__opportunity_id__rehearsals_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "opportunity_id",
+            "required": true,
+            "schema": {
+              "title": "Opportunity Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_user_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline User Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ApplyRehearsalRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Start Apply Rehearsal Api V1 Apply Agent Opportunities  Opportunity Id  Rehearsals Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Apply Rehearsal"
+      }
+    },
+    "/api/v1/apply-agent/opportunities/{opportunity_id}/runs": {
+      "get": {
+        "description": "This role's lookups, rehearsals and Finish in browser runs, newest first (or the one ``run_id``), and whether the app is busy.",
+        "operationId": "list_apply_runs_api_v1_apply_agent_opportunities__opportunity_id__runs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "opportunity_id",
+            "required": true,
+            "schema": {
+              "title": "Opportunity Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "lookup",
+                    "rehearsal",
+                    "handoff"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "run_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 80,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Run Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 5,
+              "maximum": 20,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_user_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline User Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Apply Runs Api V1 Apply Agent Opportunities  Opportunity Id  Runs Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Apply Runs"
+      }
+    },
     "/api/v1/apply-agent/opportunities/{opportunity_id}/sensitive-answers": {
       "post": {
         "description": "Needs you: store the student's answer to one sensitive question the check listed, with the consent ticked.",
@@ -6043,6 +6805,560 @@
           }
         },
         "summary": "Apply Agent Sensitive Answer"
+      }
+    },
+    "/api/v1/apply-agent/runs/{run_id}": {
+      "get": {
+        "operationId": "get_apply_run_api_v1_apply_agent_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_user_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline User Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Apply Run Api V1 Apply Agent Runs  Run Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Apply Run"
+      }
+    },
+    "/api/v1/apply-agent/runs/{run_id}/cancel": {
+      "post": {
+        "description": "Stop: the run is asked to end, and its browser is killed if it does not.\n\nA Finish in browser run's claim is asked first, in the database (``request_cancel``): from then on the hand-over is\nrefused, so a Submit the student presses while the stop travels to the window goes nowhere. Once the student has pressed\nSubmit the application is out of the app's hands, and the answer says so.",
+        "operationId": "cancel_apply_run_api_v1_apply_agent_runs__run_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_user_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline User Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Cancel Apply Run Api V1 Apply Agent Runs  Run Id  Cancel Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Apply Run"
+      }
+    },
+    "/api/v1/apply-agent/runs/{run_id}/front": {
+      "post": {
+        "description": "Bring the Finish in browser window to the front (the student could not find it behind other windows).",
+        "operationId": "front_apply_run_api_v1_apply_agent_runs__run_id__front_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_user_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline User Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Front Apply Run Api V1 Apply Agent Runs  Run Id  Front Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Front Apply Run"
+      }
+    },
+    "/api/v1/apply-agent/runs/{run_id}/review": {
+      "post": {
+        "description": "The student marks a finished rehearsal right or wrong. Marks open the gate and trip the breaker, so they need the browser session.",
+        "operationId": "review_apply_run_api_v1_apply_agent_runs__run_id__review_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_user_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline User Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Review Apply Run Api V1 Apply Agent Runs  Run Id  Review Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Review Apply Run"
+      }
+    },
+    "/api/v1/apply-agent/runs/{run_id}/screenshots/{index}": {
+      "get": {
+        "description": "One picture of a filled form, with sensitive fields covered. Served only from the student's own folder, never cached.\n\nThe covering hides every sensitive answer, not the rest: the picture shows each other value the form holds, so it needs the\nstudent's own browser session (the same protection as ``values``), not an access token a script holds.",
+        "operationId": "get_apply_screenshot_api_v1_apply_agent_runs__run_id__screenshots__index__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "index",
+            "required": true,
+            "schema": {
+              "title": "Index",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_user_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline User Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Apply Screenshot"
+      }
+    },
+    "/api/v1/apply-agent/runs/{run_id}/values": {
+      "get": {
+        "description": "What the app would use (a rehearsal) or filled (Finish in browser) for each field of this run, for the student's own browser only.\n\nThe values are today's source for each stored plan entry: they are read here, from the student's data, and never stored on the\nrun. Each says whether it ``changed`` since the run and, for a Finish in browser run, is shown only where it provably equals\nwhat was filled. Never cached.",
+        "operationId": "get_apply_run_values_api_v1_apply_agent_runs__run_id__values_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_user_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline User Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Apply Run Values Api V1 Apply Agent Runs  Run Id  Values Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Apply Run Values"
       }
     },
     "/api/v1/apply-agent/sensitive-answers": {
@@ -17353,6 +18669,96 @@
           }
         },
         "summary": "Gmail Send For Outreach"
+      }
+    },
+    "/api/v1/outreach/{target_id}/location-line": {
+      "post": {
+        "description": "Put the \"(live in ...)\" line into the draft after the school's name, approved or not; an approval is taken back.",
+        "operationId": "add_outreach_location_line_api_v1_outreach__target_id__location_line_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "target_id",
+            "required": true,
+            "schema": {
+              "title": "Target Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_user_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline User Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Add Outreach Location Line Api V1 Outreach  Target Id  Location Line Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Outreach Location Line"
       }
     },
     "/api/v1/outreach/{target_id}/possible-replies/{gmail_id}": {

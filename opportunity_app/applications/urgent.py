@@ -459,6 +459,15 @@ def _outreach_rows(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any
             others = []
         for owner in [str(message["target_id"]), *others]:
             waiting.setdefault(owner, str(message["received_at"] or ""))
+    # A follow-up the student queued, or one going out now, is handled: Outreach lists it under Scheduled. One whose
+    # scheduled send stopped needs them again, so it is due.
+    queued = {
+        str(row[0]) for row in conn.execute(
+            "SELECT target_id FROM outreach_scheduled_sends WHERE user_id=? AND kind='follow_up' "
+            "AND state IN ('scheduled', 'sending', 'transmitting')",
+            (user_id,),
+        ).fetchall()
+    }
     for row in targets:
         base = {
             "record_id": str(row["id"]),
@@ -474,9 +483,9 @@ def _outreach_rows(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any
             continue
         if row["deadline_date"]:
             rows.append({**base, "kind": "outreach_deadline", "raw_date": row["deadline_date"]})
-        # Same rule as Outreach's own "follow-up due": only while awaiting a first reply, and not while
-        # an email from them may be one.
-        if row["follow_up_at"] and row["status"] == "sent" and str(row["id"]) not in waiting:
+        # Same rule as Outreach's own "Follow-ups due": only while awaiting a first reply, not while an email from
+        # them may be one, and not once it is queued.
+        if row["follow_up_at"] and row["status"] == "sent" and str(row["id"]) not in waiting and str(row["id"]) not in queued:
             rows.append({**base, "kind": "outreach_follow_up", "raw_date": row["follow_up_at"]})
     # Whatever the company's status: a reply may change it.
     # The targets loaded above are the same rows (user's own, not set aside); only a closed one the first query
@@ -509,13 +518,14 @@ def _apply_rows(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any]]:
     hand-over) waits until they settle it, however old, and says it may or may not have gone through. One that
     stopped for the student before anything was sent ('needs_you', never handed over) is listed only while the
     application is still 'applying' and ages out like any other row: once the student applied by hand or the
-    role moved on, it has nothing left to ask. A submission whose 24 hour look ended with no email says so and
+    role moved on, it has nothing left to ask. One the student stopped themselves (detail.stopped_by is 'student': Stop,
+    or closing the window of a Finish in browser) is never listed, since they know. A submission whose 24 hour look ended with no email says so and
     never suggests applying again: some employers send none.
     """
     rows = []
     for row in conn.execute(
         """
-        SELECT c.token, c.state, c.after_click, c.verification, c.updated_at, c.verified_at, c.application_id,
+        SELECT c.token, c.state, c.after_click, c.verification, c.updated_at, c.verified_at, c.application_id, c.detail_json,
                o.id AS opportunity_id, o.company, o.title, a.stage AS application_stage
         FROM application_submit_claims c JOIN opportunities o ON o.id = c.opportunity_id
         LEFT JOIN applications a ON a.id = c.application_id
@@ -528,6 +538,8 @@ def _apply_rows(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any]]:
         uncertain = row["state"] == "unconfirmed" or bool(row["after_click"])
         if not silent and not uncertain and row["application_stage"] != "applying":
             continue
+        if not silent and not uncertain and _stopped_by_student(row["detail_json"]):
+            continue   # the student pressed Stop or closed the window themselves: nothing was sent and there is nothing to ask
         rows.append({
             "kind": "apply_no_email" if silent else "apply_needs_you",
             "record_id": str(row["token"]),
@@ -544,6 +556,14 @@ def _apply_rows(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any]]:
             "application_id": row["application_id"],
         })
     return rows
+
+
+def _stopped_by_student(detail_json: Any) -> bool:
+    try:
+        detail = json.loads(detail_json or "{}")
+    except (TypeError, ValueError):
+        return False
+    return isinstance(detail, dict) and detail.get("stopped_by") == "student"
 
 
 def _warn_once(key: str, reason: str) -> None:

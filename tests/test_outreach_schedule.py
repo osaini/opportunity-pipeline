@@ -290,10 +290,13 @@ class ScheduledSendTests(unittest.TestCase):
                 raise TypeError("unexpected")
             return real_send(conn, target_id, **kwargs)
 
-        # Just after both slots (a send hours late would move to the next morning instead).
-        later = max(
-            datetime.fromisoformat(self.target(item)["scheduled"]["initial"]["send_at"]) for item in (first, second)
-        ) + timedelta(minutes=1)
+        # Both in one slot, so one pass is just after both. Each slot is 9:00 to 9:40 spread by the target's id and at least five
+        # minutes away, so a run between about 9:00 and 9:45 in the recipient's zone can put one today and one tomorrow, and a
+        # pass after the later one would find the earlier one hours late and move it to the next morning instead.
+        slot = max(datetime.fromisoformat(self.target(item)["scheduled"]["initial"]["send_at"]) for item in (first, second))
+        with self.conn:
+            self.conn.execute("UPDATE outreach_scheduled_sends SET send_at=?", (slot.isoformat(timespec="seconds"),))
+        later = slot + timedelta(minutes=1)
         with mock.patch.object(outreach_schedule, "send_gmail_message", flaky):
             outcomes = {item["target_id"]: item["state"] for item in run_due_sends(self.conn, client_factory=self.factory, now=later)}
         self.assertEqual(outcomes, {first["id"]: "failed", second["id"]: "sent"})

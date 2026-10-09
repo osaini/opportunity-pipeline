@@ -8,6 +8,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -97,7 +98,7 @@ class ApplyCase(unittest.TestCase):
 
     def raw_claim(self, *, state="submitted", mode="one_click", handed_over_at=None, after_click=None, company=BLUEFIN, board="bluefin",
                   instance=SERVER_INSTANCE, heartbeat_at=None, stage_policy="record", token=None, verification="", stage_recorded=0,
-                  updated_at=None, submitted_at=None, note="", job_ref=None, confirmed_at=None, detail=None):
+                  updated_at=None, submitted_at=None, note="", job_ref=None, confirmed_at=None, detail=None, ats="greenhouse"):
         """A claim row written directly, in whatever state a test needs, with a posting and an application of its own."""
         self.serial += 1
         opportunity_id = f"raw-{self.serial}"
@@ -114,10 +115,10 @@ class ApplyCase(unittest.TestCase):
                 INSERT INTO application_submit_claims(token, application_id, user_id, opportunity_id, instance, mode, state, after_click, ats,
                     board_token, job_ref, company_key, stage_policy, plan_hash, handed_over_at, heartbeat_at, verification, stage_recorded,
                     submitted_at, note, confirmed_at, detail_json, created_at, updated_at)
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'greenhouse', ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (token, f"app-{opportunity_id}", USER, opportunity_id, instance, mode, state,
-                 1 if handed_over_at is not None and after_click is None else (after_click or 0), board,
+                 1 if handed_over_at is not None and after_click is None else (after_click or 0), ats, board,
                  job_ref or f"{board}/{opportunity_id}", employer_key(company), stage_policy, handed_over_at, heartbeat_at or stamp,
                  verification, stage_recorded, submitted_at, note, confirmed_at, json.dumps(detail or {}), stamp, stamp),
             )
@@ -125,6 +126,15 @@ class ApplyCase(unittest.TestCase):
 
     def claim_row(self, token):
         return dict(self.conn.execute("SELECT * FROM application_submit_claims WHERE token=?", (token,)).fetchone())
+
+    def committed_claim_row(self, token):
+        """The claim as ANOTHER connection sees it: only what the writing connection has committed.
+
+        ``claim_row`` reads through ``self.conn``, which sees its own uncommitted writes, so it cannot tell a commit from a write
+        that is still open. A test that says "after the commit" reads through this.
+        """
+        with closing(connect_product(self.path)) as other:
+            return dict(other.execute("SELECT * FROM application_submit_claims WHERE token=?", (token,)).fetchone())
 
     def stage(self, opportunity_id):
         row = self.conn.execute("SELECT stage, applied_at FROM applications WHERE opportunity_id=?", (opportunity_id,)).fetchone()
@@ -150,7 +160,7 @@ class ApplyCase(unittest.TestCase):
         return apply_runs.create_run(
             self.conn, user_id=USER, opportunity_id=opportunity_id, kind=kind, started_by="student", ats="greenhouse", board_token="bluefin",
             page_url="https://boards.example.test/bluefin/1", company=employer_key(company), deadline_seconds=300,
-            now=started or self.at(), **kwargs,
+            now=started or self.at(), **{"adapter_version": "greenhouse-1", **kwargs},
         )
 
     def reviewed_rehearsal(self, company, minutes, *, verdict="right", clean=True, outcome="rehearsed"):
@@ -219,7 +229,7 @@ def sources(*, facts=None, answers=(), labels=None, allowed=(), store=None, resu
 
 
 def plan(fields, src=None, mode="submit", company=COMPANY, **kwargs):
-    return build_plan(fields, kwargs.pop("scan", None), src or sources(), company, mode, **kwargs)
+    return build_plan(fields, kwargs.pop("scan", None), src or sources(), company, mode, **{"ats_name": "Greenhouse", **kwargs})
 
 
 def kinds(result):

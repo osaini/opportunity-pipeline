@@ -68,6 +68,8 @@ from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 from ..apply.claims import claim_held
+from ..apply.greenhouse import DISPLAY_NAME as GREENHOUSE_NAME
+from ..apply.lever import DISPLAY_NAME as LEVER_NAME
 from ..core.database import is_unique_violation
 from ..outreach.config import sender_account
 from ..core.schema import PAUSE_NEVER_CHANGED
@@ -152,7 +154,7 @@ FEATURES: dict[str, Feature] = {
     feature.key: feature
     for feature in (
         Feature("auto_drafts", "Write drafts automatically",
-                "Write a draft for every company with a contact and a location", "outreach", "internal"),
+                "Write a draft for every company not yet contacted", "outreach", "internal"),
         Feature("bounce_recovery", "Find a new contact after a bounce",
                 "After a bounce, find another contact and fix the greeting", "outreach", "internal"),
         # No shadow, at the student's choice (2026-09-28): the words are ones they approved,
@@ -190,8 +192,18 @@ FEATURES: dict[str, Feature] = {
         # Phase 5: fill a Greenhouse application in a window and stop before Submit. No shadow: every application
         # needs the student's own press (docs/phase5-apply-agent-spec.md 5.6), so there is nothing to observe first.
         Feature("apply_agent", "Apply for me",
-                "Fill a Greenhouse application from your confirmed facts and saved answers, show you the result, and send it only "
+                f"Fill a {GREENHOUSE_NAME} application from your confirmed facts and saved answers, show you the result, and send it only "
                 "when you press Submit", "applications", "external"),
+        # Lever (docs/phase5-lever-handoff-spec.md, section 9): both are off until the student turns them on, and nothing turns them on
+        # for the student. The first lets Apply for me read a saved Lever role; the second is the choice L1 asked for.
+        Feature("apply_agent_lever", f"Apply for me on {LEVER_NAME}",
+                f"Let Apply for me read saved {LEVER_NAME} roles and show what it would fill and what is missing, and let Finish in browser fill "
+                f"{LEVER_NAME}'s form in a window for you to finish. Needs Apply for me on",
+                "applications", "external"),
+        Feature("apply_lever_resume_upload", f"Let the app attach my résumé on {LEVER_NAME}",
+                f"Finish in browser attaches your résumé in {LEVER_NAME}'s form itself. {LEVER_NAME} reads it as soon as it is attached, so it is sent to "
+                f"{LEVER_NAME} before you press Submit. While this is off, you attach it yourself in the window",
+                "applications", "external"),
         # Phase 2: changes that stay inside the app, each with an Undo (student/resume_variants.py,
         # automation/internal.py, automation/triage.py).
         Feature("outreach_auto_close", "Close companies that never answered",
@@ -261,12 +273,27 @@ def _thank_you_requirement(conn: Any, user_id: str) -> str:
 # Automation panel shows why. The ones that need another module's records are
 # registered by that module at startup (register_requirement, through
 # bootstrap.register_all); until then each answers with an error.
+LEVER_NEEDS_APPLY_AGENT = "Apply for me must be on first"
+RESUME_UPLOAD_NEEDS_LEVER = f"Apply for me on {LEVER_NAME} must be on first"
+
+
+def _lever_requirement(conn: Any, user_id: str) -> str:
+    """Apply for me on Lever reads a role through Apply for me, so that switch must be on."""
+    return "" if mode(conn, user_id, "apply_agent") == "on" else LEVER_NEEDS_APPLY_AGENT
+
+
+def _lever_resume_requirement(conn: Any, user_id: str) -> str:
+    return "" if mode(conn, user_id, "apply_agent_lever") == "on" else RESUME_UPLOAD_NEEDS_LEVER
+
+
 REQUIREMENTS: dict[str, Callable[[Any, str], str]] = {
     "auto_save": _unregistered_requirement("auto_save"),
     "auto_pass": _unregistered_requirement("auto_pass"),
     "resume_variant_pick": _unregistered_requirement("resume_variant_pick"),
     "decline_thank_you": _thank_you_requirement,
     "apply_agent": _unregistered_requirement("apply_agent"),
+    "apply_agent_lever": _lever_requirement,
+    "apply_lever_resume_upload": _lever_resume_requirement,
 }
 
 
@@ -524,20 +551,26 @@ def _write_pause(conn: sqlite3.Connection, user_id: str, on: bool, now: str) -> 
     )
 
 
-# The claim state a contact form moves to as its send button is pressed
-# (outreach_forms.submit_contact_form); from then on a pause cannot stop it.
+# The claim state a contact form moves to as its send button is pressed, by the
+# app or, in Finish in browser, by the student (outreach_forms.submit_contact_form);
+# from then on a pause cannot stop it.
 FORM_HANDED_OVER = "clicking"
 
 
 def in_flight(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = None) -> list[dict[str, Any]]:
     """What is past stopping: emails handed to Gmail, contact forms whose button is being pressed, and applications handed to Greenhouse.
 
-    Each item's action is 'send', 'form' or 'application'. A Gmail draft being
+    Each item's action is 'send', 'form', 'application' or 'window'. A Gmail draft being
     saved is not a send, and a form still being filled in can still be stopped
     by a pause (for an automatic one), so neither is listed. An application is
     listed while its claim is 'clicking' and held (apply_claims.claim_held): by
     its heartbeat, not its age, since a Finish in browser claim can be
     minutes old at hand-over and still be running.
+
+    A 'window' item is a Finish in browser window that is open for the student's own turn (a held 'claimed' handoff
+    claim whose detail says the student is working). It is not past stopping, and a pause does not stop it either: the
+    student's own press of Submit is the confirm, and Stop ends it. It is listed so the pause reply and the health card
+    say so instead of staying silent about a window that is still open.
     """
     items = []
     for row in conn.execute(
@@ -576,7 +609,7 @@ def in_flight(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = 
         })
     for row in conn.execute(
         """
-        SELECT c.application_id, c.token, c.instance, c.heartbeat_at, c.mode, c.handed_over_at, o.company
+        SELECT c.application_id, c.token, c.instance, c.heartbeat_at, c.mode, c.handed_over_at, c.ats, o.company
         FROM application_submit_claims c LEFT JOIN opportunities o ON o.id=c.opportunity_id
         WHERE c.user_id=? AND c.state='clicking' ORDER BY c.handed_over_at
         """,
@@ -585,7 +618,25 @@ def in_flight(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = 
         if claim_held(row, now=now):
             items.append({
                 "source": "apply_claim", "target_id": row["application_id"], "company": row["company"] or "",
-                "kind": row["mode"], "action": "application", "label": "", "at": row["handed_over_at"],
+                "kind": row["mode"], "action": "application", "label": "", "at": row["handed_over_at"], "ats": row["ats"],
+            })
+    for row in conn.execute(
+        """
+        SELECT c.application_id, c.token, c.instance, c.heartbeat_at, c.detail_json, c.updated_at, o.company
+        FROM application_submit_claims c LEFT JOIN opportunities o ON o.id=c.opportunity_id
+        WHERE c.user_id=? AND c.state='claimed' AND c.mode='handoff' ORDER BY c.created_at
+        """,
+        (user_id,),
+    ).fetchall():
+        try:
+            waiting = (json.loads(row["detail_json"] or "{}") or {}).get("waiting")
+        except (TypeError, ValueError, AttributeError):
+            waiting = None
+        if waiting == "student" and claim_held(row, now=now):
+            items.append({
+                "source": "apply_claim", "target_id": row["application_id"], "company": row["company"] or "",
+                "kind": "handoff", "action": "window", "at": row["updated_at"],
+                "label": "A Finish in browser window is open. Pausing doesn't stop your own Submit; press Stop to end it.",
             })
     return items
 
@@ -628,7 +679,7 @@ def unconfirmed(conn: sqlite3.Connection, user_id: str, *, now: datetime | None 
         })
     for row in conn.execute(
         """
-        SELECT c.application_id, c.token, c.instance, c.heartbeat_at, c.mode, c.state, c.handed_over_at, c.updated_at, o.company
+        SELECT c.application_id, c.token, c.instance, c.heartbeat_at, c.mode, c.state, c.handed_over_at, c.updated_at, c.ats, o.company
         FROM application_submit_claims c LEFT JOIN opportunities o ON o.id=c.opportunity_id
         WHERE c.user_id=? AND (c.state IN ('unconfirmed', 'clicking') OR (c.state IN ('needs_you', 'failed') AND c.after_click=1))
         ORDER BY c.updated_at
@@ -639,7 +690,7 @@ def unconfirmed(conn: sqlite3.Connection, user_id: str, *, now: datetime | None 
             continue
         items.append({
             "target_id": row["application_id"], "company": row["company"] or "", "kind": row["mode"],
-            "action": "application", "at": row["handed_over_at"] or row["updated_at"],
+            "action": "application", "at": row["handed_over_at"] or row["updated_at"], "ats": row["ats"],
         })
     return items
 

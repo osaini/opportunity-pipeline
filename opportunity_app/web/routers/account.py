@@ -11,6 +11,7 @@ from fastapi import Depends, HTTPException, Header, Response, status
 from ..overrides import shared_router
 from ...student.profile import get_profile, update_profile
 from ...accounts.operations import delete_account, export_account
+from ...apply.runner import RunnerBusy
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection
 from ..models.account import ProfileUpdateRequest
@@ -84,4 +85,10 @@ def permanently_delete_account(
 ) -> dict[str, Any]:
     if confirmation != "DELETE":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Send X-Confirm-Delete: DELETE to confirm permanent account deletion")
-    return delete_account(conn, [ctx.config.resume_storage, ctx.config.capture_storage, ctx.config.interview_storage], user_id=user_id, apply_root=ctx.config.apply_storage)
+    # A rehearsal still filling a form would write its picture into the folder this deletes: it is ended first, and none of
+    # this student's can start until the deletion is over.
+    try:
+        with ctx.runtime.apply_runner.held_for(user_id):
+            return delete_account(conn, [ctx.config.resume_storage, ctx.config.capture_storage, ctx.config.interview_storage], user_id=user_id, apply_root=ctx.config.apply_storage)
+    except RunnerBusy:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A rehearsal is still ending. Try again in a moment") from None

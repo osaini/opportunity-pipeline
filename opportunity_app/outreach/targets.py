@@ -76,6 +76,18 @@ UNSENT_STATUSES = {"not_started", "drafted", "paused"}
 CALL_PREP_STATUSES = {"replied", "call_scheduled", "offer"}
 # Why automation leaves a company alone once the student set it aside (outreach_targets.not_interested_at).
 NOT_INTERESTED = "You marked the company not interested"
+# The other reason to set a company aside: the student applied through its own site (outreach_targets.set_aside_reason).
+APPLIED_DIRECTLY = "You marked the company applied directly"
+# What a contact form says from the student's own press of its send button in Finish in browser (outreach/forms.py)
+# until they answer on the card whether it went: the app does not judge that from the page.
+FORM_PRESSED_NOTE = "You pressed the form's send button in the Finish in browser window. Did their page say your message was sent?"
+FORM_SAID_SENT_NOTE = "You said it was sent"
+SET_ASIDE_REASONS = ("", "applied_directly")
+
+
+def set_aside_why(reason: Any) -> str:
+    """The sentence that says why automation leaves a set-aside company alone."""
+    return APPLIED_DIRECTLY if reason == "applied_directly" else NOT_INTERESTED
 DEFAULT_FOLLOW_UP_DAYS = 7
 OUTREACH_ORIGINS = ("manual", "import", "discovery")
 # An import file's word about where a company is based is not evidence, so the
@@ -147,7 +159,7 @@ EXPORT_FIELDS = [
     "location_inferred",
     "email_subject", "email_body", "draft_status",
     "follow_up_subject", "follow_up_body", "follow_up_status", "notes", "source_urls",
-    "researched_at", "research_confidence", "origin", "not_interested_at", "created_at", "updated_at",
+    "researched_at", "research_confidence", "origin", "not_interested_at", "set_aside_reason", "created_at", "updated_at",
 ]
 # Set by the product, never by an import file or a PATCH.
 IMPORT_IGNORED_FIELDS = {"id", "created_at", "updated_at", "origin", "draft_status", "follow_up_status"}
@@ -217,6 +229,7 @@ def _normalize(payload: dict[str, Any], *, partial: bool) -> dict[str, Any]:
         raise ValueError("Contact email does not look like an email address")
     if values.get("contact_cc") and not EMAIL_ADDRESS.match(values["contact_cc"]):
         raise ValueError("Cc does not look like an email address")
+    _refuse_cc_matching_to(values.get("contact_email", ""), values.get("contact_cc", ""))
     for field in ("website", "contact_linkedin", "contact_evidence_url"):
         if values.get(field):
             validate_web_url(values[field], field)
@@ -234,11 +247,26 @@ def _normalize(payload: dict[str, Any], *, partial: bool) -> dict[str, Any]:
     if "source_urls" in payload:
         values["source_urls_json"] = json.dumps(_clean_urls(payload["source_urls"]))
     # The app's Not interested button sends a boolean; an export file carries the time it was set.
-    if payload.get("not_interested") is not None:
-        values["not_interested_at"] = utc_now() if payload["not_interested"] is True else None
-    elif "not_interested_at" in payload:
-        values["not_interested_at"] = _clean_timestamp(payload["not_interested_at"])
+    # The Applied directly button sends its own boolean; either one false moves the company back.
+    if payload.get("applied_directly") is True:
+        values["not_interested_at"], values["set_aside_reason"] = utc_now(), "applied_directly"
+    elif payload.get("applied_directly") is False or payload.get("not_interested") is False:
+        values["not_interested_at"], values["set_aside_reason"] = None, ""
+    elif payload.get("not_interested") is True:
+        values["not_interested_at"], values["set_aside_reason"] = utc_now(), ""
+    else:
+        if "not_interested_at" in payload:
+            values["not_interested_at"] = _clean_timestamp(payload["not_interested_at"])
+        if "set_aside_reason" in payload:
+            reason = str(payload["set_aside_reason"] or "").strip()
+            values["set_aside_reason"] = reason if reason in SET_ASIDE_REASONS else ""
     return values
+
+
+def _refuse_cc_matching_to(to: str, cc: str) -> None:
+    """One address cannot be both To and Cc: the email would go to it twice and reach no one else."""
+    if cc and to and cc.casefold() == to.casefold():
+        raise ValueError(f"{cc} is already in To. Choose a different Cc or remove it")
 
 
 def _clean_timestamp(value: Any) -> str | None:
@@ -385,7 +413,11 @@ def _record(
     item["reply_count"] = int(item.get("reply_count") or 0)
     # The contact form on the company's site, for a company with no email (outreach/forms.py).
     form = {column: item.pop(f"contact_form_{column}", None) for column in CONTACT_FORM_COLUMNS}
-    item["contact_form"] = {**form, "accepts_file": bool(form["accepts_file"])} if form["page_url"] else None
+    item["contact_form"] = {
+        **form, "accepts_file": bool(form["accepts_file"]),
+        # Waiting on the student's answer: they pressed send in Finish in browser, and only they can say whether it went.
+        "asks": form["state"] == "unconfirmed" and str(form["note"] or "").startswith(FORM_PRESSED_NOTE),
+    } if form["page_url"] else None
     if item.get("research_confidence") == "confirmed":
         item["draft_claims"] = _confirmed_claims(item["draft_claims"])
         item["follow_up_claims"] = _confirmed_claims(item["follow_up_claims"])
@@ -410,6 +442,7 @@ def _record(
     due = item.get("follow_up_at")
     # Not while an email from them may be a reply: the card asks about that first.
     set_aside = bool(item.get("not_interested_at"))
+    item["applied_directly"] = set_aside and item.get("set_aside_reason") == "applied_directly"
     item["follow_up_due"] = bool(
         due and not set_aside and item["status"] == "sent" and date.fromisoformat(due) <= today and not item["possible_reply_count"]
     )
@@ -689,20 +722,21 @@ def cancel_schedules(conn: sqlite3.Connection, target_id: str, user_id: str, kin
             log_event(conn, target_id, user_id, "send_cancelled", detail=reason)
 
 
-def _stop_sends_not_interested(conn: sqlite3.Connection, target_id: str, user_id: str) -> None:
+def _stop_sends_set_aside(conn: sqlite3.Connection, target_id: str, user_id: str, reason: Any = "") -> None:
     """Nothing automatic goes to a company the student set aside, an email already queued included.
 
     Like cancel_send, this also stops one the worker is still checking; one
     already handed to Gmail ('transmitting') is too far along. Runs inside the
     caller's transaction.
     """
+    why = f"{set_aside_why(reason)}, so it was not sent"
     for kind in ("initial", "follow_up"):
         if conn.execute(
             "UPDATE outreach_scheduled_sends SET state='cancelled', error=?, updated_at=? "
             "WHERE target_id=? AND user_id=? AND kind=? AND state IN ('scheduled', 'sending', 'failed')",
-            (f"{NOT_INTERESTED}, so it was not sent", utc_now(), target_id, user_id, kind),
+            (why, utc_now(), target_id, user_id, kind),
         ).rowcount:
-            log_event(conn, target_id, user_id, "send_cancelled", detail=f"{NOT_INTERESTED}, so it was not sent")
+            log_event(conn, target_id, user_id, "send_cancelled", detail=why)
     outreach_callbacks.on_not_interested(conn, target_id, user_id)
 
 
@@ -1022,6 +1056,8 @@ def _plan_target_update(
 ) -> dict[str, Any] | None:
     """What a change to a target writes, worked out against ``previous``. None when it changes nothing. Writes nothing."""
     values = _normalize(payload, partial=True)
+    if "contact_email" in values or "contact_cc" in values:
+        _refuse_cc_matching_to(values.get("contact_email", previous["contact_email"]), values.get("contact_cc", previous["contact_cc"]))
     if "location" in values:
         if values["location"] == previous["location"]:
             del values["location"]
@@ -1038,8 +1074,11 @@ def _plan_target_update(
         values["location_inferred"] = 0
         if previous["location_basis"] in {"research", ""}:
             values["location_basis"] = "manual"
+    # Setting the same thing again changes nothing; moving between the two reasons does.
     if "not_interested_at" in values and bool(values["not_interested_at"]) == bool(previous.get("not_interested_at")):
         del values["not_interested_at"]
+    if "set_aside_reason" in values and (values["set_aside_reason"] or "") == (previous.get("set_aside_reason") or ""):
+        del values["set_aside_reason"]
     _apply_status_side_effects(values, previous, today)
     readdressed = _readdress_drafts(values, previous, greeting_style(conn, user_id))
     withdrawn = _apply_draft_side_effects(values, previous)
@@ -1106,11 +1145,29 @@ def _write_target_update(
         raise _ConfirmRaced()
     if "status" in values and values["status"] != previous["status"]:
         log_event(conn, target_id, user_id, "status", from_status=previous["status"], to_status=values["status"], detail=status_detail)
-    if "not_interested_at" in values:
-        if values["not_interested_at"]:
-            log_event(conn, target_id, user_id, "not_interested", detail=NOT_INTERESTED)
-            _stop_sends_not_interested(conn, target_id, user_id)
-        else:
+        form = previous.get("contact_form")
+        # Only the student's own change (an automatic one names itself in status_detail) about a company reached by its
+        # form: an email noticed in Gmail moving it to Sent says nothing about the form.
+        if values["status"] == "sent" and form and form["state"] == "unconfirmed" and not status_detail and not previous.get("contact_email"):
+            # The student said a form that may have gone did ("Yes, it was sent", or "It arrived"): the form and its send
+            # claim say so too, so nothing asks again and nothing sends it again.
+            conn.execute(
+                "UPDATE outreach_contact_forms SET state='submitted', note=?, updated_at=? WHERE target_id=? AND user_id=?",
+                (FORM_SAID_SENT_NOTE, utc_now(), target_id, user_id),
+            )
+            conn.execute(
+                "UPDATE outreach_send_claims SET state='sent' WHERE target_id=? AND user_id=? AND kind='initial' AND state IN ('drafting', 'unconfirmed', 'clicking')",
+                (target_id, user_id),
+            )
+            log_event(conn, target_id, user_id, "form_said_sent", detail=json.dumps({"asked": bool(form.get("asks"))}))
+    if "not_interested_at" in values or "set_aside_reason" in values:
+        aside = values.get("not_interested_at", previous.get("not_interested_at"))
+        reason = values.get("set_aside_reason", previous.get("set_aside_reason"))
+        if aside:
+            applied = reason == "applied_directly"
+            log_event(conn, target_id, user_id, "applied_directly" if applied else "not_interested", detail=set_aside_why(reason))
+            _stop_sends_set_aside(conn, target_id, user_id, reason)
+        elif "not_interested_at" in values:
             log_event(conn, target_id, user_id, "interested_again", detail="You moved the company back into your outreach")
     if plan["research_reset"]:
         # Research and interviewer notes checked against the old company are dropped, not
@@ -1215,22 +1272,24 @@ def update_target(
 
 
 class SetAsideError(ValueError):
-    """A company marked not interested is kept, so it cannot be deleted while it is set aside."""
+    """A company marked not interested or applied directly is kept, so it cannot be deleted while it is set aside."""
 
 
 def delete_target(conn: sqlite3.Connection, target_id: str, *, user_id: str) -> bool:
     """Delete a target and remember the company, so the deep search does not bring it back.
 
-    A company marked not interested is kept: SetAsideError until it is moved back.
+    A company marked not interested or applied directly is kept: SetAsideError until it is moved back.
     """
     row = conn.execute(
-        "SELECT company, website, not_interested_at FROM outreach_targets WHERE id=? AND user_id=?", (target_id, user_id),
+        "SELECT company, website, not_interested_at, set_aside_reason FROM outreach_targets WHERE id=? AND user_id=?",
+        (target_id, user_id),
     ).fetchone()
     if not row:
         return False
     if row[2]:
+        tab = "Applied directly" if row[3] == "applied_directly" else "Not interested"
         raise SetAsideError(
-            f"{row[0]} is under Not interested, where it is kept. Move it back to your outreach first if you want to delete it."
+            f"{row[0]} is under {tab}, where it is kept. Move it back to your outreach first if you want to delete it."
         )
     with conn:
         conn.execute("DELETE FROM outreach_targets WHERE id=? AND user_id=?", (target_id, user_id))

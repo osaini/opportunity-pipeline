@@ -1,0 +1,385 @@
+"""What the apply agent and its runner agree on: the timeouts, the files, the lookup, the job, the result, the factory.
+
+Standard library only, and no import of any other first-party module (tests/test_leaf_modules.py holds it to that), so the
+runner's child process can read the pipe's messages and the agent and the runner (apply/agent.py, apply/runner.py) share one
+definition. A job still names the agent's factory and carries a ``policy.Plan``, so unpickling one imports those modules in
+the child; what stays out of it is the web app and the database connection, which a plan only closes over in the parent.
+Only FilePayload's bytes and LookupRequest's typed text are student data; both live in memory and are never written to
+a run row. Everything a RunResult carries is value-free: sentences, public page text, hashes and request facts.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Protocol
+
+AGENT_MODES = ("lookup", "rehearse", "submit", "handoff")
+# Which agent mode each apply_runs.kind runs in.
+MODE_FOR_KIND = {"lookup": "lookup", "rehearsal": "rehearse", "submit": "submit", "handoff": "handoff"}
+# The modes built so far. The others return a failed RunResult and open no browser.
+BUILT_MODES = ("lookup", "rehearse", "handoff")
+OUTCOMES = ("looked_up", "rehearsed", "submitted", "unconfirmed", "needs_you", "failed")
+ISOLATIONS = ("process", "thread")
+
+# The steps a run reports, in order, with their words (apply_runs.progress_json). ``progress_text`` fills {ats}, and the agent {n}, {question} and {host}.
+PROGRESS_STEPS = {
+    "start": "Starting the browser",
+    "open": "Opening the {ats} form",
+    "read": "Reading the form",
+    "lookup": "Looking up options for {question}",
+    "fill": "Filling {n} fields",
+    "check": "Checking every required field",
+    "picture": "Taking a picture of the filled form",
+    "your_turn": "Your turn: complete the form in the window, then press Submit application there",
+    "submitting": "Submitting to {ats}…",
+    "security_code": ("{ats} emailed you a security code. The app is looking for it in your Gmail; "
+                      "you can also type it into the window yourself"),
+    "form_elsewhere": ("The form tried to send a request to {host}, which the app doesn't recognize, so the app stopped that request. "
+                       "If the form shows an error, fix it and press Submit application again, or press Stop and apply from the posting instead"),
+    "code_typed": "The app typed the security code from your email. Press Submit application in the window",
+    "code_yours": "Type the security code {ats} emailed you into the window, then press Submit application",
+    "challenge": "{ats} showed a check in the window. Finish it there",
+    # Lever reads a file as it is attached, so a file the student attaches in the window goes to {ats} at once (docs/phase5-lever-handoff-spec.md 6.12 step 7).
+    # The first says the file went (the runner keeps that at once, in case the run ends with no result); the second names the fields the page's reader changed.
+    "resume_attached": "Your résumé was sent to {ats} when you attached it",
+    "resume_changed": "{ats} filled {fields} from the résumé you attached. Check {them} before you press Submit application",
+}
+
+
+STUDENT_RESUME_STEP = "resume_attached"   # the progress step that says the student's own file went to the ATS
+RESUME_CHANGED_STEP = "resume_changed"    # the step that names the fields the ATS's reader then changed (the student's turn goes on)
+
+
+def progress_text(step: str, ats_name: str, **words: Any) -> str:
+    """The sentence for a progress step, naming the ATS (its display name) and filling the step's own words."""
+    return PROGRESS_STEPS[step].format(ats=ats_name, **words)
+
+MAX_LOOKUP_OPTIONS = 20
+# The one sentence for a run the student stopped. The agent says it, the runner stops a run with it, and the runner's summary
+# relies on it ending in the same "No application was sent." the other failure sentences end in, so there is one copy.
+STOPPED = "You stopped this run. No application was sent."
+
+# The pipe between the runner (parent) and its child. Every message is a dict with "op".
+OP_PROGRESS = "progress"            # child -> parent: {"op", "step", "text"}
+OP_HEARTBEAT = "heartbeat"          # child -> parent: {"op"}
+OP_REPLAN = "replan"                # child -> parent: {"op", "id", "scan", "uploads_on_attach"}; parent replies OP_REPLAN_REPLY
+OP_REPLAN_REPLY = "replan_reply"    # parent -> child: {"op", "id", "plan", "error"}
+OP_HAND_OVER = "hand_over"          # child -> parent: {"op", "id"}; parent commits, then replies OP_HAND_OVER_REPLY
+OP_HAND_OVER_REPLY = "hand_over_reply"  # parent -> child: {"op", "id", "ok"}; anything but ok=True is False
+OP_FILE_CHECK = "file_check"        # child -> parent: {"op", "id", "key", "ref", "sha256"}; asks whether the document the plan names for field
+                                    #   "key" (its source ref, and the SHA-256 of its text) is still the one to attach (M7: the cover letter);
+                                    #   the parent replies OP_FILE_CHECK_REPLY
+OP_FILE_CHECK_REPLY = "file_check_reply"  # parent -> child: {"op", "id", "ok"}; anything but ok=True is False
+OP_CANCEL = "cancel"                # parent -> child: {"op"}
+OP_RESULT = "result"                # child -> parent: {"op", "result": RunResult}
+OP_ERROR = "error"                  # child -> parent: {"op", "error": exception type name only, never its message}
+
+# M5b part 2: Finish in browser.
+OP_HANDOFF_READY = "handoff_ready"     # child -> parent, one-way: {"op", "plan": [value-free entries], "plan_hash",
+                                       #   "left": [{"key", "question", "reason"}], "screenshot": {...} | None,
+                                       #   "captcha_widget": bool, "page_defaults": [keys],
+                                       #   "handoff_in_s": seconds the agent will really keep the window for the student,
+                                       #   "resume_sent_to_lever": bool, optional (Lever only: true once the app's attach sent the file;
+                                       #   left out, nothing is recorded and the run's planned-attach marker stands)}
+OP_SECURITY_CODE = "security_code"     # child -> parent: {"op", "id"}. The parent answers for its own run's claim,
+                                       #   never for a token the child names. Sent again only after the last ask's
+                                       #   reply arrived (never while one is outstanding).
+OP_SECURITY_CODE_REPLY = "security_code_reply"   # parent -> child: {"op", "id", "status": "waiting" | "found" |
+                                       #   "fallback", "reason"} plus "code" only when found. Never logged or stored.
+OP_SECURITY_CODE_RESULT = "security_code_result" # child -> parent, one-way: {"op", "id", "typed": bool,
+                                       #   "reason": "" | "inputs_not_empty" | "inputs_missing" | "bad_code" |
+                                       #   "page_closed" | "already_typed"}. Only this makes the parent record "typed".
+OP_FRONT = "front"                     # parent -> child, one-way: bring the window to the front
+# OP_HAND_OVER (M5a) gains "expires": time.monotonic() + timeouts.reply_s, stamped by the child when it sends.
+
+# The handoff's sentences. The runner uses some when it stops a run itself; the UI never parses them.
+HANDOFF_NOT_SUBMITTED = "You didn't submit it in the window. Your application was not sent."
+HANDOFF_CRASHED = ("The browser window stopped working before you submitted. Your application was not sent. "
+                   "Try again.")
+HANDOFF_UNRECORDED = "The app couldn't record this submission, so it stopped it. Nothing was sent. Try again."
+HANDOFF_ELSEWHERE = ("The form tried to send to an address the app doesn't recognize, so the app stopped it. "
+                     "Nothing was sent. Apply from the posting instead.")
+HANDOFF_EARLY = ("The form tried to send before the app finished filling it, so the app stopped it and closed the "
+                 "window. Nothing was sent. Try again.")
+HANDOFF_NO_LOADER = ("The app couldn't find where this form sends applications, so it can't keep track of your "
+                     "Submit. Apply from the posting instead.")
+HANDOFF_S3 = ("This board uploads files as soon as they are attached, which the app does not support yet. "
+              "Nothing was sent. Apply from the posting instead.")
+HANDOFF_UPLOAD = ("The form tried to upload a file, which the app does not allow yet, so the app stopped it and closed "
+                  "the window. Nothing was sent. Apply from the posting instead.")
+HANDOFF_HIDDEN = ('The form has a hidden field where the app expected "{question}", so the app stopped before filling '
+                  "it. Nothing was sent. Apply from the posting instead.")
+# A page that reads an attached file at once (Lever): the one file read the app allowed is planned, so any other send before hand-over is the form doing what the app did not plan (spec 6.9).
+HANDOFF_UNPLANNED_FILE = "The form tried to send a file the app did not plan, so the app stopped it. Nothing was sent."
+HANDOFF_UNPLANNED_SEND = "The form tried to send something the app did not plan, so the app stopped it. Nothing was sent."
+WINDOW_CLOSED = "You closed the window. No application was sent."
+WINDOW_UNCONFIRMED = ("The app couldn't confirm the Chromium window closed, so it can't be sure nothing was sent. "
+                      "Check your email for a confirmation from {ats}.")
+YOUR_TURN = "The form is filled in the Chromium window. Complete the fields below, then press Submit application there."
+YOUR_TURN_NONE_LEFT = "The form is filled in the Chromium window. Check the form, then press Submit application there."
+LEFT_FIELD = 'The app could not fill "{question}". Fill it in yourself.'
+LEFT_CAPTCHA = "Tick the CAPTCHA box in the window yourself before you press Submit application."
+LEFT_COVER_LETTER_CHANGED = "Your cover letter for this role changed while the app was working, so it was not attached. Attach yours in the window."
+LEFT_UNPLANNED = "The page put something in \"{question}\" that the app didn't. Check it before you press Submit application."
+
+
+# Lever reads a résumé as soon as it is attached (docs/phase5-lever-handoff-spec.md, L1), so the file is with Lever before the student presses
+# Submit: from then on, a run that ends without a submission does not say "Nothing was sent". ``resume_with_ats`` is whether the run's evidence
+# says the file got there, by the app's attach ("resume_sent_to_lever": true) or by the student's own in the window ("student_attached_resume").
+RESUME_RECEIVED = "{ats} received your résumé."
+RESUME_MAYBE = "{ats} may have received your résumé."
+RESUME_EVIDENCE_KEYS = ("resume_sent_to_lever", "student_attached_resume")
+# Written to the run row when it starts, if the app will attach the résumé: a run that dies before its window is ready cannot say whether the file got there.
+RESUME_PLANNED_KEY = "resume_attach_planned"
+_NOT_SENT_CLAUSE = re.compile(r"(?:your application was not sent|nothing was sent|no application was sent)(\.?)", re.IGNORECASE)
+_RESUME_SAID = re.compile(r"(?:received|holds|has|have) (?:your résumé|the file)", re.IGNORECASE)
+
+
+def _student_attached(record: Any) -> bool:
+    """The student's own attach, as the window recorded it: a count above zero or a file's hash. A record set up empty is not a file."""
+    if not isinstance(record, dict):
+        return False
+    count = record.get("count")
+    sha = record.get("sha256")
+    return (isinstance(count, int) and not isinstance(count, bool) and count > 0) or (isinstance(sha, str) and bool(sha))
+
+
+def resume_with_ats(evidence: Any) -> bool:
+    """Whether a run's evidence says the student's résumé reached the ATS before any Submit (Lever: when it was attached)."""
+    return isinstance(evidence, dict) and (evidence.get("resume_sent_to_lever") is True or _student_attached(evidence.get("student_attached_resume")))
+
+
+def resume_may_be_with_ats(evidence: Any) -> bool:
+    """Whether the run was going to have the app attach the résumé and nothing yet says whether the file got there. A window that said no file went
+    ("resume_sent_to_lever": false) is believed over the plan."""
+    return (isinstance(evidence, dict) and evidence.get(RESUME_PLANNED_KEY) is True and evidence.get("resume_sent_to_lever") is not False
+            and not resume_with_ats(evidence))
+
+
+def with_resume_note(sentence: str, ats_name: str, *, sure: bool = True) -> str:
+    """A "not sent" sentence of a run that never handed over, said the way it is true once the ATS holds (or may hold) the résumé.
+
+    "Nothing was sent", "No application was sent" and "Your application was not sent" at the start of a sentence become "Your application was
+    not sent. Lever received your résumé."; inside a sentence ("..., so nothing was sent") the clause is rewritten in place, in lower case, and the
+    second sentence follows. A sentence with none of them gets the second sentence added. ``sure=False`` is for a run that only planned the
+    attach: "Lever may have received your résumé." A sentence that already speaks of the file ("Lever may still have the file") is left as it
+    is. Only for a run that never handed over: after a hand-over the sentences say "may have been sent", which this never touches.
+    """
+    if not sentence or _RESUME_SAID.search(sentence):
+        return sentence
+    note = (RESUME_RECEIVED if sure else RESUME_MAYBE).format(ats=ats_name)
+    found = _NOT_SENT_CLAUSE.search(sentence)
+    if found is None:
+        return f"{sentence.rstrip()} {note}"
+    before = sentence[:found.start()]
+    if not before or before.endswith((". ", "! ", "? ")):
+        return f"{before}Your application was not sent. {note}{sentence[found.end():]}"
+    rewritten = f"{before}your application was not sent{found.group(1)}{sentence[found.end():]}".rstrip()
+    if not rewritten.endswith((".", "!", "?")):
+        rewritten += "."
+    return f"{rewritten} {note}"
+
+
+@dataclass(frozen=True)
+class ApplyTimeouts:
+    settle_s: float = 2.0            # after the page settles, before the first input
+    between_fields_s: float = 0.25
+    choice_settle_s: float = 3.0     # after a react-select choice: no request in flight, or this, whichever is first
+    navigation_s: float = 30.0
+    outcome_s: float = 30.0          # 6.14 window (submit, M6)
+    captcha_s: float = 12.0          # D14 B only (not chosen)
+    person_s: float = 5 * 60         # D14 A: the student ticks a CAPTCHA box before hand-over (M6)
+    handoff_s: float = 20 * 60       # M5b
+    security_code_s: float = 10 * 60
+    reply_s: float = 10.0            # how long the child waits for a hand-over answer
+    replan_s: float = 30.0           # how long the child waits for a plan
+    orphan_s: float = 10.0           # a child process whose runner is gone (or whose deadline passed) ends itself this long after, however stuck its page is
+    fill_s: float = 5 * 60           # the fill before the student's turn (the rehearsal budget); the deadline counts it
+    code_read_s: float = 10 * 60     # D10 B: how long the parent's reader looks for the code email (= security_code.CODE_WINDOW)
+    code_poll_s: float = 15.0        # between two asks while the reader says waiting (= security_code.POLL_EVERY)
+    code_reply_s: float = 45.0       # an ask with no reply after this is SHOWN as waiting; it stays pending (= REPLY_TIMEOUT_S)
+    heartbeat_s: float = 20.0        # every wait loop heartbeats at least this often (spec 5.2 rule 4: 30 s)
+    parse_s: float = 30.0            # Lever: how long the app waits for the page to finish reading an attached résumé (spec 6.5)
+
+    @property
+    def after_hand_over_s(self) -> float:   # one budget shared by every wait after hand-over except the outcome windows
+        return self.code_read_s + self.security_code_s
+
+
+@dataclass(frozen=True)
+class FilePayload:
+    """A file to attach, by its bytes and the name the student sees (never the storage file name)."""
+
+    name: str
+    mime_type: str
+    buffer: bytes = field(repr=False)
+    sha256: str = ""
+    # A generated document (the cover letter): the SHA-256 of the approved text this file was rendered from, which the plan names too.
+    content_sha256: str = ""
+
+    def as_playwright(self) -> dict[str, Any]:
+        return {"name": self.name, "mimeType": self.mime_type, "buffer": self.buffer}
+
+
+@dataclass(frozen=True)
+class LookupRequest:
+    """One typeahead to look up: type ``text`` into the field ``key`` and read the options it offers."""
+
+    key: str                          # the schema field name, which is the control's id on the page
+    field: str                        # the apply_ats_labels field: location, school, degree, discipline, ...
+    question: str                     # the form's label, for progress and reasons
+    text: str = field(repr=False, default="")   # what the student typed; sent to Greenhouse's lookup service only
+
+
+@dataclass(frozen=True)
+class AgentJob:
+    """Everything a child needs to run once. Pickled into the child; holds values in memory only."""
+
+    run_id: str
+    mode: str                         # one of AGENT_MODES
+    page_url: str                     # greenhouse.canonical_url(token, job_id)
+    plan: Any                         # apply.policy.Plan: the draft plan from the schema alone (values in memory)
+    schema: list[Any]                 # apply.policy.SchemaField list from Greenhouse's listing
+    files: dict[str, FilePayload]     # by plan field key ("resume", "cover_letter"); empty for a lookup
+    lookup: LookupRequest | None
+    screenshot_dir: str               # absolute; "" means take no screenshot
+    timeouts: ApplyTimeouts = ApplyTimeouts()
+    deadline_s: float = 0.0           # the run's deadline in seconds from its start; a child process ends itself ``timeouts.orphan_s`` after it. 0 means none.
+    ends_at: float = 0.0              # a time.monotonic() instant (system-wide); every agent wait is capped by it; 0 = no cap
+    ats: str = "greenhouse"           # the claim's or run's ats (apply.ats.REGISTRY); picks the agent's adapter. A literal because this module imports nothing first-party
+
+
+@dataclass
+class RunResult:
+    """What one run found. Value-free: sentences, public page text, MACs and hashes, request facts."""
+
+    outcome: str                                                    # one of OUTCOMES
+    reasons: list[str] = field(default_factory=list)                # plain sentences, never a value
+    plan: list[dict[str, Any]] = field(default_factory=list)        # apply.policy.plan_entries(live plan)
+    plan_hash: str = ""
+    join_problems: list[dict[str, Any]] = field(default_factory=list)   # problem_dict(checks.Problem) from the join
+    check_problems: list[dict[str, Any]] = field(default_factory=list)  # problem_dict(...) from checks.check_required
+    options: dict[str, list[str]] = field(default_factory=dict)     # lookup only: {LookupRequest.field: [labels]}
+    screenshots: list[dict[str, Any]] = field(default_factory=list) # {"step", "path" (absolute), "sha256", "masked": [keys]}
+    refused: list[dict[str, Any]] = field(default_factory=list)     # checks.Abort.record(method) entries, and websockets
+    requests: list[dict[str, Any]] = field(default_factory=list)    # after hand-over only (M5b/M6); empty in M5a
+    evidence: dict[str, Any] = field(default_factory=dict)          # see plan section 3.4
+    handed_over: bool = False
+    after_click: bool = False
+    confirmation_seen: bool = False   # True only when decide_outcome gave "submitted" with resolved_by == "page"
+
+
+def problem_dict(problem: Any) -> dict[str, Any]:
+    """A checks.Problem (or anything with its attributes) as the plain dict a RunResult carries."""
+    return {
+        "kind": str(getattr(problem, "kind", "") or ""),
+        "key": str(getattr(problem, "key", "") or ""),
+        "message": str(getattr(problem, "message", "") or ""),
+        "question": str(getattr(problem, "question", "") or ""),
+        "required": bool(getattr(problem, "required", True)),
+    }
+
+
+class HandoffLink(Protocol):
+    """The handoff's extra half of the pipe. None outside handoff (and in tests that play the parent themselves)."""
+
+    def ready(self, message: dict[str, Any]) -> None: ...          # sends OP_HANDOFF_READY
+    def ask_code(self) -> int: ...                                 # sends OP_SECURITY_CODE; returns its id; never blocks
+    def code_reply(self, ident: int) -> dict[str, Any] | None: ... # the reply if it arrived, else None; never blocks
+    def code_result(self, ident: int, typed: bool, reason: str = "") -> None: ...  # sends OP_SECURITY_CODE_RESULT
+    def abandon_code(self) -> None: ...                            # the agent stops waiting for its ask: a reply that comes later is dropped
+    def front_requested(self) -> bool: ...                         # True once for each OP_FRONT
+    def parent_gone(self) -> bool: ...                             # the pipe hit end-of-file or a bad frame
+
+
+class AdapterBase:
+    """What an ATS adapter does when its ATS needs nothing special: the behaviours Greenhouse has (docs/phase5-lever-handoff-spec.md 5.2, 6.4 to 6.8).
+
+    ``ApplyAgent`` asks an adapter these things as well as the ones ``apply.ats.AtsAdapter`` names beside them. An adapter overrides what its
+    form does differently: Lever reads the form with a scan of its own (``uses_engine`` False), reads an attached file at once, types its
+    location one key at a time, and keeps fields of its own (``owns``). The attributes say which of the agent's extra steps the ATS needs.
+    """
+
+    uses_engine = True                    # the shared extension engine scans the form (False: the adapter's own ``scan``)
+    closed_on_404 = False                 # an HTTP 404 on the posting's page means the posting is closed
+    waits_for_challenge = False           # a visible CAPTCHA challenge while the app fills makes it stop, touch nothing and wait for the student
+    required_from_load = False            # which controls are required is read from the page as it loaded (its script drops ``required`` from every box once one is ticked)
+    page_sentences: dict[str, str] = {}   # a kind of page ``detect_page`` answers -> the sentence a run ends with (needs_you) when it finds it
+    press_selector = ""                   # the CSS selector of the form's Submit control: the press listener reports a trusted click inside it ("" reports none)
+    file_selector = ""                    # the CSS selector of the file box the page reads as it is attached (the press listener reports the student's choice in it; "" reports none)
+    file_limit_bytes = 0                  # the largest file that box's page reads (it sends nothing for a larger one; 0 reports no file)
+
+    def scan(self, frame: Any) -> list[dict[str, Any]]:
+        raise NotImplementedError("this adapter reads its form with the shared engine")
+
+    def page_facts(self, frame: Any) -> dict[str, str]:
+        """Facts the page itself carries (read only): ``account_id``, which the request rules compare a file read with, and ``resume_storage_id``, which the page sets for a file it read."""
+        return {}
+
+    def page_managed(self, frame: Any) -> dict[str, str]:
+        """The fields the page keeps for itself, by name, with their values now (read only). The app writes none of them."""
+        return {}
+
+    def owns(self, name: str) -> bool:
+        """Whether a control of this name is one the page keeps for itself (never filled, never checked as an answer)."""
+        return False
+
+    def hidden_mismatch(self, frame: Any) -> list[str]:
+        """The plan keys of fields whose companion the page keeps out of sight disagrees with what the field shows (read only; none for a page with no such pair)."""
+        return []
+
+    def plan_key(self, name: str) -> str:
+        """The plan's key for the control the page calls ``name``: the independent check reads every control under it, so it is compared with the plan's entry."""
+        return name
+
+    def is_typeahead(self, frame: Any, key: str) -> bool:
+        """Whether this text field is a list the student's confirmed label is chosen from, typed key by key (``fill_location``)."""
+        return False
+
+    def parse_state(self, frame: Any) -> str:
+        """After a file was attached to a page that reads it: working, success, failure, oversize, or "" for none yet."""
+        return ""
+
+    def guessed_fields(self, frame: Any) -> list[str]:
+        """The keys of the controls on the page that its file reader may have filled, in the form's order (empty when it reads nothing)."""
+        return []
+
+    def cleared(self, frame: Any, key: str) -> bool:
+        """Whether the control and anything the page keeps beside it hold nothing."""
+        return True
+
+    def parser_values(self, frame: Any) -> dict[str, str]:
+        """What the controls of ``guessed_fields`` hold now, by name (read only; the agent compares two reads and keeps only the names that differ)."""
+        return {}
+
+    def refuses(self, locator: Any) -> bool:
+        """Whether this element is one the app never presses (the ATS's own Submit controls), whatever else the click allowlist says."""
+        return False
+
+
+class ApplyAgentLike(Protocol):
+    def __enter__(self) -> "ApplyAgentLike": ...
+    def __exit__(self, *exc: Any) -> None: ...
+    def run(
+        self, plan: Any, *, page_url: str, schema: list[Any], files: dict[str, FilePayload],
+        lookup: LookupRequest | None = None,
+        replan: Callable[[list[dict[str, Any]], bool], Any] | None = None,
+        hand_over: Callable[[], bool] | None = None,
+        cancelled: Callable[[], bool] | None = None,
+        link: "HandoffLink | None" = None,
+        check_file: Callable[[str, str, str], bool] | None = None,   # (key, ref, sha256); given only when a cover letter is to be attached (M7)
+    ) -> RunResult: ...
+
+
+class ApplyAgentFactory(Protocol):
+    """A picklable module-level object. ``isolation`` is "process" for anything that opens a browser."""
+
+    isolation: str
+
+    def available(self) -> str: ...
+    def __call__(
+        self, *, mode: str, run_id: str, screenshot_dir: Path | None, timeouts: ApplyTimeouts,
+        on_progress: Callable[[str, str], None], heartbeat: Callable[[], None], ats: str = "greenhouse",
+    ) -> ApplyAgentLike: ...

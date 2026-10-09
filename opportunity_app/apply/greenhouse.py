@@ -15,6 +15,8 @@ import sqlite3
 from urllib.parse import parse_qs, urlsplit
 
 ATS_GREENHOUSE = "greenhouse"
+# How a sentence names it (the ATS spec's ``display_name`` and the request policy's are this).
+DISPLAY_NAME = "Greenhouse"
 # The adapter's version (docs/phase5-apply-agent-spec.md 4.4). A rehearsal counts toward the gate only for
 # the version the adapter has now, so a change to its selectors or rules means rehearsing again.
 ADAPTER_VERSION = "greenhouse-1"
@@ -31,6 +33,12 @@ GREENHOUSE_DOMAIN = "greenhouse.io"
 API_HOST = "boards-api.greenhouse.io"
 # Greenhouse's own senders (mail/data/application_senders.json), for a confirmation the reader could not match to a role.
 GREENHOUSE_SENDER_DOMAINS = ("greenhouse.io", "greenhouse-mail.io")
+
+
+def is_greenhouse_sender(domain: str) -> bool:
+    """Whether a sender domain is Greenhouse's or a subdomain of it."""
+    domain = (domain or "").lower().rstrip(".")
+    return any(domain == known or domain.endswith(f".{known}") for known in GREENHOUSE_SENDER_DOMAINS)
 
 # --- Identifying the posting (4.4) --------------------------------------------------------------
 

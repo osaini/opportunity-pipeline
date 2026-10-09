@@ -18,7 +18,7 @@ from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
 
 import outreach_fakes
-from apply_fake_ats import FakeApplyAgentFactory, FakeSchemaClient
+from apply_fake_ats import FakeApplyAgentFactory, FakeLeverPageClient, FakeSchemaClient
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -48,6 +48,8 @@ def build_sandbox_app(
         static_dir=STATIC_DIR,
         # Uploads must land in the temp tree, never in the repo's data/ directory.
         resume_storage=root / "resumes",
+        # Apply for me's pictures land here (a rehearsal needs a folder; without the fake apply nothing writes to it).
+        apply_storage=root / "apply",
         capture_storage=root / "captures",
         interview_storage=root / "mock-interviews",
         # The Programs tab reads a student's own list; this one is invented.
@@ -70,5 +72,7 @@ def build_sandbox_app(
         inbox_client_factory=outreach_fakes.FakeTypeSafeClient,
         # Apply for me: the fictional listing (any board, any job) and an agent that only says a window could open.
         apply_schema_client_factory=(lambda: FakeSchemaClient(any_job=True)) if fake_apply else None,
+        # Lever has no listing: its check reads the posting's own page, a fixture here, for the one fictional Lever role the sandbox seeds.
+        apply_page_client_factory=(lambda: FakeLeverPageClient(any_posting=True)) if fake_apply else None,
         apply_agent_factory=FakeApplyAgentFactory() if fake_apply else None,
     )

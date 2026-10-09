@@ -75,6 +75,48 @@ def test_find_a_contact_draft_approve_and_hand_off_to_gmail(owner_page, base_url
     expect(compose).to_have_attribute("target", "_blank")
 
 
+@pytest.mark.allow_page_errors
+def test_the_draft_picks_to_and_cc_from_the_contacts_never_the_same_address(owner_page, base_url):
+    bovi = seed_target(owner_page, base_url)
+    open_outreach(owner_page)
+    details = open_details(card_for(owner_page, "Bovi"), "Contact")
+    details.get_by_role("button", name="Find contacts").click()
+    jane = details.locator(".outreach-candidate").filter(has_text="jane@bovi.example")
+    jane.get_by_role("button", name="Use jane@bovi.example as the contact").click()
+
+    details = open_details(card_for(owner_page, "Bovi"), "Draft")
+    to, cc = details.locator("select.outreach-recipient-to"), details.locator("select.outreach-recipient-cc")
+    expect(to).to_have_value("jane@bovi.example")
+    expect(to.locator("option", has_text="hello@bovi.example")).to_have_js_property("disabled", False)
+    expect(cc).to_have_value("")
+    expect(cc.locator("option", has_text="jane@bovi.example")).to_have_js_property("disabled", True)
+    expect(cc.locator("option", has_text="jane@bovi.example")).to_contain_text("in To")
+    assert details.locator(".outreach-recipients select[name]").count() == 0, "Save changes must not send the dropdowns"
+
+    cc.select_option("hello@bovi.example")
+    details = open_details(card_for(owner_page, "Bovi"), "Draft")
+    to, cc = details.locator("select.outreach-recipient-to"), details.locator("select.outreach-recipient-cc")
+    expect(cc).to_have_value("hello@bovi.example")
+    expect(to.locator("option", has_text="hello@bovi.example")).to_have_js_property("disabled", True)
+
+    # A new To keeps the Cc, and its name follows it.
+    to.select_option("sam@bovi.example")
+    details = open_details(card_for(owner_page, "Bovi"), "Draft")
+    to, cc = details.locator("select.outreach-recipient-to"), details.locator("select.outreach-recipient-cc")
+    expect(to).to_have_value("sam@bovi.example")
+    expect(cc).to_have_value("hello@bovi.example")
+    expect(cc.locator("option", has_text="sam@bovi.example")).to_have_js_property("disabled", True)
+    expect(cc.locator("option", has_text="jane@bovi.example")).to_have_js_property("disabled", False)
+    target = owner_page.request.get(f"{base_url}/api/v1/outreach/{bovi['id']}", headers=BEARER).json()
+    assert (target["contact_email"], target["contact_cc"]) == ("sam@bovi.example", "hello@bovi.example")
+
+    # Typing the To address into Cc under Contact is refused too.
+    details = open_details(card_for(owner_page, "Bovi"), "Contact")
+    details.locator('input[name="contact_cc"]').fill("SAM@bovi.example")
+    details.get_by_role("button", name="Save changes").click()
+    expect(details.locator(".outreach-form-actions .form-status")).to_contain_text("already in To")
+
+
 def test_connected_gmail_creates_the_draft_with_the_attachment(owner_page, base_url):
     """With Gmail connected, the button asks the server for a Gmail draft and opens it.
 
@@ -458,7 +500,7 @@ def test_marking_sent_then_logging_a_reply_moves_the_status(owner_page, base_url
     expect(card).to_contain_text(re.compile(r"Follow up \w{3} \d{1,2}"))
     expect(card.get_by_role("button", name="I sent it")).to_have_count(0)
 
-    details = open_details(card)
+    details = open_details(card, "Follow-up")
     expect(details.locator("legend", has_text="Follow-up draft")).to_be_visible()
     details = open_details(card, "Replies and history")
     details.get_by_label("Paste their reply").fill("Thanks for reaching out! Could we set up a call next week?")
@@ -478,10 +520,12 @@ def test_a_follow_up_is_drafted_approved_and_opened_as_a_reply(owner_page, base_
     )
     assert target["follow_up_at"]
     open_outreach(owner_page, "awaiting")
-    details = open_details(card_for(owner_page, "Bovi"))
+    details = open_details(card_for(owner_page, "Bovi"), "Follow-up")
     details.get_by_role("button", name="Generate follow-up").click()
     card = card_for(owner_page, "Bovi")
     expect(card).to_contain_text("Follow-up needs review")
+    # The reload keeps the pane on the tab the student was using.
+    expect(card.get_by_role("tab", name="Follow-up", exact=True)).to_have_attribute("aria-selected", "true")
     follow_details = open_details(card)
     expect(follow_details.locator('.outreach-draft-assistant[data-draft-kind="follow_up"]')).to_contain_text("Written by Anthropic")
     expect(card.get_by_role("button", name="Copy follow-up")).to_have_count(0)
@@ -497,6 +541,129 @@ def test_a_follow_up_is_drafted_approved_and_opened_as_a_reply(owner_page, base_
     expect(followed.locator(".application-heading")).to_contain_text("Followed up")
     expect(followed).to_contain_text(re.compile(r"Followed up \w{3} \d{1,2}"))
     expect(followed).not_to_contain_text("Follow-up due")
+
+
+FIRST_EMAIL = {
+    "contact_email": "jane@bovi.example", "contact_name": "Jane Doe", "status": "sent",
+    "email_subject": "Internship question", "email_body": "Hi Jane,\n\nWould you be open to a call?\n\nTest Student",
+    "follow_up_subject": "Re: Internship question", "follow_up_body": "Hi Jane,\n\nJust following up on my note.\n\nTest Student",
+}
+
+
+def follow_up_tab(card):
+    return card.get_by_role("tab", name="Follow-up", exact=True)
+
+
+def test_follow_ups_due_opens_each_company_on_its_follow_up_tab(owner_page, base_url):
+    # A follow-up date already past is due; a later one is a draft waiting for review.
+    seed_target(owner_page, base_url, **FIRST_EMAIL, follow_up_at="2026-01-05")
+    seed_target(owner_page, base_url, **FIRST_EMAIL, company="Later Co", follow_up_at="2099-01-05")
+    open_outreach(owner_page)
+    expect(owner_page.locator('#subnav [data-subtab="follow-ups-due"] .subnav-count')).to_have_text("1")
+    # The due follow-up is reviewed under Follow-ups due, not counted again under Drafts to review.
+    expect(owner_page.locator('#subnav [data-subtab="needs-review"] .subnav-count')).to_have_text("1")
+    open_tab(owner_page, "needs-review")
+    expect(owner_page.locator(".outreach-row-company")).to_have_text(["Later Co"])
+
+    # Seen elsewhere on its Draft tab first, so the switch is the rail's doing.
+    open_tab(owner_page, "awaiting")
+    card = card_for(owner_page, "Bovi")
+    card.get_by_role("tab", name="Draft", exact=True).click()
+    expect(card.locator("legend", has_text="Follow-up draft")).to_be_hidden()
+
+    open_tab(owner_page, "follow-ups-due")
+    card = card_for(owner_page, "Bovi")
+    expect(follow_up_tab(card)).to_have_attribute("aria-selected", "true")
+    expect(card.locator("legend", has_text="Follow-up draft")).to_be_visible()
+    expect(card.locator('textarea[name="follow_up_body"]')).to_have_value(FIRST_EMAIL["follow_up_body"])
+    expect(card.locator(".outreach-panel.is-follow-up .outreach-to")).to_have_text("To jane@bovi.example")
+    expect(card.locator("legend", has_text="Cold email draft")).to_be_hidden()
+    expect(card.locator(".outreach-next")).to_contain_text("Next: Follow up now")
+    expect(card.locator("[data-go-tab]")).to_be_hidden()
+    # Sending from the app needs Gmail, which is not connected here: Approve stays, nothing claims to send.
+    expect(card.get_by_role("button", name="Approve follow-up")).to_be_visible()
+    expect(card.locator("[data-follow-up-approve-send]")).to_have_count(0)
+    assert_accessible(owner_page, "the Follow-up tab")
+
+    # A reload after an action keeps the tab the student moved to; picking the rail tab again switches back.
+    card.get_by_role("tab", name="Replies and history", exact=True).click()
+    owner_page.locator(".outreach-refresh").click()
+    card = card_for(owner_page, "Bovi")
+    expect(card.get_by_role("tab", name="Replies and history", exact=True)).to_have_attribute("aria-selected", "true")
+    open_tab(owner_page, "follow-ups-due")
+    expect(follow_up_tab(card_for(owner_page, "Bovi"))).to_have_attribute("aria-selected", "true")
+
+    # A company not yet written to has no follow-up to write, so no tab for one.
+    seed_target(owner_page, base_url, company="Fresh Co")
+    open_tab(owner_page, "to-contact")
+    expect(follow_up_tab(card_for(owner_page, "Fresh Co"))).to_have_count(0)
+
+
+def gmail_connected(page):
+    gmail = {"configured": True, "connected": True, "needs_reconnect": False, "account": COMPOSE_ACCOUNT,
+             "attachment": "resume.pdf", "attachment_problem": ""}
+
+    def listing(route):
+        response = route.fetch()
+        route.fulfill(response=response, json={**response.json(), "gmail_drafts": gmail})
+
+    page.route(re.compile(r".*/api/v1/outreach(\?.*)?$"), listing)
+
+
+def test_approve_and_send_saves_approves_and_sends_the_follow_up_after_one_confirm(owner_page, base_url):
+    """The approve is the real route; Gmail's send is mocked (the server side is tests/test_outreach_gmail.py)."""
+    target = seed_target(owner_page, base_url, **FIRST_EMAIL, follow_up_at="2026-01-05")
+    send_requests = []
+
+    def send(route):
+        send_requests.append(route.request.post_data_json)
+        route.fulfill(json={"kind": "follow_up", "to": "jane@bovi.example", "cc": "", "account": COMPOSE_ACCOUNT,
+                            "attachment": "resume.pdf", "status": "followed_up", "follow_up_at": None, "marked": True,
+                            "message_id": "sent-2", "thread_id": "thread-1", "fingerprint": "x"})
+
+    gmail_connected(owner_page)
+    owner_page.route(f"**/api/v1/outreach/{target['id']}/gmail-send", send)
+    open_outreach(owner_page, "follow-ups-due")
+    card = card_for(owner_page, "Bovi")
+    edited = "Hi Jane,\n\nFollowing up on my note from last week.\n\nTest Student"
+    card.locator('textarea[name="follow_up_body"]').fill(edited)
+
+    button = card.locator("[data-follow-up-approve-send]")
+    expect(button).to_have_text("Approve and send with resume.pdf")
+    button.click()
+    expect(button).to_have_text("Approve and send to jane@bovi.example?")
+    stored = owner_page.request.get(f"{base_url}/api/v1/outreach/{target['id']}", headers=BEARER).json()
+    assert send_requests == [] and stored["follow_up_status"] == "generated", "the first press only asks"
+    assert stored["follow_up_body"] == FIRST_EMAIL["follow_up_body"], "nothing is saved before the confirm"
+
+    button.click()
+    expect(owner_page.locator("#action-status")).to_contain_text("Approved and sent the follow-up to jane@bovi.example")
+    stored = owner_page.request.get(f"{base_url}/api/v1/outreach/{target['id']}", headers=BEARER).json()
+    assert stored["follow_up_body"] == edited, "the words on screen are what was approved"
+    assert stored["follow_up_status"] == "approved"
+    assert send_requests == [{"kind": "follow_up", "fingerprint": stored["follow_up_fingerprint"]}]
+    assert len(owner_page.context.pages) == 1, "no Gmail tab opens"
+    owner_page.unroute_all(behavior="ignoreErrors")
+
+
+@pytest.mark.allow_page_errors  # the 502 is the point of the test
+def test_a_follow_up_send_that_fails_after_approving_says_so_and_leaves_it_approved(owner_page, base_url):
+    target = seed_target(owner_page, base_url, **FIRST_EMAIL, follow_up_at="2026-01-05")
+    gmail_connected(owner_page)
+    owner_page.route(f"**/api/v1/outreach/{target['id']}/gmail-send",
+                     lambda route: route.fulfill(status=502, json={"detail": "Gmail did not answer"}))
+    open_outreach(owner_page, "follow-ups-due")
+    card = card_for(owner_page, "Bovi")
+    button = card.locator("[data-follow-up-approve-send]")
+    button.click()
+    button.click()
+    expect(owner_page.locator("#error-banner")).to_contain_text("Approved the Bovi follow-up, but it is not sent: Gmail did not answer")
+    card = card_for(owner_page, "Bovi")
+    expect(card.locator(".outreach-panel.is-follow-up")).to_contain_text("Follow-up approved")
+    expect(card.locator("[data-follow-up-approve-send]")).to_have_count(0)
+    # The bar's own Send follow-up can try again.
+    expect(card.locator(".outreach-next button.outreach-send")).to_have_text("Send follow-up with resume.pdf")
+    owner_page.unroute_all(behavior="ignoreErrors")
 
 
 def test_the_deep_search_adds_a_verified_company_with_its_published_contact(owner_page):
@@ -847,6 +1014,25 @@ def test_the_split_view_shows_one_company_with_its_next_step(owner_page, base_ur
     expect(card.get_by_role("tab", name="Timing", exact=True)).to_be_focused()
     expect(card.get_by_role("tab", name="Timing", exact=True)).to_have_attribute("aria-selected", "true")
     expect(card.get_by_label("Confirmed deadline")).to_be_visible()
+
+
+def test_refresh_keeps_the_company_list_where_it_was_scrolled(owner_page, base_url):
+    for number in range(1, 15):
+        seed_target(owner_page, base_url, company=f"Company {number:02d}", website=f"https://company{number}.example")
+    open_outreach(owner_page)
+    company_list = owner_page.locator(".outreach-list")
+    assert company_list.evaluate("list => list.scrollHeight > list.clientHeight + 300"), "the list must scroll for this test"
+    company_list.evaluate("list => { list.scrollTop = 300; }")
+
+    owner_page.locator(".outreach-refresh").click()
+    expect(owner_page.locator("#action-status")).to_contain_text("Outreach is up to date.")
+    # A new list was drawn, at the old place in it.
+    assert owner_page.locator(".outreach-list").evaluate("list => list.scrollTop") == 300
+    expect(owner_page.locator(".outreach-refresh")).to_be_focused()
+
+    # Picking the rail tab starts the list at the top.
+    open_tab(owner_page, "to-contact")
+    assert owner_page.locator(".outreach-list").evaluate("list => list.scrollTop") == 0
 
 
 def test_switching_companies_asks_before_dropping_unsaved_edits(owner_page, base_url):

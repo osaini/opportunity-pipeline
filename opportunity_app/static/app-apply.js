@@ -5,11 +5,12 @@
   const App = window.OpportunityApp;
 
   // From app-context.js.
-  const { els, state } = App;
+  const { els, registerSessionPoller, state } = App;
 
   // From app-ui.js.
   const {
-    appendLinks, element, externalLink, formatWeekdayDateTime, humanizeKey, optionElement, webAddresses, whenPresent,
+    announce, appendLinks, atsName, element, externalLink, formatDate, formatWeekdayDateTime, humanizeKey, optionElement, webAddresses,
+    whenPresent,
   } = App;
 
   // From app-http.js.
@@ -18,13 +19,46 @@
   // From app-automation.js.
   const { savedAutomationMode } = App;
 
+  // From app-applications.js.
+  const { loadApplications } = App;
+
   // Defined in files that load later; looked up when called.
   const closeDetail = (...args) => App.closeDetail(...args);
 
   // Apply for me (apply/policy.py, apply/preflight.py): what the app would fill on a saved Greenhouse role, and what it
   // still needs from you. It only reads: opening this section changes nothing in your tracker, and it shows no answer
   // you gave, only the questions, where each answer would come from, and what is missing.
-  const APPLY_NOTE = "Nothing in your tracker has changed. Filling the form in a window comes in a later step.";
+  // About a rehearsal only: a Finish in browser run does write to the tracker (an application and its events), so this never says nothing changed.
+  const APPLY_NOTE = "A rehearsal changes nothing in your tracker. It fills the form in a window to check it, and never sends it.";
+  // For a form the app can only read so far (Lever): there is no rehearsal to speak of.
+  const READ_ONLY_NOTE = "This only reads the form. Opening it changes nothing in your tracker, and nothing is filled or sent.";
+  const APPLY_API = "/api/v1/apply-agent";
+  const REHEARSE_HELP = "Opens a Chromium window and fills this form to check it. Nothing is sent: the app never presses Submit, and it refuses every request it can see that could send the form.";
+  const WINDOW_NOTE = "A Chromium window is open. You can watch, but please don't type in it.";
+  // Finish in browser (apply/runner.py, docs/assisted-apply.md): the app fills the form in a window and the student presses Submit.
+  const handoffHelp = (name) => `Opens a Chromium window and fills the form. You complete what is left and press Submit application yourself. Your application is not sent until you do. To find options for typeahead fields, the app sends what is typed there to ${name}'s lookup service.`;
+  // Lever reads a résumé as soon as it is attached, so it is sent to Lever before the student presses Submit (spec L1). Finish in browser says what
+  // happens to the file before the window opens: the app attaches it only when the student turned on Let the app attach my résumé on Lever (Profile, Automation, Applications), else it is theirs to attach.
+  const LEVER_RESUME_BY_APP = "The app will attach your résumé. Lever reads it as soon as it is attached, so it is sent to Lever before you press Submit.";
+  const LEVER_RESUME_BY_YOU = "Your résumé is left for you: attach it in the window. Lever reads it as soon as it is attached, so it is sent to Lever before you press Submit.";
+  let applySummaryCount = 0;
+  // Fired on the document by syncAutomationControls (app-automation.js) with the settings, whenever the switches are read or saved.
+  const AUTOMATION_SYNCED = "opportunity:automation-synced";
+  const RESUME_SENT_LINE = "Your résumé was sent to Lever when it was attached.";
+  // A form with a Finish in browser window and no rehearsal (Lever): the section reads the form and starts nothing by itself.
+  const HANDOFF_ONLY_NOTE = "Opening this only reads the form: it changes nothing in your tracker, and nothing is filled or sent. Finish in browser fills the form in a window, and you press Submit application yourself.";
+  const STOP_HELP = "Closes the window. Nothing is sent.";
+  // Once the file is with Lever, "nothing is sent" would not be the whole truth: the application is not sent, and Lever already has the résumé.
+  const STOP_HELP_RESUME_SENT = "Closes the window. Your application is not sent.";
+  const LEVER_RESUME_CHANGED = "The setting for attaching your résumé changed since this page was loaded. Read the line above the button, then press Finish in browser again.";
+  const FRONT_HELP = "If it doesn't appear, click Chromium in your taskbar.";
+  const TURN_ERROR_HELP = "If the form shows an error, fix that field in the window and press Submit application again. Press Stop only if you want to give up; the app will tell you whether anything was sent.";
+  const LEAVING_SOON_MS = 2 * 60 * 1000;
+  const NOT_STORED = "Changed since this application was filled; what was sent is not stored.";
+  // A run that was never handed over sent nothing, so its answers are "changed", not "not stored".
+  const CHANGED_SINCE_FILL = "Changed since the app filled the form.";
+  const NOT_ANSWERED_NOW = "Not answered now";
+  const RUN_POLL_MS = 1000;
 
   function applyAnswerForm(problem, company, onSaved) {
     const action = problem.action;
@@ -129,7 +163,8 @@
     save.type = "submit";
     const status = element("p", "form-status");
     status.setAttribute("role", "status");
-    form.append(label, element("p", "profile-help", "You typed this, so the app has not checked it against the form yet. It only uses an option the form really lists, word for word."), save, status);
+    // Look up options is a run in a window that reads the form's own list: Greenhouse has one, Lever's comes later, so its form has none.
+    form.append(label, element("p", "profile-help", "You typed this, so the app has not checked it against the form yet. It only uses an option the form really lists, word for word."), ...(action.lookup === false ? [] : [applyLookup(problem, input, onSaved)]), save, status);
     // Kept across a rebuild of the list, but only when the student changed it from the suggestion.
     form.applyDraft = {
       read: () => (input.value !== (action.suggestion || "") ? { answer: input.value } : null),
@@ -147,7 +182,7 @@
       save.setAttribute("aria-disabled", "true");
       status.textContent = "Saving…";
       try {
-        await api(`/api/v1/apply-agent/ats-labels/${encodeURIComponent(action.field)}`, { method: "PUT", body: JSON.stringify({ label: input.value }) });
+        await api(`/api/v1/apply-agent/ats-labels/${encodeURIComponent(action.field)}`, { method: "PUT", body: JSON.stringify({ label: input.value, ...(action.ats ? { ats: action.ats } : {}) }) });
         onSaved(null, "Saved.");
       } catch (error) {
         saving = false;
@@ -294,6 +329,49 @@
     return form;
   }
 
+  // A required cover letter with none approved (D11): the app drafts nothing itself. Draft one, or Open the draft when the latest
+  // version is still a draft, goes to the Prepare page where cover letters are made and approved; Try again asks the app again
+  // once the letter is approved. The page opens behind the role, so leave the role first.
+  function applyLetterAction(problem, action, onSaved) {
+    const draft = action.state === "draft" && action.document_id;
+    const wrap = element("div", "apply-letter-action");
+    const open = element("button", "secondary-button", draft ? "Open the draft" : "Draft one");
+    open.type = "button";
+    open.addEventListener("click", () => {
+      closeDetail();
+      els.prepareNav.click();
+      if (draft) {
+        whenPresent(() => document.querySelector(`[data-document-id="${CSS.escape(action.document_id)}"]`), (card) => {
+          card.scrollIntoView({ block: "center" });
+          const approve = [...card.querySelectorAll("button")].find((button) => /^Approve/.test(button.textContent) && !button.disabled);
+          (approve || card.querySelector("textarea")).focus({ preventScroll: true });
+        });
+        return;
+      }
+      // The Prepare page's own form makes the draft: pick this role and cover letter in it, and leave the press to the student.
+      whenPresent(() => document.querySelector('.preparation-create-form select[aria-label="Document type"]'), (kind) => {
+        const form = kind.closest("form");
+        const generate = form.querySelector("button[type=submit]");
+        const role = form.querySelector('select[aria-label="Application opportunity"]');
+        if (role && problem.opportunityId) {
+          // The form lists applications; a saved role that is not one yet is added to it, so the draft is made for this role.
+          if (![...role.options].some((option) => option.value === problem.opportunityId)) {
+            role.appendChild(optionElement(problem.opportunityId, problem.opportunityLabel || "This role"));
+          }
+          role.value = problem.opportunityId;
+        }
+        kind.value = "cover_letter";
+        form.scrollIntoView({ block: "center" });
+        generate.focus({ preventScroll: true });
+      });
+    });
+    const again = element("button", "secondary-button", "Try again");
+    again.type = "button";
+    again.addEventListener("click", () => onSaved(null, ""));
+    wrap.append(open, again, element("p", "profile-help", "Approve the letter on the Prepare page, then press Try again. The app attaches only a letter you approved."));
+    return wrap;
+  }
+
   function applyProblemAction(problem, company, onSaved) {
     const action = problem.action || {};
     if (action.type === "answer") return applyAnswerForm(problem, company, onSaved);
@@ -332,6 +410,7 @@
       });
       return open;
     }
+    if (action.type === "cover_letter") return applyLetterAction(problem, action, onSaved);
     if (action.type === "resume") {
       const open = element("button", "secondary-button", action.chooser ? "Choose a résumé for this role" : "Go to the résumé section");
       open.type = "button";
@@ -352,14 +431,17 @@
     const line = element("p", "apply-source profile-help");
     const words = [posting.title, posting.company].filter(Boolean).join(" at ");
     line.append("Read from ");
-    if (posting.url) {
+    // On Lever the address is the live application form: with Finish in browser offered for this role it is only named, never linked, so the
+    // form is filled and sent through the app (and its guard against a second application), never in a tab beside it.
+    const formOutside = result.ats === "lever" && !(result.offers && !result.offers.handoff);
+    if (posting.url && !formOutside) {
       const link = externalLink(posting.url, words);
       line.appendChild(link);
     } else {
       line.append(words);
     }
     const when = result.from_cache ? "a copy kept for up to an hour" : formatWeekdayDateTime(result.checked_at);
-    line.append(` on Greenhouse${when ? `, ${when}` : ""}.`);
+    line.append(` on ${atsName(result)}${when ? `, ${when}` : ""}.`);
     body.appendChild(line);
     if (!posting.differs) return;
     const warning = element("div", "apply-mismatch");
@@ -374,6 +456,743 @@
     body.appendChild(warning);
   }
 
+  // Rehearsals and option lookups (apply/runner.py): a run is started with one POST and read by polling its row. Every poll
+  // belongs to the session that started it, so each registers one stop with the session (a poll left running after sign-out
+  // would get a 401 each time), and each checks the session and its own page after every await.
+  const activeWatches = new Set();
+  let watchersRegistered = false;
+
+  // Calls onView(view) with the run's row every second until it is finished or stalled, or until alive() says the page that
+  // wanted it is gone. Returns the function that stops it.
+  function watchRun(runId, { alive, onView, onFail }) {
+    if (!watchersRegistered) {
+      watchersRegistered = true;
+      registerSessionPoller(() => [...activeWatches].forEach((stopOne) => stopOne()));
+    }
+    const epoch = state.sessionEpoch;
+    let timer = 0;
+    let stopped = false;
+    let failures = 0;
+    const stop = () => {
+      stopped = true;
+      window.clearTimeout(timer);
+      activeWatches.delete(stop);
+    };
+    activeWatches.add(stop);
+    async function tick() {
+      if (stopped) return;
+      let view;
+      try {
+        view = await api(`${APPLY_API}/runs/${encodeURIComponent(runId)}`);
+      } catch (error) {
+        if (stopped) return;
+        if (isAuthError(error) || state.sessionEpoch !== epoch || !alive()) {
+          stop();
+          return;
+        }
+        failures += 1;
+        // A run that is gone, or a server that keeps failing, ends the wait; one lost request does not.
+        if (error.status === 404 || failures >= 5) {
+          stop();
+          onFail(error);
+          return;
+        }
+        timer = window.setTimeout(tick, RUN_POLL_MS * 2);
+        return;
+      }
+      if (stopped) return;
+      if (state.sessionEpoch !== epoch || !alive()) {
+        stop();
+        return;
+      }
+      failures = 0;
+      const done = runIsOver(view);
+      if (done) stop();
+      onView(view);
+      // onView may have replaced this watch (another panel) or ended it; either way no poll is left behind.
+      if (!done && !stopped) timer = window.setTimeout(tick, RUN_POLL_MS);
+    }
+    timer = window.setTimeout(tick, RUN_POLL_MS);
+    return stop;
+  }
+
+  const runIsOver = (view) => view.status === "finished" || Boolean(view.stalled);
+
+  // The run phases in which a Finish in browser run is the student's (or past their Submit), not the app's filling.
+  const TURN_PHASES = ["your_turn", "form_elsewhere", "resume_changed", "submitting", "security_code", "code_typed", "code_yours", "challenge"];
+
+  // The result panels whose Answer column is on screen. Signing out takes the column away: it holds the student's answers.
+  const valuePanels = new Set();
+  let valuePanelsRegistered = false;
+
+  function registerValuePanels() {
+    if (valuePanelsRegistered) return;
+    valuePanelsRegistered = true;
+    registerSessionPoller(() => {
+      valuePanels.forEach((panel) => panel.clearValues());
+      valuePanels.clear();
+    });
+  }
+
+  // The Look up options part of a typeahead question's form (a list only Greenhouse knows, such as location): the student types
+  // a few letters, the app types them into the form in a window and reads the options it offers, and the student picks theirs.
+  // What was found is kept in problem.lookups, so the list being rebuilt (another answer saved) does not lose it.
+  function applyLookup(problem, input, onSaved) {
+    const action = problem.action;
+    const memory = problem.lookups;
+    const block = element("div", "apply-lookup");
+    const find = element("button", "secondary-button", "Look up options");
+    find.type = "button";
+    const stopButton = element("button", "secondary-button", "Stop");
+    stopButton.type = "button";
+    stopButton.hidden = true;
+    const actions = element("div", "apply-lookup-actions");
+    actions.append(find, stopButton);
+    const status = element("p", "form-status apply-lookup-status");
+    status.setAttribute("role", "status");
+    const choices = element("div", "apply-lookup-choices");
+    block.append(
+      actions,
+      element("p", "profile-help", `This sends what you typed to ${atsName({ ats_name: problem.atsName })}'s lookup service.`),
+      status,
+      choices,
+    );
+    const alive = () => block.isConnected;
+    let stopWatch = null;
+    let busy = false;
+    let runId = "";
+
+    function setBusy(on) {
+      busy = on;
+      if (on) find.setAttribute("aria-disabled", "true");
+      else find.removeAttribute("aria-disabled");
+    }
+
+    function showOptions(view) {
+      choices.replaceChildren();
+      const options = view.options?.[action.field] || [];
+      if (!options.length) return;
+      const group = element("fieldset", "apply-options");
+      group.appendChild(element("legend", "", "Options the form lists"));
+      const name = `apply-lookup-${problem.key}`;
+      const radios = options.map((option) => {
+        const row = element("label", "confirmation-row");
+        const radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = name;
+        radio.value = option;
+        row.append(radio, element("span", "", option));
+        group.appendChild(row);
+        return radio;
+      });
+      const use = element("button", "secondary-button", "Use this one from now on");
+      use.type = "button";
+      let saving = false;
+      use.addEventListener("click", async () => {
+        if (saving) return;
+        const chosen = radios.find((radio) => radio.checked);
+        if (!chosen) {
+          status.textContent = "Pick one of the options first.";
+          return;
+        }
+        saving = true;
+        use.setAttribute("aria-disabled", "true");
+        status.textContent = "Saving…";
+        const epoch = state.sessionEpoch;
+        try {
+          await api(`${APPLY_API}/ats-labels/${encodeURIComponent(action.field)}`, { method: "PUT", body: JSON.stringify({ label: chosen.value }) });
+          if (state.sessionEpoch !== epoch) return;
+          memory?.delete(problem.key);
+          onSaved(null, "Saved.");
+        } catch (error) {
+          saving = false;
+          use.removeAttribute("aria-disabled");
+          if (!isAuthError(error)) status.textContent = error.message;
+        }
+      });
+      choices.append(group, use);
+    }
+
+    function receive(view) {
+      runId = view.id;
+      memory?.set(problem.key, view);
+      status.textContent = view.summary;
+      if (!runIsOver(view)) {
+        stopButton.hidden = false;
+        return;
+      }
+      stopWatch?.();
+      stopWatch = null;
+      stopButton.hidden = true;
+      setBusy(false);
+      showOptions(view);
+    }
+
+    function follow(view) {
+      receive(view);
+      if (runIsOver(view)) return;
+      setBusy(true);
+      stopWatch?.();
+      stopWatch = watchRun(view.id, {
+        alive,
+        onView: receive,
+        onFail: (error) => {
+          setBusy(false);
+          stopButton.hidden = true;
+          status.textContent = error.message;
+        },
+      });
+    }
+
+    find.addEventListener("click", async () => {
+      if (busy) return;
+      const text = input.value.trim();
+      if (!text) {
+        status.textContent = "Type a few letters of the option first.";
+        return;
+      }
+      if (text.length > 100) {
+        status.textContent = "Type at most 100 letters to look up.";
+        return;
+      }
+      setBusy(true);
+      choices.replaceChildren();
+      status.textContent = "Starting…";
+      const epoch = state.sessionEpoch;
+      try {
+        const view = await api(`${APPLY_API}/opportunities/${encodeURIComponent(problem.opportunityId)}/lookups`, {
+          method: "POST",
+          body: JSON.stringify({ key: problem.key, text }),
+        });
+        if (state.sessionEpoch !== epoch || !alive()) return;
+        follow(view);
+      } catch (error) {
+        setBusy(false);
+        if (state.sessionEpoch === epoch && !isAuthError(error)) status.textContent = error.message;
+      }
+    });
+
+    stopButton.addEventListener("click", async () => {
+      if (!runId || stopButton.getAttribute("aria-disabled") === "true") return;
+      stopButton.setAttribute("aria-disabled", "true");
+      stopButton.textContent = "Stopping…";
+      const epoch = state.sessionEpoch;
+      try {
+        const view = await api(`${APPLY_API}/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
+        if (state.sessionEpoch === epoch && alive()) receive(view);
+      } catch (error) {
+        if (!isAuthError(error) && state.sessionEpoch === epoch) status.textContent = error.message;
+      }
+      stopButton.removeAttribute("aria-disabled");
+      stopButton.textContent = "Stop";
+    });
+
+    // The list was rebuilt while a lookup was running or after one finished: pick it up where it was.
+    const earlier = memory?.get(problem.key);
+    if (earlier) follow(earlier);
+    return block;
+  }
+
+  // The window and the steps of a rehearsal that is running. update() takes each new row of the run.
+  function applyRunPanel(view, onStop) {
+    const node = element("div", "apply-run");
+    const step = element("p", "apply-run-step");
+    step.setAttribute("role", "status");
+    step.tabIndex = -1;
+    const steps = element("ol", "apply-run-steps");
+    const stop = element("button", "secondary-button", "Stop");
+    stop.type = "button";
+    const note = element("p", "profile-help", WINDOW_NOTE);
+    const status = element("p", "form-status");
+    status.setAttribute("role", "status");
+    node.append(step, steps, note, stop, status);
+    stop.addEventListener("click", async () => {
+      if (stop.getAttribute("aria-disabled") === "true") return;
+      stop.setAttribute("aria-disabled", "true");
+      stop.textContent = "Stopping…";
+      status.textContent = "";
+      try {
+        await onStop();
+      } catch (error) {
+        stop.removeAttribute("aria-disabled");
+        stop.textContent = "Stop";
+        if (!isAuthError(error)) status.textContent = error.message;
+      }
+    });
+    function update(fresh) {
+      step.textContent = fresh.summary;
+      // A Finish in browser run past Submit cannot be stopped; a rehearsal or lookup says nothing and keeps its button.
+      stop.hidden = fresh.can_cancel === false;
+      const texts = (fresh.progress || []).map((entry) => entry.text).filter((text, index, all) => text && text !== all[index - 1]);
+      steps.replaceChildren(...texts.map((text, index) => {
+        const line = element("li", index === texts.length - 1 ? "is-current" : "", text);
+        if (index === texts.length - 1) line.setAttribute("aria-current", "step");
+        return line;
+      }));
+    }
+    update(view);
+    return { node, update, focus: () => step.focus({ preventScroll: true }), fail: (message) => { status.textContent = message; } };
+  }
+
+  // A question the app answers from a statement the student stored (a ticked box, or a Yes/No agreement question answered Yes): the run view
+  // marks it, whatever its control. A statement the app ticks or answers is "ticked for you"; in a rehearsal it is only checked (deferred).
+  const isStatement = (field) => field.statement === true;
+  const isTickedStatement = (field) => isStatement(field) && field.disposition === "fill";
+  const isTickBox = (field) => field.control === "checkbox";
+
+  // The addresses a ticked statement links to, as text: they are page text, so they are shown, never made into links.
+  const linkText = (links) => webAddresses(links).join(", ");
+
+  // The time the window closes, as the student's clock reads it.
+  const clockTime = (stamp) => {
+    const date = new Date(stamp);
+    return Number.isNaN(date.getTime()) ? "" : date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  };
+
+  // "Left for you" and "Ticked for you": what the student still does in the window, and what the app ticked on their behalf.
+  function turnLists(view) {
+    const lists = [];
+    const left = view.left_for_you || [];
+    if (left.length) {
+      const block = element("section", "apply-left");
+      block.appendChild(element("h5", "", "Left for you"));
+      const list = element("ul", "reason-list");
+      left.forEach((entry) => {
+        const row = element("li", "apply-left-item");
+        row.appendChild(element("strong", "", entry.question));
+        if (entry.reason) row.appendChild(element("p", "profile-help", entry.reason));
+        list.appendChild(row);
+      });
+      block.appendChild(list);
+      lists.push(block);
+    }
+    const ticked = (view.fields || []).filter(isTickedStatement);
+    if (ticked.length) {
+      const block = element("section", "apply-ticked");
+      block.appendChild(element("h5", "", "Ticked for you"));
+      const list = element("ul", "reason-list");
+      ticked.forEach((field) => {
+        const row = element("li", "apply-ticked-item");
+        row.appendChild(element("strong", "", field.question));
+        const addresses = linkText(field.links);
+        const verb = isTickBox(field) ? "Ticked" : "Answered Yes";
+        row.appendChild(element("p", "profile-help", `${verb} from your stored statement${addresses ? ` · links to ${addresses}` : ""}`));
+        list.appendChild(row);
+      });
+      block.appendChild(list);
+      lists.push(block);
+    }
+    return lists;
+  }
+
+  // The student's turn in a Finish in browser run: what is left, what was ticked, how long the window stays, and the way out.
+  // After Submit is pressed the same panel keeps the step and the window button, and drops Stop (the claim is past stopping).
+  // update() takes each new row of the run. The countdown is read from each row's handoff_until at poll time, so no timer outlives the panel.
+  function applyTurnPanel(view, { onStop, onFront }) {
+    const node = element("div", "apply-turn");
+    const step = element("p", "apply-run-step");
+    step.setAttribute("role", "status");
+    step.tabIndex = -1;
+    const until = element("p", "profile-help apply-turn-until");
+    const soon = element("p", "apply-limit apply-turn-soon");
+    soon.setAttribute("role", "status");
+    const resume = element("p", "profile-help apply-resume-sent");
+    const lists = element("div", "apply-turn-lists");
+    const actions = element("div", "apply-turn-actions");
+    const stop = element("button", "secondary-button", "Stop");
+    stop.type = "button";
+    const stopHelp = element("p", "profile-help apply-stop-help", STOP_HELP);
+    stopHelp.id = `apply-stop-help-${view.id}`;
+    stop.setAttribute("aria-describedby", stopHelp.id);
+    const front = element("button", "secondary-button apply-front", "Bring the window forward");
+    front.type = "button";
+    const frontHelp = element("p", "profile-help apply-front-help", FRONT_HELP);
+    frontHelp.id = `apply-front-help-${view.id}`;
+    front.setAttribute("aria-describedby", frontHelp.id);
+    const errorHelp = element("p", "profile-help apply-turn-help", TURN_ERROR_HELP);
+    const status = element("p", "form-status");
+    status.setAttribute("role", "status");
+    // Each button sits over its own help, so the two read as two choices.
+    const stopBox = element("div", "apply-turn-action");
+    stopBox.append(stop, stopHelp);
+    const frontBox = element("div", "apply-turn-action");
+    frontBox.append(front, frontHelp);
+    actions.append(stopBox, frontBox);
+    node.append(step, until, soon, resume, lists, actions, errorHelp, status);
+    // Each text is set only when it changes, so a screen reader is not told the same thing again at every poll.
+    const setText = (target, text) => { if (target.textContent !== text) target.textContent = text; };
+    let listed = "";
+    const guarded = (button, label, busy, action) => button.addEventListener("click", async () => {
+      if (button.getAttribute("aria-disabled") === "true") return;
+      button.setAttribute("aria-disabled", "true");
+      button.textContent = busy;
+      status.textContent = "";
+      try {
+        await action();
+      } catch (error) {
+        if (!isAuthError(error)) status.textContent = error.message;
+      }
+      button.removeAttribute("aria-disabled");
+      button.textContent = label;
+    });
+    guarded(stop, "Stop", "Stopping…", onStop);
+    function update(fresh) {
+      setText(step, fresh.summary);
+      // "form_elsewhere" is the same turn: the form tried to send somewhere the app stopped, and the student goes on or stops. So is "resume_changed":
+      // the page filled fields from the file the student attached, and the student checks them.
+      const turn = fresh.phase === "your_turn" || fresh.phase === "form_elsewhere" || fresh.phase === "resume_changed";
+      const closes = turn && fresh.handoff_until ? clockTime(fresh.handoff_until) : "";
+      setText(until, closes ? `The window closes at ${closes} if you haven't pressed Submit application.` : "");
+      const left = turn && fresh.handoff_until ? new Date(fresh.handoff_until).getTime() - Date.now() : 0;
+      setText(soon, left > 0 && left < LEAVING_SOON_MS ? "About 2 minutes left in the window" : "");
+      setText(resume, fresh.resume_sent_to_lever ? RESUME_SENT_LINE : "");
+      resume.hidden = !fresh.resume_sent_to_lever;
+      setText(stopHelp, fresh.resume_sent_to_lever ? STOP_HELP_RESUME_SENT : STOP_HELP);
+      const signature = JSON.stringify([fresh.left_for_you, (fresh.fields || []).filter(isTickedStatement).map((field) => [field.key, field.links])]);
+      if (signature !== listed) {
+        listed = signature;
+        lists.replaceChildren(...turnLists(fresh));
+      }
+      const canStop = turn && fresh.can_cancel !== false;
+      stopBox.hidden = !canStop;
+      frontBox.hidden = !fresh.can_front;
+      errorHelp.hidden = !turn;
+      actions.hidden = stopBox.hidden && frontBox.hidden;
+    }
+    guarded(front, "Bring the window forward", "Asking…", onFront);
+    update(view);
+    return { node, update, focus: () => step.focus({ preventScroll: true }), fail: (message) => { status.textContent = message; } };
+  }
+
+  // "Was this rehearsal right?" for a finished rehearsal, or the student's mark once it is given. A mark is the student's own
+  // word on whether the app's rehearsal matched the form; it changes nothing else.
+  function applyReviewBlock(view, onMarked, stale) {
+    const block = element("div", "apply-review");
+    block.setAttribute("role", "group");
+    if (view.review) {
+      const mark = element("p", "apply-review-mark", `You marked this rehearsal ${view.review === "right" ? "right" : "wrong"}.`);
+      mark.tabIndex = -1;
+      block.appendChild(mark);
+      if (view.review_note) block.appendChild(element("p", "profile-help", view.review_note));
+      return block;
+    }
+    if (!view.can_review) return null;
+    const question = element("p", "apply-review-question", "Was this rehearsal right?");
+    question.id = `apply-review-${view.id}`;
+    block.setAttribute("aria-labelledby", question.id);
+    const row = element("div", "apply-review-actions");
+    const right = element("button", "secondary-button", "Right");
+    right.type = "button";
+    const wrong = element("button", "secondary-button", "Something's wrong");
+    wrong.type = "button";
+    row.append(right, wrong);
+    const status = element("p", "form-status");
+    status.setAttribute("role", "status");
+    const noteForm = element("form", "apply-review-note");
+    noteForm.hidden = true;
+    const noteLabel = element("label", "profile-field");
+    noteLabel.appendChild(element("span", "", "What was wrong? (optional)"));
+    const note = document.createElement("textarea");
+    note.rows = 3;
+    note.maxLength = 500;
+    noteLabel.appendChild(note);
+    const send = element("button", "secondary-button", "Send");
+    send.type = "submit";
+    noteForm.append(noteLabel, send);
+    let sending = false;
+    async function mark(verdict, text) {
+      if (sending) return;
+      sending = true;
+      for (const button of [right, wrong, send]) button.setAttribute("aria-disabled", "true");
+      status.textContent = "Saving…";
+      const epoch = state.sessionEpoch;
+      try {
+        const fresh = await api(`${APPLY_API}/runs/${encodeURIComponent(view.id)}/review`, {
+          method: "POST",
+          body: JSON.stringify({ verdict, note: text }),
+        });
+        if (state.sessionEpoch !== epoch || stale()) return;
+        onMarked(fresh);
+      } catch (error) {
+        sending = false;
+        for (const button of [right, wrong, send]) button.removeAttribute("aria-disabled");
+        status.textContent = isAuthError(error) ? "" : error.message;
+      }
+    }
+    right.addEventListener("click", () => mark("right", ""));
+    wrong.setAttribute("aria-expanded", "false");
+    wrong.addEventListener("click", () => {
+      noteForm.hidden = false;
+      wrong.setAttribute("aria-expanded", "true");
+      note.focus();
+    });
+    noteForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      mark("wrong", note.value.trim());
+    });
+    block.append(question, row, noteForm, status);
+    return block;
+  }
+
+  // What the student's own tick or press recorded, for a Finish in browser result: the buttons that settle the claim, and a line
+  // on the confirmation email. settle(path, body) posts to the claim and reloads the run; it throws on a refusal.
+  function applyClaimBlock(view, settle) {
+    const claim = view.claim;
+    if (!claim) return null;
+    const ats = atsName(claim);
+    const box = element("div", "apply-claim");
+    box.setAttribute("role", "group");
+    box.setAttribute("aria-label", "What to do next");
+    const lines = [];
+    if (claim.status === "may_have_been_sent") lines.push(`This may have been sent. Check your email for ${ats}'s confirmation, then say what happened.`);
+    else if (claim.application_stage === "applied" && claim.state === "submitted") lines.push("This application is marked as applied.");
+    else if (claim.state === "released" && claim.resolved_by === "student" && claim.handed_over) lines.push("You said it didn't go through.");
+    else if (claim.state === "released" && claim.resolved_by === "student") lines.push("A later Finish in browser replaced this attempt.");
+    if (claim.status === "watching") lines.push(`Looking for ${ats}'s confirmation email until ${formatDate(claim.watch_until)}.`);
+    else if (claim.status === "watch_paused") lines.push(`Looking for ${ats}'s confirmation email: paused, ${claim.paused_reason || "the job-email check isn't running"}.`);
+    else if (claim.status === "email_confirmed") lines.push(`${ats}'s confirmation email arrived ${formatDate(claim.email_received_at)}.`);
+    else if (claim.status === "no_email") lines.push("No confirmation email yet. Some employers don't send one; check the employer's portal or your spam folder.");
+    else if (claim.status === "not_watched") lines.push("The app isn't checking for a confirmation email.");
+    lines.forEach((line) => box.appendChild(element("p", "apply-claim-line", line)));
+    const row = element("div", "apply-claim-actions");
+    const status = element("p", "form-status");
+    status.setAttribute("role", "status");
+    const buttons = [];
+    const act = (label, path, body) => {
+      const button = element("button", "secondary-button", label);
+      button.type = "button";
+      button.addEventListener("click", async () => {
+        if (button.getAttribute("aria-disabled") === "true") return;
+        buttons.forEach((other) => other.setAttribute("aria-disabled", "true"));
+        status.textContent = "Saving…";
+        try {
+          await settle(path, body);
+        } catch (error) {
+          buttons.forEach((other) => other.removeAttribute("aria-disabled"));
+          status.textContent = isAuthError(error) ? "" : error.message;
+        }
+      });
+      buttons.push(button);
+      row.appendChild(button);
+      return button;
+    };
+    if (claim.ask_mark_applied) act("Mark as applied?", "mark-applied");
+    if (claim.status === "may_have_been_sent") {
+      const yes = act("It went through", "resolve", { went_through: true });
+      const no = act("It didn't go through", "resolve", { went_through: false });
+      if (!claim.can_resolve) [yes, no].forEach((button) => button.setAttribute("aria-disabled", "true"));
+    }
+    if (buttons.length) box.append(row, status);
+    return box.children.length ? box : null;
+  }
+
+  // The table of what the run did with each field. `values` (from GET .../values, the student's browser session only) adds the
+  // Answer column once it has arrived; a Finish in browser run shows only what is provably what the app filled.
+  function applyPlanTable(view, values) {
+    const handoff = view.kind === "handoff";
+    const fields = (view.fields || []).filter((field) => field.disposition !== "blank");
+    if (!fields.length) return null;
+    const caption = handoff ? "What the app did with each field" : "What the rehearsal did with each field";
+    const scroll = element("div", "apply-plan-scroll");
+    scroll.tabIndex = 0;
+    scroll.setAttribute("role", "region");
+    scroll.setAttribute("aria-label", caption);
+    const table = element("table", "apply-plan");
+    table.appendChild(element("caption", "", caption));
+    const columns = ["Question"];
+    if (values) columns.push(handoff ? "What the app filled" : "Answer");
+    columns.push(handoff ? "What the app did" : "What the rehearsal did", "From");
+    const head = element("tr");
+    columns.forEach((words) => {
+      const cell = element("th", "", words);
+      cell.scope = "col";
+      head.appendChild(cell);
+    });
+    table.appendChild(element("thead")).appendChild(head);
+    const rows = element("tbody");
+    fields.forEach((field) => {
+      const row = element("tr");
+      const question = element("th", "", `${field.question}${field.required ? " (required)" : ""}`);
+      question.scope = "row";
+      row.appendChild(question);
+      if (values) row.appendChild(valueCell(view, field, values));
+      const did = element("td", "", field.disposition_text);
+      if (field.problem) did.appendChild(element("span", "apply-plan-problem", field.problem));
+      const from = element("td", "", field.source_text);
+      // A ticked statement shows the address of the document it links to, as text, so the student can see what was agreed to.
+      const addresses = !values && isStatement(field) && ["fill", "deferred"].includes(field.disposition) ? linkText(field.links) : "";
+      if (addresses) from.append(` · links to ${addresses}`);
+      row.append(did, from);
+      rows.appendChild(row);
+    });
+    table.appendChild(rows);
+    scroll.appendChild(table);
+    return scroll;
+  }
+
+  // One Answer cell. Only a field the app fills (or checks, in a rehearsal) has one; a field left for the student or blank never does.
+  function valueCell(view, field, values) {
+    const handoff = view.kind === "handoff";
+    const cell = element("td", "apply-plan-answer");
+    if (!(field.disposition === "fill" || (!handoff && field.disposition === "deferred"))) return cell;
+    const entry = values[field.key];
+    if (isStatement(field)) {
+      // In a rehearsal this column is today's value: a statement nothing stored answers now (deleted, reworded, or its links no
+      // longer match) is not drawn as ticked, because Finish in browser would leave it for the student.
+      if (!handoff && (!entry || entry.available === false)) {
+        cell.append(NOT_ANSWERED_NOW);
+        if (entry?.changed) cell.appendChild(element("span", "apply-plan-changed", "changed since the rehearsal"));
+        return cell;
+      }
+      cell.append(isTickBox(field) ? "Ticked" : (entry && entry.shown !== false && entry.text ? entry.text : "Answered from your stored statement"));
+      const addresses = linkText(field.links);
+      if (addresses) cell.append(` · links to ${addresses}`);
+      if (!handoff && entry?.changed) cell.appendChild(element("span", "apply-plan-changed", "changed since the rehearsal"));
+      return cell;
+    }
+    if (!entry) return cell;
+    if (handoff) {
+      cell.textContent = entry.shown ? entry.text : (view.handed_over ? NOT_STORED : CHANGED_SINCE_FILL);
+      appendLetterText(cell, entry);
+      return cell;
+    }
+    if (entry.text) cell.append(entry.text);
+    if (entry.changed) cell.appendChild(element("span", "apply-plan-changed", "changed since the rehearsal"));
+    appendLetterText(cell, entry);
+    return cell;
+  }
+
+  // The cover letter's own words under its file name: what the student approved is what the employer gets. Scrollable, so it is a
+  // labelled region the keyboard can reach.
+  function appendLetterText(cell, entry) {
+    if (!entry.body) return;
+    const text = element("div", "apply-letter-text", entry.body);
+    text.tabIndex = 0;
+    text.setAttribute("role", "region");
+    text.setAttribute("aria-label", "Text of the cover letter");
+    cell.appendChild(text);
+  }
+
+  // Fields the app left blank (with why) and optional ones the page filled in itself, each in a collapsed group.
+  function applyPlanGroups(view) {
+    const groups = [];
+    const blank = (view.fields || []).filter((field) => field.disposition === "blank");
+    if (blank.length) {
+      const details = element("details", "apply-plan-group apply-blank");
+      details.appendChild(element("summary", "", `Left blank (${blank.length})`));
+      const list = element("ul", "reason-list");
+      blank.forEach((field) => {
+        const line = element("li", "", field.question);
+        const why = field.note || field.problem;
+        if (why) line.appendChild(element("p", "profile-help", why));
+        list.appendChild(line);
+      });
+      details.appendChild(list);
+      groups.push(details);
+    }
+    const defaults = view.page_defaults || [];
+    if (defaults.length) {
+      const details = element("details", "apply-plan-group apply-page-defaults");
+      details.appendChild(element("summary", "", `Left as the page set it (${defaults.length})`));
+      const list = element("ul", "reason-list");
+      defaults.forEach((entry) => list.appendChild(element("li", "", entry.question || entry.key)));
+      details.appendChild(list);
+      groups.push(details);
+    }
+    return groups;
+  }
+
+  // What a finished (or stalled) rehearsal or Finish in browser run found: in words, from the run's row. The table says what was
+  // done with each question and where the answer came from; the Answer column, when it arrives, is a separate read (setValues).
+  function applyResultPanel(view, { startAgain, finish, notNow, onMarked, settle, stale, postingUrl }) {
+    const handoff = view.kind === "handoff";
+    const node = element("div", "apply-result");
+    const title = element("h4", "apply-result-title", view.summary);
+    title.tabIndex = -1;
+    node.appendChild(title);
+    const when = view.finished_at ? formatWeekdayDateTime(view.finished_at) : "";
+    if (when) node.appendChild(element("p", "profile-help apply-result-when", `${handoff ? "Finished" : "Rehearsed"} ${when}.`));
+    const claim = handoff ? applyClaimBlock(view, settle) : null;
+    if (claim) node.appendChild(claim);
+    // Lever has the file once it is attached, whatever came after; a result that already says it (not sent, but Lever received it) is not told twice.
+    if (handoff && view.resume_sent_to_lever && !view.summary.includes("received your résumé")) {
+      node.appendChild(element("p", "profile-help apply-resume-sent", RESUME_SENT_LINE));
+    }
+    if (view.measured) node.appendChild(element("p", "apply-measured", view.measured));
+    if (view.outcome === "rehearsed") {
+      node.appendChild(element("p", `apply-clean ${view.clean ? "is-clean" : "is-gaps"}`, view.clean ? "Clean rehearsal" : "Not clean: the gaps below"));
+    }
+    // A Finish in browser run's gaps are the fields it left for the student: the table says so row by row, and the turn panel listed them.
+    const problems = handoff ? [] : (view.problems || []);
+    if (problems.length) {
+      const list = element("ul", "apply-problems apply-result-problems");
+      problems.forEach((problem) => {
+        const row = element("li", "apply-result-problem");
+        const question = problem.question || problem.key;
+        row.appendChild(element("strong", "", problem.required ? question : `${question} (optional)`));
+        if (problem.message) row.appendChild(element("p", "profile-help", problem.message));
+        list.appendChild(row);
+      });
+      node.appendChild(list);
+    }
+    // The table, its notes and the groups sit in one box so the Answer column can replace them when it arrives (or leave on sign-out).
+    const plan = element("div", "apply-plan-box");
+    node.appendChild(plan);
+    function paintPlan(values) {
+      const parts = [];
+      if (values && handoff && view.handed_over) parts.push(element("p", "profile-help apply-values-note", "You may have changed fields in the window before you pressed Submit application."));
+      if (values && !handoff && Object.values(values).some((entry) => entry.changed)) {
+        parts.push(element("p", "apply-limit apply-values-note", "Some answers changed since this rehearsal. Rehearse again to see the new plan; Finish in browser uses your current answers."));
+      }
+      const table = applyPlanTable(view, values);
+      if (table) parts.push(table);
+      parts.push(...applyPlanGroups(view));
+      plan.replaceChildren(...parts);
+    }
+    paintPlan(null);
+    (view.screenshots || []).filter((picture) => picture.available).forEach((picture) => {
+      const frame = element("div", "apply-shot");
+      const link = document.createElement("a");
+      link.href = picture.url;
+      link.target = "_blank";
+      link.rel = "noopener";
+      const image = document.createElement("img");
+      image.loading = "lazy";
+      image.src = picture.url;
+      image.alt = picture.step === "needs-you"
+        ? `The form where the ${handoff ? "app" : "rehearsal"} stopped, with sensitive fields covered`
+        : picture.step === "final"
+          ? "The page after you pressed Submit application, with sensitive fields covered"
+          : "The filled form, with sensitive fields covered";
+      link.appendChild(image);
+      frame.appendChild(link);
+      node.appendChild(frame);
+    });
+    // Sentences the summary does not already say (the first reason is the stop sentence of a run that stopped).
+    const reasons = (view.reasons || []).filter((reason) => !view.summary.includes(reason));
+    if (reasons.length) {
+      const list = element("ul", "reason-list apply-reasons");
+      reasons.forEach((reason) => list.appendChild(element("li", "", reason)));
+      node.appendChild(list);
+    }
+    const review = applyReviewBlock(view, onMarked, stale);
+    if (review) node.appendChild(review);
+    const next = element("div", "apply-result-actions");
+    if (handoff) {
+      // Nothing more to start for an application that went, or may have; one that was stopped or never sent can be tried again.
+      // The claim says it when there is one: a stopped claim (including one the student released with "It didn't go through") can be tried again.
+      // A run that stopped on a property of the board (no submit address the app knows, a board that uploads on attach, a hidden field)
+      // would stop the same way again, so the posting is offered instead (the server says so in finish_again).
+      const sent = view.claim ? view.claim.status !== "stopped" : ["submitted", "unconfirmed"].includes(view.outcome);
+      if (!sent && view.finish_again !== false) next.appendChild(finish());
+      else if (!sent && postingUrl) next.appendChild(externalLink(postingUrl, "Open the posting ↗", { className: "secondary-button" }));
+    } else {
+      next.append(finish(), notNow(), startAgain());
+    }
+    if (next.children.length) node.appendChild(next);
+    return { node, focus: () => title.focus({ preventScroll: true }), setValues: paintPlan, clearValues: () => paintPlan(null) };
+  }
+
   function applyForMeSection(item) {
     // Only a saved role, and only for a student who turned Apply for me on: nobody else's page asks Greenhouse anything.
     if (item.intent_state !== "saved" || savedAutomationMode("apply_agent") !== "on") return null;
@@ -382,11 +1201,429 @@
     // Shown once there is something to say. A role that is not on Greenhouse says so; the switch turned off meanwhile says nothing.
     section.hidden = true;
     section.appendChild(element("p", "eyebrow", "Apply for me"));
-    const summary = element("p", "apply-summary", "Checking the Greenhouse form…");
+    const summary = element("p", "apply-summary", `Checking the ${atsName(null)} form…`);
     summary.setAttribute("role", "status");
+    summary.id = `apply-summary-${applySummaryCount += 1}`;
+    // The rehearsal (a run in a window, never sent) sits above the questions and keeps its state while they are rebuilt.
+    const rehearse = element("div", "apply-rehearse");
+    rehearse.hidden = true;
     const body = element("div", "apply-body");
-    section.append(summary, body);
+    section.append(summary, rehearse, body);
     const stale = () => state.detailItem !== item || !section.isConnected;
+    // What a Look up options asked for, by question, so a rebuilt list keeps it.
+    const lookups = new Map();
+    // The latest check, the run on screen (a rehearsal or a Finish in browser run), and the poll that follows it while it runs.
+    let checked = null;
+    let current = null;
+    let running = null;
+    let runningKind = "";
+    let stopWatch = null;
+    let resumed = false;
+    let other = "";
+    const starters = new Set();
+    let starterCount = 0;
+    // Finish in browser: which "Before you go on" boxes are ticked (by code), and the ones a refused start added.
+    const ticked = new Set();
+    const askedTicks = new Map();
+    // Opened from a timeline event's See the run: that one run, not the latest.
+    const requested = state.applyRunRequest && state.applyRunRequest.opportunityId === item.id && Date.now() - state.applyRunRequest.at < 10000
+      ? state.applyRunRequest.runId : "";
+    state.applyRunRequest = null;
+
+    function handoffTicks() {
+      const ticks = [...(checked?.eligibility?.handoff?.ticks || [])];
+      askedTicks.forEach((label, code) => {
+        if (!ticks.some((tick) => tick.code === code)) ticks.push({ code, label });
+      });
+      return ticks;
+    }
+
+    function syncStarters() {
+      starters.forEach((starter) => {
+        // A starter is painted once before its box is put on the page (fresh); after that a button that is gone is forgotten.
+        if (!starter.button.isConnected && !starter.fresh) {
+          starters.delete(starter);
+          return;
+        }
+        if (starter.button.isConnected) starter.fresh = false;
+        const eligibility = checked?.eligibility?.[starter.kind];
+        const blocked = eligibility && eligibility.allowed === false ? (eligibility.reason || "") : "";
+        let waiting = false;
+        if (starter.kind === "handoff") {
+          const ticks = handoffTicks();
+          starter.paintResume();
+          starter.paintTicks(ticks);
+          waiting = ticks.some((tick) => !ticked.has(tick.code));
+        }
+        const off = Boolean(blocked) || starter.busy || waiting;
+        if (off) starter.button.setAttribute("aria-disabled", "true");
+        else starter.button.removeAttribute("aria-disabled");
+        // A button that is off because the check never read the form (the ATS's switch is off) for the very sentence the status line above already
+        // says does not say it again: it points at that line instead, so a screen reader still hears why.
+        const repeated = Boolean(blocked) && checked?.status === "unavailable" && blocked === checked.message;
+        const note = repeated ? "" : (blocked || (starter.busy ? "" : (other || (waiting ? "Tick the boxes above to go on." : ""))));
+        starter.reason.textContent = note;
+        // What the button reads out: the résumé sentence above it (Lever), then why it is off.
+        const described = [];
+        if (starter.resumeNote && !starter.resumeNote.hidden) described.push(starter.resumeNote.id);
+        if (repeated) described.push(summary.id);
+        else if (note) described.push(starter.reason.id);
+        if (described.length) starter.button.setAttribute("aria-describedby", described.join(" "));
+        else starter.button.removeAttribute("aria-describedby");
+      });
+    }
+
+    // The button that starts a rehearsal, with its words. Only one run is allowed at a time, so a busy app says so here.
+    function startControls(label, { help = true } = {}) {
+      const box = element("div", "apply-start-box apply-rehearse-start");
+      const button = element("button", "secondary-button", label);
+      button.type = "button";
+      const reason = element("p", "apply-limit");
+      reason.id = `apply-rehearse-reason-${starterCount += 1}`;
+      const status = element("p", "form-status");
+      status.setAttribute("role", "status");
+      box.appendChild(button);
+      if (help) box.appendChild(element("p", "profile-help", REHEARSE_HELP));
+      box.append(reason, status);
+      const starter = { kind: "rehearse", button, reason, busy: false, fresh: true };
+      starters.add(starter);
+      button.addEventListener("click", async () => {
+        if (button.getAttribute("aria-disabled") === "true") return;
+        starter.busy = true;
+        other = "";
+        syncStarters();
+        status.textContent = "Starting…";
+        const epoch = state.sessionEpoch;
+        try {
+          const view = await api(`${APPLY_API}/opportunities/${encodeURIComponent(item.id)}/rehearsals`, {
+            method: "POST",
+            body: JSON.stringify({ posting_confirmed: postingConfirmed }),
+          });
+          if (state.sessionEpoch !== epoch || stale()) return;
+          show(view, true);
+        } catch (error) {
+          starter.busy = false;
+          syncStarters();
+          status.textContent = state.sessionEpoch === epoch && !isAuthError(error) ? error.message : "";
+        }
+      });
+      syncStarters();
+      return box;
+    }
+
+    // Finish in browser: the app fills the form in a window and the student presses Submit there. Anything the app wants the
+    // student to agree to first (a recent application to the company, a role Greenhouse took down) is a box to tick, never a default.
+    // Whether the plan has the app put the résumé in the form: the check's own résumé row says so, which is not the same as the switch being on
+    // (with no confirmed résumé the row is a question for the student, and the app attaches nothing).
+    const appAttachesResume = (result) => (result?.fields || []).some((field) => field.key === "resume" && ["fill", "deferred"].includes(field.disposition));
+
+    function handoffControls(label, { help = true } = {}) {
+      const box = element("div", "apply-start-box apply-handoff-start");
+      const group = element("fieldset", "apply-ticks");
+      group.hidden = true;
+      group.appendChild(element("legend", "", "Before you go on"));
+      const rows = element("div", "apply-ticks-rows");
+      group.appendChild(rows);
+      // Only when the start itself finds the posting is not the saved role (the check did not): the same tick the check offers.
+      let postingBox = null;
+      const showPosting = () => {
+        if (postingBox) return;
+        const posting = element("label", "confirmation-row apply-posting-tick");
+        postingBox = document.createElement("input");
+        postingBox.type = "checkbox";
+        postingBox.addEventListener("change", () => { postingConfirmed = postingBox.checked; });
+        posting.append(postingBox, element("span", "", "This is the right posting"));
+        box.insertBefore(posting, button);
+      };
+      const button = element("button", "secondary-button", label);
+      button.type = "button";
+      const reason = element("p", "apply-limit");
+      reason.id = `apply-rehearse-reason-${starterCount += 1}`;
+      const status = element("p", "form-status");
+      status.setAttribute("role", "status");
+      // What happens to the résumé, said above the button it goes with (Lever only: the check says which of the two it is).
+      const resumeNote = element("p", "profile-help apply-resume-start");
+      resumeNote.dataset.applyResumeStart = "";
+      resumeNote.id = `apply-resume-start-${starterCount += 1}`;
+      box.append(group, resumeNote, button);
+      if (help) box.appendChild(element("p", "profile-help", handoffHelp(atsName(checked))));
+      box.append(reason, status);
+      const starter = {
+        kind: "handoff", button, reason, resumeNote, busy: false, fresh: true,
+        paintResume() {
+          // Nothing to say about the file while the check has no form to read (the Lever switch is off, the posting is gone): there is no window to attach it in.
+          const words = checked?.ats === "lever" && ["ready", "needs_you"].includes(checked.status)
+            ? (appAttachesResume(checked) ? LEVER_RESUME_BY_APP : LEVER_RESUME_BY_YOU) : "";
+          resumeNote.textContent = words;
+          resumeNote.hidden = !words;
+        },
+        paintTicks(ticks) {
+          group.hidden = !ticks.length;
+          const shown = [...rows.querySelectorAll("input")].map((input) => input.value).join("|");
+          if (shown !== ticks.map((tick) => tick.code).join("|")) {
+            rows.replaceChildren(...ticks.map((tick) => {
+              const row = element("label", "confirmation-row");
+              const tickBox = document.createElement("input");
+              tickBox.type = "checkbox";
+              tickBox.value = tick.code;
+              tickBox.checked = ticked.has(tick.code);
+              tickBox.addEventListener("change", () => {
+                if (tickBox.checked) ticked.add(tick.code);
+                else ticked.delete(tick.code);
+                syncStarters();
+              });
+              row.append(tickBox, element("span", "", tick.label));
+              return row;
+            }));
+          }
+          if (postingBox) postingBox.checked = Boolean(postingConfirmed);
+        },
+      };
+      starters.add(starter);
+      button.addEventListener("click", async () => {
+        if (button.getAttribute("aria-disabled") === "true") return;
+        starter.busy = true;
+        other = "";
+        syncStarters();
+        status.textContent = "Starting…";
+        const epoch = state.sessionEpoch;
+        try {
+          // The sentence above the button was true when the check was read. The setting may have changed since (in another tab), so a Lever start
+          // reads the check again and, when what the app would do with the résumé is no longer what the page said, shows the new words and starts nothing.
+          if (checked?.ats === "lever") {
+            const latest = await api(`/api/v1/apply-agent/opportunities/${encodeURIComponent(item.id)}/check`);
+            if (state.sessionEpoch !== epoch || stale()) return;
+            if (appAttachesResume(latest) !== appAttachesResume(checked)) {
+              paint(latest);
+              starter.busy = false;
+              syncStarters();
+              status.textContent = LEVER_RESUME_CHANGED;
+              return;
+            }
+          }
+          const acknowledged = handoffTicks().map((tick) => tick.code).filter((code) => ticked.has(code));
+          const view = await api(`${APPLY_API}/opportunities/${encodeURIComponent(item.id)}/handoffs`, {
+            method: "POST",
+            body: JSON.stringify({ acknowledged, posting_confirmed: Boolean(postingConfirmed) }),
+          });
+          if (state.sessionEpoch !== epoch || stale()) return;
+          // Each start is its own consent: a box is a box to tick, never a default, so the next Finish in browser control (after a
+          // Stop, a closed window or the time limit) offers every box unticked, under whatever words the next check gives it.
+          ticked.clear();
+          askedTicks.clear();
+          show(view, true);
+        } catch (error) {
+          starter.busy = false;
+          if (state.sessionEpoch !== epoch) return;
+          const detail = error.detail && typeof error.detail === "object" ? error.detail : {};
+          // A refusal that the student can answer with a tick adds the box; a posting that is not the saved role asks for its tick.
+          if (detail.ask && detail.code) askedTicks.set(detail.code, detail.message || error.message);
+          if (detail.code === "posting") showPosting();
+          syncStarters();
+          status.textContent = isAuthError(error) ? "" : error.message;
+        }
+      });
+      syncStarters();
+      return box;
+    }
+
+    // The actions the server says this posting's ATS has. Greenhouse has both; Lever has Finish in browser only (and none until its switches and
+    // window are on, when the block says so in plain words).
+    function startBlock() {
+      const block = element("div", "apply-start-block");
+      const offers = checked?.offers;
+      if (!offers || offers.rehearse) block.appendChild(startControls("Rehearse in a window"));
+      if (!offers || offers.handoff) block.appendChild(handoffControls("Finish in browser"));
+      if (offers && !offers.rehearse && !offers.handoff) {
+        const note = element("p", "apply-limit apply-not-offered", offers.note || `Nothing can be started on ${atsName(checked)} yet.`);
+        note.dataset.applyNotOffered = "";
+        block.appendChild(note);
+      }
+      return block;
+    }
+
+    // Not now: the result folds back into the starters. Nothing is sent to the server.
+    function collapse() {
+      stopWatch?.();
+      stopWatch = null;
+      running = null;
+      current = null;
+      starters.clear();
+      rehearse.replaceChildren(startBlock());
+    }
+
+    // The Answer column: what today's answers would put in each field, or what the app provably filled. It comes from a read
+    // the student's own browser session alone may make, so a refusal just leaves the column out; one that arrives after the
+    // student signed out, or after the panel moved on, paints nothing.
+    async function loadValues(view, result) {
+      if (!["rehearsal", "handoff"].includes(view.kind) || !(view.fields || []).length) return;
+      const epoch = state.sessionEpoch;
+      try {
+        const answer = await api(`${APPLY_API}/runs/${encodeURIComponent(view.id)}/values`);
+        if (state.sessionEpoch !== epoch || stale() || current !== view || !result.node.isConnected) return;
+        valuePanels.add(result);
+        registerValuePanels();
+        result.setValues(answer.values || {});
+      } catch (error) {
+        // A column that did not load leaves the table as it was.
+      }
+    }
+
+    const panelKind = (view) => (view.kind === "handoff" && TURN_PHASES.includes(view.phase) ? "turn" : "run");
+
+    // A new row of the run on screen: still running, or over.
+    function receive(view) {
+      current = view;
+      if (runIsOver(view)) {
+        stopWatch?.();
+        stopWatch = null;
+        running = null;
+        show(view, true);
+        // The check read while the run was going said its claim was live; the claim is settled now, so what may start again follows it.
+        if (view.kind === "handoff") load().catch(() => {});
+        return;
+      }
+      // The window filled the form and it is now the student's turn (or past it): another panel, not another poll.
+      if (panelKind(view) !== runningKind) {
+        const toTurn = panelKind(view) === "turn";
+        show(view, false);
+        // A live region that is put on the page already holding its words is not read out, and focus is left where it was: the one
+        // moment that needs the student (and starts the clock) is said once, for a screen reader.
+        if (toTurn) announce(view.summary);
+        return;
+      }
+      running?.update(view);
+    }
+
+    async function stopRun(view) {
+      const epoch = state.sessionEpoch;
+      try {
+        const fresh = await api(`${APPLY_API}/runs/${encodeURIComponent(view.id)}/cancel`, { method: "POST" });
+        if (state.sessionEpoch === epoch && !stale()) receive(fresh);
+      } catch (error) {
+        // A refusal (it was already handed over, or already over) leaves the run as it now is: read it again and show that.
+        if (error.status === 409 && !isAuthError(error)) {
+          try {
+            const fresh = await api(`${APPLY_API}/runs/${encodeURIComponent(view.id)}`);
+            if (state.sessionEpoch === epoch && !stale() && current?.id === view.id) receive(fresh);
+          } catch (_) {
+            // The next poll shows it.
+          }
+        }
+        throw error;
+      }
+    }
+
+    async function frontRun(view) {
+      const epoch = state.sessionEpoch;
+      const fresh = await api(`${APPLY_API}/runs/${encodeURIComponent(view.id)}/front`, { method: "POST" });
+      if (state.sessionEpoch === epoch && !stale()) receive(fresh);
+    }
+
+    // The student's own word on the claim (Mark as applied?, It went through), then the run as it reads now.
+    async function settleClaim(view, path, body) {
+      const epoch = state.sessionEpoch;
+      await api(`${APPLY_API}/claims/${encodeURIComponent(view.claim.token)}/${path}`, {
+        method: "POST", body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      if (state.sessionEpoch !== epoch || stale()) return;
+      const fresh = await api(`${APPLY_API}/runs/${encodeURIComponent(view.id)}`);
+      if (state.sessionEpoch !== epoch || stale()) return;
+      show(fresh, false);
+      // What the app may start, and what it asks first, changed with the claim (a released attempt asks): read the check again.
+      load().catch(() => {});
+      const company = view.claim.company || "the role";
+      announce(path === "mark-applied" ? `Marked ${company} as applied.` : body?.went_through ? `Recorded that ${company} went through.` : `Recorded that ${company} did not go through.`);
+      loadApplications().catch(() => {});
+    }
+
+    function show(view, focus) {
+      stopWatch?.();
+      stopWatch = null;
+      running = null;
+      runningKind = "";
+      current = view;
+      starters.clear();
+      rehearse.replaceChildren();
+      rehearse.hidden = false;
+      if (runIsOver(view)) {
+        const result = applyResultPanel(view, {
+          startAgain: () => startControls("Rehearse again", { help: false }),
+          finish: () => handoffControls("Finish in browser"),
+          notNow: () => {
+            const button = element("button", "secondary-button", "Not now");
+            button.type = "button";
+            button.addEventListener("click", collapse);
+            return button;
+          },
+          onMarked: (fresh) => show(fresh, false),
+          settle: (path, body) => settleClaim(view, path, body),
+          stale,
+          postingUrl: item.url,
+        });
+        rehearse.appendChild(result.node);
+        if (focus) result.focus();
+        loadValues(view, result);
+        return;
+      }
+      runningKind = panelKind(view);
+      running = runningKind === "turn"
+        ? applyTurnPanel(view, { onStop: () => stopRun(view), onFront: () => frontRun(view) })
+        : applyRunPanel(view, () => stopRun(view));
+      rehearse.appendChild(running.node);
+      if (focus) running.focus();
+      stopWatch = watchRun(view.id, {
+        alive: () => !stale(),
+        onView: receive,
+        onFail: (error) => running?.fail(error.message),
+      });
+    }
+
+    // Opened again: a run that is still going is followed, and the last one that finished is shown with its result. A lookup
+    // belongs to its question's form, so it is not what this block shows.
+    async function resume({ handoffOnly = false } = {}) {
+      resumed = true;
+      const epoch = state.sessionEpoch;
+      try {
+        if (requested) {
+          const run = await api(`${APPLY_API}/runs/${encodeURIComponent(requested)}`);
+          if (state.sessionEpoch !== epoch || stale() || current) return;
+          show(run, false);
+          return;
+        }
+        // A lookup is a run too, and every press of Look up options adds one: ask for the kinds this block shows, never the latest few.
+        const base = `${APPLY_API}/opportunities/${encodeURIComponent(item.id)}/runs`;
+        const kinds = handoffOnly ? ["handoff"] : ["rehearsal", "handoff"];
+        const lists = await Promise.all(kinds.map((kind) => api(`${base}?kind=${kind}&limit=3`)));
+        if (state.sessionEpoch !== epoch || stale() || current) return;
+        const listed = { busy: lists.some((one) => one.busy), runs: lists.flatMap((one) => one.runs || []) };
+        const shown = listed.runs.filter((run) => run.kind !== "lookup").sort((a, b) => String(b.started_at || "").localeCompare(String(a.started_at || "")));
+        const latest = shown.find((run) => run.status === "running") || shown[0];
+        if (latest) {
+          show(latest, false);
+        } else if (listed.busy && !handoffOnly) {
+          other = "Another application is being filled. Wait for it to finish.";
+          syncStarters();
+        }
+      } catch (error) {
+        // The buttons work without it: nothing to say about a list that did not load.
+      }
+    }
+
+    function paintRehearse(result) {
+      checked = result;
+      const offered = ["ready", "needs_you"].includes(result.status);
+      if (!offered && !current && !requested) {
+        rehearse.hidden = true;
+        // A role Apply for me can no longer start (the application went, or may have) still shows what its Finish in browser run did.
+        if (!resumed) resume({ handoffOnly: true });
+        return;
+      }
+      rehearse.hidden = false;
+      if (!current && !rehearse.firstChild && offered) rehearse.appendChild(startBlock());
+      syncStarters();
+      if (!resumed && (offered || requested)) resume();
+    }
     let settled = false;
     const slow = setTimeout(() => { if (!settled && !stale()) section.hidden = false; }, 400);
     // The student's word that the form Greenhouse returned is this role's, when it did not look like it.
@@ -408,17 +1645,22 @@
         if (draft) drafts.set(row.dataset.applyKey, draft);
       });
       body.replaceChildren();
+      paintRehearse(result);
       if (result.status === "unavailable" || result.status === "failed") return;
-      (result.asks || []).forEach((ask) => body.appendChild(element("p", "apply-limit", `Before you go on: ${ask.message}`)));
+      // When the Finish in browser button is on the page it says what the student must agree to (the boxes) and why it is off itself.
+      const buttonShown = ["ready", "needs_you"].includes(result.status);
+      if (!buttonShown) (result.asks || []).forEach((ask) => body.appendChild(element("p", "apply-limit", `Before you go on: ${ask.message}`)));
       const stopped = result.eligibility?.handoff;
-      if (stopped && !stopped.allowed && stopped.reason) body.appendChild(element("p", "apply-limit", `Not right now: ${stopped.reason}`));
+      if (stopped && !stopped.allowed && stopped.reason && !buttonShown) body.appendChild(element("p", "apply-limit", `Not right now: ${stopped.reason}`));
       applyPostingLine(body, result, (confirmed) => { postingConfirmed = confirmed; }, postingConfirmed);
+      // What the student should know about this posting's ATS before anything is filled (on Lever: what happens to the résumé).
+      (result.notes || []).forEach((note) => body.appendChild(element("p", "profile-help apply-ats-note", `${note}.`)));
       // Questions the app has a control for come first. The ones it never answers for the student are grouped apart as hers to do on the form.
       const problems = result.problems || [];
       const groups = [[problems.filter((problem) => problem.action?.type !== "manual"), ""], [problems.filter((problem) => problem.action?.type === "manual"), "Left for you"]];
       groups.forEach(([group, heading]) => {
         if (!group.length) return;
-        if (heading) body.appendChild(element("p", "apply-group", `${heading}: the app leaves these to you on the Greenhouse form.`));
+        if (heading) body.appendChild(element("p", "apply-group", `${heading}: the app leaves these to you on the ${atsName(result)} form.`));
         const list = element("ul", "apply-problems");
         group.forEach((problem) => {
           const row = element("li", "apply-problem");
@@ -427,7 +1669,16 @@
           row.appendChild(element("p", "profile-help", problem.message));
           // A kind of question the student could let the app answer says where, so it is not mistaken for a never.
           if (problem.action?.allowable) row.appendChild(element("p", "profile-help", "You can let the app answer this kind of question, once you add the answer yourself, in Apply for me settings under Automation."));
-          const control = applyProblemAction({ ...problem, opportunityId: item.id, postingConfirmed: () => postingConfirmed }, result.company, (fresh, message) => {
+          // A Lever question the app leaves to the student, or a location to choose, points at the posting where Lever's own form is, but only
+          // while Finish in browser is not there for this role: with it offered, the form is filled and sent through the app (and its guard against
+          // a second application), never in a second tab beside it.
+          const doneOnLever = ["window", "label_needed"].includes(problem.kind) || problem.action?.type === "manual";
+          if (result.ats === "lever" && doneOnLever && result.offers && !result.offers.handoff && result.posting?.url) {
+            const link = element("p", "profile-help");
+            link.appendChild(externalLink(result.posting.url, "Open the posting on Lever"));
+            row.appendChild(link);
+          }
+          const control = applyProblemAction({ ...problem, atsName: result.ats_name, opportunityId: item.id, opportunityLabel: [result.company, result.title].filter(Boolean).join(" — "), postingConfirmed: () => postingConfirmed, lookups }, result.company, (fresh, message) => {
             if (fresh) paint(fresh, message);
             else load(message);
           });
@@ -477,12 +1728,15 @@
         details.appendChild(list);
         body.appendChild(details);
       }
-      body.appendChild(element("p", "apply-note", APPLY_NOTE));
+      const readOnly = result.offers && !result.offers.rehearse;
+      body.appendChild(element("p", "apply-note", readOnly ? (result.offers.handoff ? HANDOFF_ONLY_NOTE : READ_ONLY_NOTE) : APPLY_NOTE));
     }
 
     async function load(saved = "") {
+      const epoch = state.sessionEpoch;
       try {
         const result = await api(`/api/v1/apply-agent/opportunities/${encodeURIComponent(item.id)}/check`);
+        if (state.sessionEpoch !== epoch) return;
         if (!stale()) paint(result, typeof saved === "string" ? saved : "");
       } catch (error) {
         clearTimeout(slow);
@@ -764,8 +2018,6 @@
     heading.tabIndex = -1;
     const host = element("div", "apply-settings");
     wrap.append(heading, host, applySensitiveSettings());
-    const status = element("p", "form-status");
-    status.setAttribute("role", "status");
     const LIMIT_WORDS = {
       spacing_minutes: ["Minutes between two applications", "minutes"],
       daily_cap: ["Applications a day", ""],
@@ -781,7 +2033,23 @@
       education_end_month: "Education end month", education_end_year: "Education end year",
     };
 
+    // One status line for each list, made once: paint() rebuilds the block after a save, and a message set before that repaint must be on
+    // the page after it. Each says "Saved." or "Removed." under its own form, never under another list's.
+    const statuses = new Map();
+    function statusFor(ats) {
+      if (!statuses.has(ats)) {
+        const status = element("p", "form-status");
+        status.setAttribute("role", "status");
+        statuses.set(ats, status);
+      }
+      return statuses.get(ats);
+    }
+
+    // The Lever switch the block was painted for: the lists and statistics it shows depend on it, so a change repaints the block (see below).
+    let paintedLever = null;
+
     function paint(settings) {
+      paintedLever = settings.lever?.mode ?? null;
       host.replaceChildren();
       if (settings.requirement) host.appendChild(element("p", "profile-help", `To turn it on: ${settings.requirement}.`));
       const limits = element("ul", "reason-list apply-limits");
@@ -794,21 +2062,44 @@
         limits,
         element("p", "profile-help", `Screenshots of a filled form would be kept for ${settings.evidence_days} days, then deleted. Their fingerprints stay.`),
       );
-      host.appendChild(element("h5", "", "Exact options for lists the form owns"));
-      host.appendChild(element("p", "profile-help", "Some fields, such as school and location, are lists whose wording only the form knows. Save the exact option once and the app uses it word for word."));
-      const labels = Object.entries(settings.ats_labels);
+      // One list for each ATS the answer counts (each line names its ATS), under one heading.
+      if ((settings.ats_statistics || []).length) host.appendChild(element("h5", "", "How Apply for me has gone"));
+      (settings.ats_statistics || []).forEach((entry) => {
+        const stats = element("ul", "reason-list apply-stats");
+        entry.lines.forEach((line) => stats.appendChild(element("li", "", line)));
+        host.appendChild(stats);
+      });
+      // One group of saved options for each ATS whose form has lists of its own (Greenhouse always, Lever once its switch is on).
+      const sets = settings.ats_label_sets || [{ ats: "greenhouse", name: atsName(null), fields: settings.label_fields, labels: settings.ats_labels }];
+      sets.forEach((set) => labelSet(set, sets.length > 1));
+      lever(settings.lever);
+    }
+
+    // The exact option labels the student confirmed for one ATS's lists, and a form to add one.
+    function labelSet(set, named) {
+      const status = statusFor(set.ats || "greenhouse");
+      const query = set.ats && set.ats !== "greenhouse" ? `?ats=${encodeURIComponent(set.ats)}` : "";
+      host.appendChild(element("h5", "", named ? `Exact options for lists the ${set.name} form owns` : "Exact options for lists the form owns"));
+      // Greenhouse's lists are school, location and more; another ATS names only the lists it has (Lever: location).
+      const own = (set.fields || []).map((field) => (FIELD_WORDS[field] || field).toLowerCase());
+      const wording = set.ats && set.ats !== "greenhouse" && own.length
+        ? `On the ${set.name} form, ${own.join(" and ")} ${own.length > 1 ? "are lists" : "is a list"} whose wording only the form knows.`
+        : "Some fields, such as school and location, are lists whose wording only the form knows.";
+      host.appendChild(element("p", "profile-help", `${wording} Save the exact option once and the app uses it word for word.`));
+      const labels = Object.entries(set.labels || {});
       if (!labels.length) host.appendChild(element("p", "empty-inline", "No options saved yet."));
       const list = element("ul", "reason-list apply-labels");
+      list.dataset.ats = set.ats || "greenhouse";
       labels.forEach(([field, entry]) => {
         const row = element("li", "apply-label");
         row.append(element("span", "", `${FIELD_WORDS[field] || field}: ${entry.label} `));
         const remove = element("button", "secondary-button", "Remove");
         remove.type = "button";
-        remove.setAttribute("aria-label", `Remove the saved ${FIELD_WORDS[field] || field} option`);
+        remove.setAttribute("aria-label", `Remove the saved ${named ? `${set.name} ` : ""}${FIELD_WORDS[field] || field} option`);
         remove.addEventListener("click", async () => {
           remove.disabled = true;
           try {
-            await api(`/api/v1/apply-agent/ats-labels/${encodeURIComponent(field)}`, { method: "DELETE" });
+            await api(`/api/v1/apply-agent/ats-labels/${encodeURIComponent(field)}${query}`, { method: "DELETE" });
             status.textContent = "Removed.";
             await load();
           } catch (error) {
@@ -821,10 +2112,11 @@
       });
       host.appendChild(list);
       const form = element("form", "apply-answer-form");
+      form.dataset.ats = set.ats || "greenhouse";
       const pick = element("label", "profile-field");
       pick.appendChild(element("span", "", "List"));
       const select = document.createElement("select");
-      settings.label_fields.forEach((field) => {
+      (set.fields || []).forEach((field) => {
         select.appendChild(optionElement(field, FIELD_WORDS[field] || field));
       });
       pick.appendChild(select);
@@ -845,7 +2137,9 @@
         }
         add.disabled = true;
         try {
-          await api(`/api/v1/apply-agent/ats-labels/${encodeURIComponent(select.value)}`, { method: "PUT", body: JSON.stringify({ label: input.value }) });
+          await api(`/api/v1/apply-agent/ats-labels/${encodeURIComponent(select.value)}`, {
+            method: "PUT", body: JSON.stringify({ label: input.value, ...(set.ats ? { ats: set.ats } : {}) }),
+          });
           status.textContent = "Saved.";
           await load();
         } catch (error) {
@@ -856,6 +2150,37 @@
       host.append(form, status);
     }
 
+    // Lever's two switches live in the list above; this says what each does, in the words the student agreed to (spec L1).
+    function lever(state) {
+      if (!state) return;
+      // The on/off word is its own element, bound to its switch: syncAutomationControls repaints it when the switch changes.
+      const word = (key, mode) => {
+        const span = element("span", "", mode === "on" ? "on" : "off");
+        span.dataset.automationWord = key;
+        return span;
+      };
+      const line = (...parts) => {
+        const item = element("li", "");
+        item.append(...parts);
+        return item;
+      };
+      // While Lever has no window (state.window false) the app attaches nothing on Lever, so the line says so, whichever way the switch is set.
+      // With the Lever switch off there is no window either, so the line says when the choice starts to matter instead of sending the student to one.
+      const resumeWords = state.window && state.mode !== "on"
+        ? ". It takes effect once Apply for me on Lever is on. Lever reads a résumé as soon as it is attached, so with this on it is sent to Lever before you press Submit; with this off, you attach it yourself in the window."
+        : state.window
+        ? ". Lever reads a résumé as soon as it is attached, so it is sent to Lever before you press Submit. With this off, you attach it yourself in the window."
+        : ". The app cannot attach it on Lever yet, because Finish in browser is not available for Lever: you attach it yourself on Lever's application page. "
+          + "Once it can, Lever reads a résumé as soon as it is attached, so with this on it is sent to Lever before you press Submit.";
+      host.appendChild(element("h5", "", "Lever"));
+      const about = element("ul", "reason-list apply-lever-settings");
+      about.append(
+        line("Apply for me on Lever is ", word("apply_agent_lever", state.mode), `. With it on, a saved Lever role shows what the app would fill and what is missing${state.window ? ", and Finish in browser opens its form in a window for you to finish" : ". Filling a Lever form in a window is not available yet"}.`),
+        line("Let the app attach my résumé on Lever is ", word("apply_lever_resume_upload", state.resume_upload), resumeWords),
+      );
+      host.append(about, element("p", "profile-help", "Both are switches under Applications, above. Each is off until you turn it on."));
+    }
+
     async function load() {
       try {
         paint(await api("/api/v1/apply-agent/settings"));
@@ -863,6 +2188,18 @@
         host.replaceChildren(element("p", "form-error", `Apply for me settings could not be loaded: ${error.message}`));
       }
     }
+
+    // The switches are in the list above and change while this block is on the page: when the Lever one does, what depends on it (Lever's saved
+    // options, its statistics, the wording of the résumé line) is read again. The listener goes when the block leaves the page.
+    function onSynced(event) {
+      if (!wrap.isConnected) {
+        document.removeEventListener(AUTOMATION_SYNCED, onSynced);
+        return;
+      }
+      const mode = (event.detail?.features || []).find((feature) => feature.key === "apply_agent_lever")?.mode;
+      if (paintedLever !== null && mode && mode !== paintedLever) load();
+    }
+    document.addEventListener(AUTOMATION_SYNCED, onSynced);
 
     host.appendChild(element("p", "empty-inline", "Loading…"));
     load();

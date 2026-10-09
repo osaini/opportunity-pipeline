@@ -1,0 +1,1225 @@
+# Phase 5 addendum: "Apply for me" on Lever (Finish in browser only)
+
+- **Status:** draft 1, 2026-10-04; L1 and L2 answered 2026-10-07 (LV0 done, section 4). Built: LV1a and LV1b (the ATS seam), LV2 (read-only),
+  LV3 (the driver, `FakeLever`, the load-time recording of Q3 and Q4) and LV4 (Finish in browser works on a saved Lever posting: hand-over on the
+  apply POST, the outcome table, the record, the watch, the student's own attach; "As built (LV4)" after the milestone table says how and what
+  differs). Not built: LV5. Not yet seen on a real posting: Q1 and Q2, and the hCaptcha endpoints used after Submit (Q3). It is the "Later: Lever"
+  row of the Phase 5 milestone table (`phase5-apply-agent-spec.md` section 14, which said "Separate specs"). The rollout checklist's first real
+  Finish in browser still needs the student's go.
+- **Base:** `origin/main` 946c524 plus PR #81 (the `active_at_company` tick and the notice that every model call
+  carries). Line numbers below are as of that tree.
+- **Relation to Phase 5:** this file changes only what Lever forces to change. Every Phase 5 rule not named here
+  still holds for Lever: the student presses Submit (D1 B), the recorded answers D1 to D14 (D5 C (i), D9 B, D13 A,
+  D14 A), the caps and company limit (D4, 9.1), the request guard, the sensitive-answer store, masking and
+  retention. "Phase 5 6.13" means section 6.13 of `phase5-apply-agent-spec.md`. Where this file and Phase 5
+  disagree about Lever, this file wins; about Greenhouse, Phase 5 wins.
+- **How to read it:** section 1 is the plain-words version. Section 3 is what a Lever form actually is, read from
+  live pages; the whole design hangs on it. Section 4 holds the two choices only the student can make. Sections
+  5 to 11 are for the engineer. Section 12 is the milestone plan. Appendix A is the Ashby note.
+
+Research marks, as in Phase 5: **[live]** seen on a live public page; **[doc]** vendor documentation; **[1-src]**
+one third-party report; **[unseen]** not observed, and a decision below does not depend on it being true. The live
+reading of 2026-10-04 was GET requests only to public Lever pages and scripts (six boards: `palantir`, `leverdemo`,
+`spotify`, `rover`, `paytm`, `gohighlevel`). Nothing was submitted, and nothing was typed into a form.
+
+---
+
+## 1. Summary in plain words
+
+Today Apply for me opens a saved Greenhouse role, fills what it can from your confirmed facts, and hands the window
+to you to press Submit. This adds Lever, in that same mode and nothing more. No one-click submit, no unattended
+mode, no rehearsal that stands in for a submission.
+
+Lever is the smaller change of the two ATSs Phase 5 deferred. Its application is one ordinary form on one page,
+posted once, with fixed names for the standard fields and a small JSON description of every company-written
+question embedded in the page. The app can read that description with a plain GET, before any browser opens, the way
+it reads Greenhouse's listing today. That gives the same "what would you fill, and what do you still need to
+answer?" view for a Lever role as for a Greenhouse one.
+
+Three things about Lever are different enough to need your say:
+
+1. **Attaching your résumé sends it to Lever at once.** Lever's page reads the résumé the moment it is attached,
+   to pre-fill the form, and that sends the file to Lever before you press Submit. It is also what happens when you
+   attach it yourself in the window. Greenhouse's boards the app supports do not do this. Section 4 asks whether the app may attach your résumé on Lever (L1).
+2. **Lever's résumé reader fills in fields with guesses** (your name, company, links). If the app attaches the résumé,
+   it must then overwrite those guesses with your confirmed facts, and decide what to do with a guess it has no
+   fact for (L2).
+3. **A hCaptcha runs when Submit is pressed**, and it can show a picture challenge. As with Greenhouse (D14 A), the
+   app never touches it. You solve it in the window. Nothing about that changes, but it is the step most likely to
+   need you.
+
+What you will see: the same Apply for me section, saying "Apply for me works with Greenhouse and Lever postings",
+the same list of what is missing, and the same window with a "left for you" list. The window will say, before it
+opens, if it is about to send your résumé to Lever (if you answered yes to L1).
+
+Everything else is the Greenhouse behavior you already have: nothing is sent without your press, a sensitive question
+or a consent box is left for you unless you stored an exact answer, the same 10-minute spacing, 5 a day and one
+application per company per 30 days (with the same tick to override), the same masked screenshots, and a
+confirmation email watch.
+
+---
+
+## 2. Goals and non-goals
+
+### Goals
+
+- A saved Lever posting gets the same read-only check as a Greenhouse one (Phase 5 6.0): what the app would fill,
+  what is missing, with an action for each, and no browser.
+- Finish in browser works on Lever: the app fills the form deterministically, brings the window to the front with a
+  "left for you" list, the student presses Submit, the app records the result.
+- Source integrity holds: every value the app puts in the form is an exact, confirmed fact or an exact stored
+  answer. A value Lever's own résumé reader guessed is never left in the form unflagged (L2).
+- The Greenhouse path does not change. The generalization (section 5) is a refactor with no behavior change, and
+  lands in its own PRs (section 12), per AGENTS.md section 8 rule 14.
+- A form the app does not recognize fails closed: the window opens, nothing is filled that the app is unsure of,
+  and the unrecognized part is on the "left for you" list.
+
+### Non-goals
+
+- **One-click submit and unattended mode on Lever.** They need a rehearsal that proves the plan without sending
+  anything. Lever's résumé step sends the file on attach (section 3, item 8), so a rehearsal that attaches it is not
+  a dry run, and one that does not is not a rehearsal of the real form. They wait for their own spec and for D1 A.
+- **Ashby.** Its forms autosave as they are filled **[1-src]**, which is a different problem (Appendix A).
+- **Lever's application API** (`POST /v0/postings/{site}/{id}?key=...`). It needs the employer's API key. **[doc]**
+- **Workable, SmartRecruiters, Workday, iCIMS, and company-built forms.**
+- **Lever "apply with LinkedIn" and other sign-in or social-referral paths.** The hidden `linkedInData`,
+  `socialReferralKey` and `socialSource` fields are the page's own and are never written (5.4 item 7).
+- **Solving, clicking or working around a CAPTCHA or a Cloudflare check by any means** (D14 A, PLAN.md:23). The app
+  only waits for the student to deal with one.
+- **Changing the browser's user agent, timezone or locale.** Lever's page fills a hidden `timezone` field from the
+  browser by itself; the app leaves it alone (section 8).
+- **The browser extension.** `apps/extension` fills pages in the student's own browser from its generic engine and
+  is not part of this work. It may already match Lever's labels; this spec does not promise it.
+
+---
+
+## 3. What a Lever form is **[live]**
+
+Read on 2026-10-04 from six public boards. Each item is something the design relies on.
+
+1. **The posting API holds no form.** `GET api.lever.co/v0/postings/{site}?mode=json` returns the posting
+   (`id`, `text`, `categories`, `lists`, `hostedUrl`, `applyUrl`, `createdAt`, ...) and nothing about the
+   application. `applyUrl` is `hostedUrl + "/apply"`. The EU host is `api.eu.lever.co` for the list and
+   `jobs.eu.lever.co` for the page **[doc]**. A posting that does not exist, or has closed, answers 404 at
+   `/apply`.
+2. **The page is the schema.** `GET {hostedUrl}/apply` returns server-rendered HTML (about 0.7 to 1.9 MB, most of
+   it inline script and style) with one `<form id="application-form" method="POST"
+   enctype="multipart/form-data">` and no `action`, so it posts to its own URL.
+3. **Standard fields have fixed names.** `resume` (file), `name` (one "Full name" field), `email`, `phone`, `location`
+   with a hidden `selectedLocation`, `org` ("Current company"), `urls[<label>]` (the label is the company's: `LinkedIn`,
+   `GitHub` or `Github`, `Portfolio`, `Twitter`, `Other`, `Other Website`, `Video Link ` with a trailing space), and
+   `comments` ("Additional information"). Some forms add a `pronouns` checkbox group with a `pronouns` text field,
+   `opportunityLocationId` (a select of the posting's locations, required on one board read and optional on another),
+   `consent[marketing]` (a hidden `0` and a checkbox), and `residentialLocation[<part>]` address fields (the parser
+   fills them; none appeared on the six pages). Two of the six pages also carry an unnamed `select.candidate-location`
+   that `/js/hideAndShowSurveys.js` uses to show and hide the surveys. `org` was required on four of the six.
+4. **Company questions are "cards".** Each card is a list item whose controls are named
+   `cards[<card-uuid>][field<N>]`, beside a hidden `cards[<card-uuid>][baseTemplate]` whose value is
+   HTML-escaped JSON:
+   `{createdAt, text, instructions, type: "posting", id, accountId, fields: [{type, text, description, required, id,
+   options?: [{text, optionId}], prompt?}]}`. `N` is the index into `fields`. Field types seen in 41 fields on 21
+   templates: `text`, `textarea`, `dropdown` (a `<select>`), `multiple-choice` (radios), `multiple-select`
+   (checkboxes, several with the same name), and `file-upload` (an `<input type=file>`, in one case a
+   "Cover Letter:" field). `required` is the JSON flag, the `required` attribute and a "✱" in the label.
+5. **Surveys are cards of another kind.** `surveysResponses[<uuid>][...]` with `baseTemplate`, `surveyId`,
+   `candidateSelectedLocation` and `responses[field<N>]`. The template's `type` is `"survey"`; most of its options
+   carry no `optionId` (2 of 84 seen did). The questions seen asked age range, ethnicity, gender and veteran status.
+6. **EEO is a fixed block.** `eeo[gender]` (select), `eeo[race]` (select or a radio group), `eeo[veteran]` (select),
+   `eeo[disability]` (select), and, when disability is answered, `eeo[disabilitySignature]` and
+   `eeo[disabilitySignatureDate]`, which are **text fields for a typed signature and a date**. Choosing **any**
+   disability answer, the decline included, makes both required (`application.js`). The block is optional, says so,
+   and its sections expand and collapse by script. Decline labels differ by board ("Decline to self-identify",
+   "I do not want to answer", "I decline to self-identify for protected veteran status").
+7. **The page owns some hidden fields:** `accountId`, `linkedInData`, `origin`, `referer`, `timezone`,
+   `socialReferralKey`, `socialSource`, `resumeStorageId`, `h-captcha-response` and `source`. The app writes none of
+   them.
+8. **Attaching the résumé sends it.** `/js/parseResume.js` posts the file to the same origin at
+   `POST /parseResume` as soon as the file input changes, and on success fills `org`, `phone`, `name`, `email`,
+   `location`, `selectedLocation`, the `urls[...]` and `residentialLocation[...]` fields and `resumeStorageId`. A field
+   counts as the user's only if it was **changed or pasted into and holds a value**, and only the parser's own field
+   list is protected at all: `selectedLocation` is not, so a parse always rewrites it. The request carries two parts,
+   `resume` (under a file name the page sanitizes: its `sanitizeFilename`, which turns each of `< > : " / \ | ? *` and each space into an underscore, trims dots and underscores from both ends, makes each run of underscores one, and names a file with nothing left `untitled`; it keeps parentheses, apostrophes, commas, `&`, `+`, `#` and letters of any script, read from `/js/parseResume.js` on 2026-10-08) and `accountId`. The limit is 100 MB. The form posts the file
+   again at Submit, from the input, under its own name. Whether Lever refuses a Submit with no `resumeStorageId` is
+   **[unseen]**.
+9. **Location is a typeahead that forgets.** Typing calls `GET /searchLocations?text=...` (debounced 500 ms, up to
+   100 characters), and choosing an option writes its JSON into `selectedLocation`. Leaving the field without
+   choosing one **empties both fields**. A plain GET of that path from outside a browser session answers **403**, so
+   the lookup is reachable only from the page itself; the app does not try to get around that, and what the
+   endpoint returns was recorded on 2026-10-08 (11, Q4).
+10. **hCaptcha is wired to Submit.** The visible button is `#btn-submit` (`type=button`). It runs `hcaptcha.execute()`
+    (the sitekey is on the page), and when the token arrives the page clicks a hidden `#hcaptchaSubmitBtn`
+    (`type=submit`) so the browser's own `required` checks run first. Pressing Enter in a text field is guarded the
+    same way. On the page read, the `#btn-submit` click handler is attached only inside hCaptcha's `onLoad`, so if
+    `js.hcaptcha.com` cannot load, pressing Submit does nothing at all. A comment in the page's script says an
+    earlier version also ran `execute()` when the location field was focused; the script read does not. Whether a
+    challenge can appear **during the fill** is **[unseen]**, and the design copes with one anyway (6.6).
+11. **A required-checkbox rule that spans the whole page.** `application.js` takes every required checkbox in every
+    `.required-field` as one set (`$('.required-field :checkbox[required]')`) and removes `required` from all of
+    them once any one is ticked, restoring it when none is. One tick in one group therefore relaxes every other
+    required group, so the browser's own validation cannot say that a required group is unmet. The app reads
+    `required` from the card JSON and from the page at load, never from the DOM after something has been ticked.
+12. **A confirmation page exists, and a plain GET shows it.** `GET {hostedUrl}/thanks` answers 200 with
+    "Application submitted!" with no application made. So reaching that path is not proof of a submission; the POST
+    in front of it is. What Lever answers to a successful POST (a redirect to `/thanks` is the likely shape) and to a
+    refused one is **[unseen]**.
+13. **The page is behind Cloudflare** (a `__cf_bm` cookie on the first response) and shows a cookie banner
+    (`cookieconsent.min.js`; the banner shows Accept and Deny, and the script also defines a Dismiss option).
+14. **Third-party requests the page makes:** `js.hcaptcha.com` and the hCaptcha challenge hosts, Google Tag Manager,
+    Bugsnag, and `/js/*` and `/searchLocations` and `/parseResume` on its own origin. Cloudflare's detection script
+    (`/cdn-cgi/challenge-platform/scripts/jsd/main.js`) is on **every** one of the six pages, not only on an
+    interstitial; it loads as a script and may post beacons under `/cdn-cgi/`.
+15. **Lever sends the applicant a confirmation email** from the `hire.lever.co` domain **[1-src]**; the application
+    inbox rules already list that domain (`applications/mail_rules.py`).
+
+**Note, 2026-10-08 (read again while building the parser; three boards, `leverdemo`, `rover` and `palantir`, GET requests
+only, nothing typed or submitted).** Sections 3 and 5.4 held. The parser follows them, and these are the places where the
+pages say a little more than section 3 did:
+
+- **A required résumé is shown by the star, not by an attribute.** On `rover` and `palantir` the label reads
+  "Resume/CV ✱", and the hidden file input (`#resume-upload-input`, `tabindex="-1"`) has no `required` attribute on any of
+  the three pages. The page's script does the check. The parser therefore reads a fixed field as required when the control
+  has the attribute **or** its label shows the star. Cards still use the attribute only (5.4 item 5), where the JSON and the
+  attribute agreed on all three pages.
+- **`location` can be required** (`palantir`: the attribute and a star), and `phone` is optional there. `org` was optional
+  on `rover` and `palantir` and required on `leverdemo`.
+- **`comments` and `consent[marketing]` have no `application-label`.** `comments` is a `textarea#additional-information`
+  under a `<label for>` that holds an `<h4>` "Additional information". The marketing consent is a `<label>` that wraps a
+  `<span><div>` with the statement, the hidden `0` and the checkbox. The parser takes the label from the `label[for]` and
+  the wrapping `<label>` in those two cases.
+- **An EEO option's label is not always its value.** The veteran select shows "I identify as one or more of the
+  classifications of protected veteran listed above" for the value "I am a Protected Veteran", and the disability decline
+  has the value "I do not want to answer " (trailing space) under the label "I do not want to answer". The parser lists the
+  label, which is what `select_option(label=...)` takes.
+- **`eeo[disabilitySignature]` and its date are not `required` as loaded.** Only answering the disability question makes
+  them required (3.6), by script.
+- **A dropdown's placeholder differs by card** ("Select ...", "Select...", and a sentence beginning "Click Here (If you
+  encounter an issue...") but always has the value `""`, as 5.4 item 5 assumes. A 33-box required `multiple-select` and a
+  3,301-option dropdown (a 600 KB template) both read with nothing unreadable.
+- **`<title>`** was "{Company} - {Role}" on all three, as before. A posting whose role contains " - " is handled by
+  the no-split check in 5.4 item 8.
+- **`GET {hostedUrl}/thanks`** answered 200 with no application form and no `form#application-form`; a posting that does
+  not exist answered 404 with a short page and no form. Neither parses as a form.
+
+**Note, 2026-10-08 (the load recorded: Q3 and Q4).** Two public apply pages were opened with headless Chromium that aborted
+every request but GET, and the Location field was typed into (nothing else was typed, pressed or attached). Item 9 held; items 10 and
+14 were not contradicted (nothing was pressed, and the Submit handler was not read). These are the places where the load says more: hCaptcha and Cloudflare each make POSTs at load, before
+Submit; the location lookup answers a JSON array of `{name, id}`; and one board also loads a LinkedIn "Apply with" widget.
+The lists are in Q3 and Q4 (section 11) and in `tests/fixtures/apply/lever/endpoints.json`.
+
+---
+
+## 4. Decisions the student must make before build
+
+Only L1 and L2 are new. Section 4.1 lists the Phase 5 answers that carry over unchanged, so nothing is asked twice.
+
+### Answers recorded 2026-10-07
+
+| # | Answer | Differs from recommendation? |
+| --- | --- | --- |
+| L1 | **A.** The app may attach the résumé on Lever, in Finish in browser only, behind the `apply_lever_resume_upload` setting, which is off by default. While it is off, Lever behaves as C. When it is on, the start confirmation says the file goes to Lever as soon as it is attached, the run records it, and the request guard lets only the one `POST {origin}/parseResume` the app's attach causes. | No |
+| L2 | **A.** A field Lever's résumé reader filled where the app has no confirmed fact is cleared and listed as "left for you", and the read-back proves it is empty (6.7, 6.8). | No |
+
+### L1. May the app attach your résumé on Lever, knowing Lever reads it at once?
+
+Attaching the file is what makes Lever pre-fill the form (3.8). It sends the file to Lever, and Lever stores it
+under a `resumeStorageId`, before you press Submit. No application exists until the form is posted, but the file
+has left your computer. This is the same thing that happens to anyone who clicks Lever's own "Attach resume".
+
+Phase 5 refuses the nearest Greenhouse case: a board that uploads as you attach is refused before filling (6.9),
+because that flow has not been seen live and its destination could not be pinned. Lever's flow has been read (3.8):
+one request, to one path, on the page's own origin.
+
+- **A. Yes, in Finish in browser only, behind a setting.** The setting is off until you turn it on ("Let the app
+  attach my résumé on Lever. Lever reads it as soon as it is attached."). When it is on, the start confirmation says
+  so in plain words, the run records it, and the request guard lets the one request the app's attach causes pass,
+  `POST {origin}/parseResume` with the planned file's bytes in it (section 7), and no other upload.
+- **B. Attach without Lever reading it.** Put the file in the input without the change event, so nothing is sent
+  until Submit. Whether Lever then accepts the Submit is **[unseen]**, it departs from how the page behaves for a
+  person, and it can only be tried by a real submission. Not recommended unless a live check shows it works.
+- **C. No.** The résumé is left for you in the window, as a required "left for you" item.
+
+**Recommendation: A, with the setting off by default** (so until you turn it on, Lever behaves as C). The file is
+the one you confirmed, the destination is one fixed same-origin path, you are watching the window, and the app
+says it before it happens. A student who answers C loses little: the résumé is one click in the window.
+
+**What your own attach does, whatever you answer.** Under C, and whenever you attach a file yourself in the window,
+Lever's page sends the same request. The app lets that one pass during your turn, because it is your own act, on your
+own file, in your own window, and it then tells you by name which fields Lever changed so you can check them (6.12
+step 7). It is still aborted before your turn begins and after hand-over.
+
+### L2. What happens to the values Lever's résumé reader filled in?
+
+After L1 A, Lever has filled in your name, company, phone, location and links from the file, wherever the app had
+not typed first, and some of those are wrong (the parser reads "Current company" from your latest job title, for
+example). The app overwrites them with your confirmed facts. For a field where the app has **no** confirmed fact:
+
+- **A. Clear it and list it as "left for you".** Nothing in the form is a guess you did not confirm. The window
+  shows the field empty with a reason.
+- **B. Leave Lever's value and list it as "check this".** Less work in the window, but a value neither you nor the
+  app confirmed is in the form when you press Submit, which is the thing the product promises never to do.
+
+**Recommendation: A.** It is the same rule as Greenhouse (an optional field is filled only from an exact source,
+D13 A). A skipped optional field costs you a click, and a wrong "Current company" costs you a bad first
+impression. If L1 is C the app attaches nothing, so there is nothing for it to clear before your turn; what Lever
+fills when you attach the file yourself is reported to you (6.12) and is yours to check.
+
+### 4.1 What carries over from Phase 5 (nothing is asked again)
+
+| Phase 5 answer | On Lever |
+| --- | --- |
+| D1 B: the student presses Submit | Same. The app never presses `#btn-submit` or `#hcaptchaSubmitBtn`. |
+| D3 B: three clean rehearsals before a Submit button | Not used. Finish in browser needs no gate (D3 text). No rehearsal mode on Lever in this spec. |
+| D4: spacing, daily cap, one per company per 30 days | Same counters. The company key is shared across ATSs (a company on both counts once). |
+| D5 C (i): sensitive questions | Same classification. EEO only as a stored "Decline to self-identify". `eeo[disabilitySignature]` and its date are never filled (6.6). |
+| D8: 90-day screenshots, masking (i) | Same. |
+| D9 B: consent boxes ticked only on an exact stored statement | Same. Lever's certification and GDPR boxes are consent boxes. |
+| D10: emailed security code | Not applicable. No Lever code step was seen **[unseen]**; if one appears, the run stops and says so (6.9). |
+| D11 B: latest approved cover letter | Same, and still M7. A Lever `file-upload` "Cover Letter" card is left empty until then. |
+| D12 C: the email watch is optional for Finish in browser | Same. The watch learns Lever's sender (6.15). |
+| D13 A: optional fields only from exact sources | Same. |
+| D14 A: never click a visible CAPTCHA | Same. Lever's runs `execute()` on its own; the challenge, if shown, is the student's. |
+
+---
+
+## 5. Architecture
+
+### 5.1 What a second ATS touches
+
+A read of `opportunity_app/apply/` on 2026-10-04 found the code is tied to Greenhouse in a small number of named
+places and neutral in the rest. Nothing below needs a new table.
+
+| Layer | Today | For Lever |
+| --- | --- | --- |
+| Claims, runs, limits, watch statistics, retention | Neutral: `ats` is a free `TEXT NOT NULL` column with no CHECK (`migrations/0045_apply_agent.sql:34,82,149`); the live-job lock `(user_id, ats, job_ref)` and the labels key `(user_id, ats, field)` are already ATS-scoped. | Unchanged. `ats='lever'`, `board_token` is the site, `job_ref` is `site/uuid`. |
+| Identify, canonical URL, schema fetch | `apply/greenhouse.py` (`identify`, `canonical_url`, `schema_url`), one `SchemaClient` (`apply/schema_client.py:33`). | A parallel Lever module and client, chosen by ATS (5.2). |
+| Schema to plan | `policy.parse_schema` reads Greenhouse's JSON blocks; `control_of`, `label_field_of`, `STANDARD_FIELDS` and `_EDUCATION` assume its names (`policy.py:83-250,556`). | A pure `parse_lever_form` yields the same `SchemaField` rows (5.4). `build_plan`, MACs and `plan_hash` are neutral and reused. |
+| Request policy and outcome | Module constants: `BOARD_HOSTS` and `SUBMIT_HOST` (`greenhouse.py:26,28`), `FORM_POST_HOSTS`, `TELEMETRY_HOSTS`, the S3 rule and `confirmation_reached` (`checks.py`), `RESOLVABLE_HOSTS` (`agent.py:299`). Only the lookup and CAPTCHA endpoint lists are injectable (`RouteState`, `checks.py:198-199`). | A per-ATS `RoutePolicy` value replaces the constants (5.2). Greenhouse's values are unchanged. |
+| The driver | `GreenhouseAdapter` (`agent.py:558`) is a concrete class; `ApplyAgent.__init__` is typed to it (:801), and `DefaultApplyAgentFactory` hardwires it (:2631). There is no adapter Protocol. | An `AtsAdapter` Protocol over the methods the agent already calls, and a `LeverAdapter` (5.3). |
+| Classification | Label-text rules are neutral; section-keyed rules (`classify.py:36-39,216-219,533`) expect Greenhouse's `section` names. | The Lever parser assigns sections so the same rules apply (6.6). |
+| Mail | `mail/data/application_senders.json` already lists `lever.co` and `hire.lever.co`; confirmation detection is keyword-based; `job_ids` accepts UUIDs (`mail_rules.py:281-291`). `inbox._job_link` keeps only `gh_jid` (:520). | Add the UUID link to `_job_link`; no new sender list. |
+| UI | One section, any saved role, asks `/check`; the server answers `NOT_GREENHOUSE` when `identify` returns None. About 25 student-facing sentences say "Greenhouse". | ATS-aware sentences (9). |
+
+### 5.2 The ATS seam: a refactor with no behavior change
+
+Lever cannot be added by copying Greenhouse's branches. The seam lands first, as its own PRs, with Greenhouse
+behavior pinned (section 12, LV1). It does these things and nothing else:
+
+1. **`apply/ats.py`**, a registry of one `AtsSpec` per ATS: the key (`"greenhouse"`, `"lever"`), the display name used
+   in sentences, `adapter_version`, `supported_modes`, `identify`, `canonical_url`, the schema client and the
+   `parse_schema` for it, the confirmation-sender check, and the `RoutePolicy`. Greenhouse registers with exactly
+   today's values. The existing `greenhouse.py` names stay where they are; no compatibility re-exports (AGENTS.md
+   section 8 rule 5), so every import and every `mock.patch` target is updated, and a moved patch is proved to still bite.
+2. **`AtsAdapter`**, a `typing.Protocol` of the methods the agent calls today (`agent.py:566-784`): `form_frame`,
+   `detect_page`, `uploads_on_attach`, `security_code_prompt`, `security_code_inputs`, `captcha_widget`, `control`,
+   `control_kind`, `field_container`, `choices`, `fill_location`, `read_options`, `loader_paths`, and `is_react_select`
+   (which `_choose` calls unconditionally, `agent.py:1172`, so it stays in the Protocol and Lever's returns False);
+   the other react-select methods become optional capabilities that Lever does not have. `submit_control` is never
+   called (the student presses Submit) and is dropped. `AgentJob` gains an `ats` field, and
+   `ApplyAgentFactory.create` takes it.
+   **The branches in `ApplyAgent._run` itself** (`agent.py:1536-1591`) become per-ATS too: the navigation-host check
+   against `BOARD_HOSTS` (:1539); `bind_endpoints(GREENHOUSE_LOOKUP_ENDPOINTS, board_token(...))` (:1543-1546);
+   `posting_ids` for the different-posting guard (:1569-1573), which returns `("", "")` for a non-Greenhouse URL and so
+   would silently switch the guard off for Lever; the page kind `application_form_new` (:1577); `loader_paths` with
+   `submit_host == SUBMIT_HOST` (:1578-1591), which Lever replaces by "the apply POST goes to the page's own URL"; and
+   the `HANDOFF_S3` refusal on `uploads_on_attach` (:1589). `uploads_on_attach` is split in two: it keeps meaning "the
+   board uploads to a storage address" (Greenhouse's S3 case; Lever returns False), and a new `reads_on_attach` means
+   "the page reads the file as it is attached" (Lever returns True). L1 governs `reads_on_attach`, and it never
+   refuses the board. `CLICK_PURPOSES` (`agent.py:165`) gains `option_pick`, and the denylist (:160-162) gains any
+   Lever control that proves to need one (none was seen).
+3. **`RoutePolicy`**, a frozen value built by each `AtsSpec`: the hosts main-frame navigation may reach, the hosts a
+   form may post to, the matcher for "the submit POST", the telemetry hosts, the upload rule, the lookup endpoints, the
+   CAPTCHA endpoints, the exact non-GET exceptions allowed before hand-over, and `confirmation_reached`. `route_decision`
+   (`checks.py:385`) and `decide_outcome` take it as an argument instead of reading module constants.
+   `RESOLVABLE_HOSTS` and the Chromium resolver rule in `LAUNCH_ARGS` (`agent.py:299-311`), which fail DNS for any
+   host not listed, become the union over registered ATSs of each policy's hosts.
+4. **Three small corrections the seam needs**, each with a test that fails first:
+   - `_limit_check` matches `board_token` without the ATS (`runs.py:294-301`), so a Lever site called `acme` would
+     trip the company-limit ask for a Greenhouse board called `acme`. It matches on `(ats, board_token)`.
+   - `SchemaCache` keys on `(token, job_id)` (`preflight.py:57-66`). It keys on `(ats, token, job_id)`.
+   - The runner stamps `ADAPTER_VERSION` of Greenhouse on every run (`runner.py:1152,1282`). It stamps the run's own
+     ATS's version.
+5. **Parity tests.** Per AGENTS.md section 8 rule 14, each moved decision (`route_decision`, `decide_outcome`,
+   `confirmation_reached`, `identify`, `parse_schema`) gets a test that runs the old code from a frozen copy against
+   the new on every Greenhouse fixture and vector, old against new, never new against new.
+6. New modules are placed in `tests/test_layers.py` at the lowest layer that holds their top-of-file imports, and
+   `tests/test_leaf_modules.py` is updated if a leaf is added.
+
+**As built in LV1b** (what differs from the list above, and what was left for later):
+
+- `RoutePolicy` and `GREENHOUSE_ROUTE_POLICY` are in `apply/checks.py`, next to the Greenhouse constants they are built from;
+  `AtsSpec.route_policy` holds it. `route_decision`, `looks_like_a_send`, `student_submit_elsewhere`, `decide_outcome` and
+  `new_code_prompt` take the policy as an argument; `confirmation_reached` is a field of it, and no module-level copy is left.
+  A `RouteState` with no lookup or CAPTCHA list uses the policy's. `RESOLVABLE_HOSTS` is the union of each spec's
+  `route_policy.resolvable_hosts` and the two font hosts.
+- The `_run` branches are answered by the policy (navigation hosts, submit hosts, lookup endpoints) and by four more adapter
+  methods and one attribute (`posting_ids`, `lookup_token`, `confirmation_ids`, `reads_on_attach`, `form_page_kind`), so
+  `ApplyAgent` still takes only an adapter and reads the spec through its `ats`. `reads_on_attach` is noted in the run's evidence
+  when it is true and refuses nothing; what L1 decides is decided where Lever's file is planned (LV3).
+- `CLICK_PURPOSES` did not gain `option_pick`: nothing in today's code presses an option the adapter picked itself, so the entry
+  would be a click the allowlist permits and nothing makes. It goes in with `LeverAdapter` (LV3), with the test that uses it.
+- The page script that reports the student's own press of Submit named Greenhouse's board hosts and its submit control at LV1; LV3 gave it a
+  per-ATS form (`press_listener(hosts, selector)`, below).
+- Sentences that name the ATS take its display name from the spec (`apply.ats.name_of`, `AtsSpec.display_name`); the pages read the
+  payload's `ats_name` (the check, the claim and watch card, an attempt's first event, the automation lists). A record from before
+  the name was kept is Greenhouse's, which the pages say. The sentences of `security_code.py` and `schema_client.py` are
+  Greenhouse's own (its emailed code, its API) and are not generalised.
+
+**As built in LV2** (Lever, read only: what differs from the plan, and what was left for later):
+
+- `AtsSpec` gained the fields Lever needed: `listings` (which client reads the posting: Greenhouse's job board client, or Lever's page client through
+  `schema_client.LeverListings`), `posting_difference`, `claim_modes` (Lever: `handoff`), `switch` (`apply_agent_lever`) and `adapter_built` (Lever:
+  false until its driver lands in LV3). `identify` still returns `(token, job id)`; for Lever it is an `ats.Ident`, a two-item tuple that also carries
+  the host, so an EU posting stays on the EU host. The check and the start routes take a second client, `apply_page_client_factory`, beside the
+  Greenhouse one; an app given none answers "Lever did not answer".
+- The modes are refused twice. `ats.mode_refusal` (the runner, before anything is read) gives `ats_mode` for a rehearsal or a lookup, and
+  `ats_not_built` for Finish in browser while the driver does not exist. `runs.claim` refuses a `one_click` or `unattended` claim for Lever with
+  `ats_mode` inside its transaction. A Lever `handoff` claim is a claim like any other; the runner is what refuses it until LV3 and LV4.
+- The check answers `offers` (which window actions the page may show, with the sentence for one that is not there) and `notes` (on Lever, what
+  happens to the résumé, by the `apply_lever_resume_upload` choice). The settings answer an `ats_label_sets` list and a `lever` object, and the label
+  routes take an `ats` (default Greenhouse). These are the API changes of this milestone; the route and OpenAPI snapshots were regenerated for the
+  new parameters.
+- `RoutePolicy` for Lever carries the hosts, the one lookup (`/searchLocations`), the two hCaptcha hosts the list already had and the `/{site}/{job}/thanks`
+  rule. The résumé POST, the telemetry and Cloudflare paths and the hCaptcha hosts the page loads are LV3's, pinned from the recording (Q3).
+  `RESOLVABLE_HOSTS` is now the union with Lever's two hosts; a run's own browser can look up only its own ATS's names (`ApplyAgent.run_launch_options`, see "As built in LV3, the driver").
+- A required `multiple-select` is left to the student. The shared broad net (Phase 5 7.1 "As built") has never ticked a box from the answer library, and
+  6.6's "ticks only the chosen boxes" would loosen it, so the stricter rule is kept here until the student decides otherwise.
+- `inbox._job_link` already kept a Lever or Ashby posting's uuid (it is in the path; only Greenhouse's `gh_jid` lives in the query), so it needed no
+  change; tests pin it, and the match of a `hire.lever.co` confirmation by the posting's uuid.
+- The parser's scanner took time in proportion to the controls times the label text when many controls shared one long `label[for]`; a label now works
+  out its words once.
+
+**As built in LV3, the request policy** (`checks.LEVER_ROUTE_POLICY`, `checks.lever_outcome`; pure rules, no browser; the adapter and the hand-over are built on top):
+
+- `RoutePolicy` gained five fields Greenhouse leaves at their defaults: `challenge_path_prefixes` (Cloudflare's bot check), `resume_post_path` (`/parseResume`),
+  `submit_content_types` (the apply POST must be multipart), `bind_submit_host` (the apply POST must go to the posting's own host, `RouteState.board_host`; with none bound
+  nothing is one) and `outcome_table` (`decide_outcome` hands over to `lever_outcome`). Its telemetry list is a `DomainSet`, so `googletagmanager.com`, `google-analytics.com`
+  and `bugsnag.com` cover every subdomain. `RouteState` gained `board_host`, `resume_upload_allowed`, `resume_sha256`, `page_account_id` and `resume_posts_passed`; `Allow` gained
+  `resume_post` and `digest`; `Observation` gained `board_host` and `main_host`.
+- The resume POST is `checks.resume_post_decision`, reached from `route_decision` for a handoff POST to `/parseResume` on the posting's own host, in the fill or the student's
+  turn. Each condition of section 7 is its own rule: `resume_post_off`, `resume_post_second`, `resume_post_content_type`, `resume_post_parts` (not exactly the two parts, in a
+  clean multipart body), `resume_post_file` (the fill: not the planned file; the student's turn: bytes that are not the chosen file's), `resume_post_name` (the student's turn only), `resume_post_account`, and `value_guard` for a planned value in the URL, a header, or anywhere outside the `resume` part.
+  Anything else to that path or host is refused by the general rules.
+- Two places where the build is narrower than the text above, until the recording of Q3 shows otherwise: Cloudflare's allowed writes are under `/cdn-cgi/challenge-platform/`
+  and not all of `/cdn-cgi/` (`LEVER_CLOUDFLARE_PATH_PREFIXES`), and the hCaptcha hosts are the ones the load recording saw (`LEVER_CAPTCHA_ENDPOINTS`, the one tuple a recording extends).
+  They were not in `resolvable_hosts` when the request policy was built; the driver joined them (see "As built in LV3, the driver" below).
+- The outcome table has the four rows of 6.13 and the challenge rule; a challenge with no POST sent answers `challenge_wait` with detail `{"waiting": "challenge"}` until the waiting is
+  over. It is not named `waiting`: the shared loop reads that as a security-code prompt, and Lever emails no code.
+- Lever's `RoutePolicy` sets `security_code_posts=False`, so the one-more-POST rule for an emailed code does not exist there: a second POST to the apply URL is refused
+  (`second_submit_post`) whatever the shared prompt counter says.
+- The resume POST in the student's turn needs a file the student chose: `RouteState.student_files_chosen` (the driver raises it on a trusted selection in the page's file input,
+  as the press listener reports Submit) pays for one read each, counted in `student_file_reads_passed`; a read with none left is refused (`resume_post_unasked`). Without that a page
+  script could post any bytes as a "file" before Submit. The part's content type is always read for a planned value, and in the fill so is its file name unless it is exactly
+  `RouteState.resume_file_name`, the name the app attached the file under, or that name as the page rewrites it (`sanitizeFilename`, 3.8; `lever.posted_file_name`, set as `RoutePolicy.resume_post_name`). In the student's turn the name is not read for a value but must be the chosen file's name as the page rewrites it (`resume_post_name`): the listener reports the browser's own name with the choice (`file:<n>:<name>`, percent-encoded so any name passes, and not reported at all past 3000 encoded characters or when it cannot be encoded), the agent applies the page's rule to it and gives the rules the oldest open choice's name and SHA-256 (`RouteState.student_file_name`, `student_file_sha256`). A file the browser reads from the student's disk reaches the route as an empty part, so an empty part is the file itself and any bytes in the part must hash to the chosen file's (the agent waits up to `STUDENT_HASH_WAIT_S` for the hash), or the read is refused as `resume_post_file`. Without that a script that stops the page's own read of the file and posts its own bytes would use the choice's allowance, and the record would name a file Lever never received. One limit remains: a script that posts an empty part under the right name cannot be told from the real read, and sends nothing.
+- Where the build is wider than the table: the `after hand-over` row lists writes to a CAPTCHA endpoint only, and `route_decision` also allows a write to Cloudflare's challenge path
+  there, as in every other phase (the value guard still reads it). The Hosts paragraph names Cloudflare's beacons, so this follows that text; the owner decides whether the row should refuse it.
+- The value guard sees no cookies: the route handler gives `route_decision` Playwright's `request.headers`, which leaves them out (listed in `docs/known-defects.md`).
+
+**As built in LV3, the driver** (`apply/lever_adapter.py`, and the hooks it uses in `apply/agent.py`; reachable only in tests at the time: no module of the app imported it, `ADAPTERS` and the factory
+did not hold it, and `AtsSpec.adapter_built` was false, so the runner answered `ats_not_built`; LV4 connected it, see "As built (LV4)" after the milestone table):
+
+- The hCaptcha hosts are now in the resolver rule. `LEVER_CAPTCHA_ENDPOINTS` holds what the load recording saw (Q3): `js.hcaptcha.com`, `hcaptcha.com`, `api.hcaptcha.com`,
+  `api2.hcaptcha.com`, and `newassets.hcaptcha.com` under `/captcha/v1/`; `cdn.lever.co` and the logo bucket are static hosts; `bugs.lever.co` (exactly, never `lever.co` by suffix) and
+  `linkedin.com` are telemetry, so the "Apply with LinkedIn" widget's POST into a frame is refused silently and never ends the student's turn. `RESOLVABLE_HOSTS` stays the union over every ATS (the test that every registered host is listed somewhere reads it), but each run launches a Chromium of its own with a resolver
+  rule of its own ATS's names and the fonts (`ApplyAgent.run_launch_options`), and its request rules read the same names (`ApplyAgent._resolvable`), so a Greenhouse run's browser can look up none of the names only Lever needs, nor the reverse. The shard
+  hosts under `w.hcaptcha.com` are not in it (Q3).
+- `LeverAdapter` imports no Playwright: every call is on the frame, page and locators the agent hands in, and whatever changes the page goes through the agent's five helpers
+  (`ops._type`, `_click`), so the static scan of the helpers covers it. `AdapterBase` (`agent_types`) holds what an ATS that needs nothing special does, and Greenhouse's adapter
+  inherits it; the Protocol gained `scan`, `page_facts`, `page_managed`, `owns`, `is_typeahead`, `parse_state`, `guessed_fields`, `cleared` and `refuses`, the attributes `uses_engine`,
+  `closed_on_404`, `waits_for_challenge`, `required_from_load` and `page_sentences`, and `loader_paths(html, url)` (Lever's paths come from the address, since the form has no `action`).
+- The page is read with `LEVER_SCAN` (one read-only `frame.evaluate`; the shared engine is not injected), in the shape `checks.join` reads, and joined by name. The plan's EEO names map back
+  to the controls (`gender` to `eeo[gender]`). A control that shares a name with checkboxes (the pronouns' free-text box) is not a second question.
+- **Order.** After the plan and the page's facts (`accountId`, a snapshot of the page's own hidden fields), a plan that fills the résumé attaches it first (`_attach_first`): the request
+  rules are told the one file the page may read (`RouteState.resume_upload_allowed`, `resume_sha256`, `resume_file_name`), the file goes in through `_attach`, and the agent polls the
+  page's indicators (`parse_state`) for `parse_s` (30 s, a new `ApplyTimeouts` field). Success, failure and oversize all end the wait and the fill goes on; a timeout stops with
+  "Lever did not finish reading your résumé. Nothing was filled. Lever may still have the file." before any field is touched, the window is closed first, and no picture is taken.
+  `RouteState.resume_upload_allowed` is put back to false when the wait ends. The résumé POST is recorded in `evidence_json` (`resume_sent_to_lever`, `resume_parse`, `resume_post`
+  with its status and SHA-256, `guesses_cleared`, `page_changed`), not in `RunResult.requests`: the runner's row 8 reads a passed non-GET there as a submission, so LV4 must exempt
+  the file read before the record moves.
+- **L2 A.** After the fill, when a file read passed (a read that failed or was too large filled nothing), every control `guessed_fields` names that the plan does not fill and that
+  holds a value is emptied through `_type` (`fill("")`, change, blur: for the location that is the page's own handler, which empties `selectedLocation` too), read back empty
+  (`cleared`), and listed with "Lever filled this from your résumé and the app did not have a confirmed value, so it cleared it". A field that will not empty stops the run
+  (`The field "..." did not take the answer`). The list of fields is `PARSER_FIELDS` and the address parts; a test compares it with the stand-in script.
+- **Location.** `fill_location` empties the box, presses the city key by key (the new `keys` option of `_type`, which is where `press_sequentially` lives), waits for options, and
+  chooses the one whose text equals the stored label through `_click(..., "option_pick")`, then reads that the field shows the label and `selectedLocation` is the JSON of an option of
+  that name. No option, two options of that text, or a lookup that fails: the field is emptied again and left for the student. It is typed after the other text fields. The option
+  markup is [unseen] (Q4 recorded the reply, not the page), so an option is `.dropdown-option`, `[role=option]` or `[data-option]`.
+- **Required is read as the page loaded** (`required_from_load`): once a box is ticked the page's script drops `required` from every box, so the check reads which questions were
+  required from the first scan and what they hold from now (3.11, 6.10).
+- **The page's own fields** (`page_managed`, `owns`): a snapshot before the first input and a comparison before the student's turn; `resumeStorageId` is the one the page sets after a
+  read and is left out. A change is a check problem and a "left for you" item (`page:<name>`), never put back. Their names are kept out of the plan check.
+- **hCaptcha and Cloudflare.** A visible challenge frame while the app fills makes `_between` stop, touch nothing, bring the window forward and wait up to `person_s`; past that the run
+  ends `needs_you` with nothing touched. A Cloudflare interstitial (a 200 with no form) is waited out the same way before anything is read. A 404 is "no longer accepting applications",
+  and a `/thanks` page before any press is "This page already says the application was submitted. The app did nothing." A refused Cloudflare beacon in the fill is not the page sending.
+- **A write the rules refused in the fill** ends the run with "The form tried to send a file the app did not plan, so the app stopped it. Nothing was sent." (a file) or "...something the
+  app did not plan..." (anything else), not Greenhouse's "board uploads as you attach" sentence.
+- **Words once the file has gone.** Every sentence that ends "Nothing was sent.", "No application was sent." or "Your application was not sent." ends instead "Your application was not sent.
+  Lever received your résumé." for a run in which the file read passed. The list for the student begins with "Your résumé was sent to Lever when the app attached it." (6.12 step 1).
+- `option_pick` is a `CLICK_PURPOSES` entry. The denylist (`DENYLIST`: the two Submit controls) is the adapter's, it is the only place in `apply/` that names them, and `refuses` is a second
+  lock behind the allowlist. The agent also gained the posting's host from the address the run was asked to open (`RouteState.board_host`, from the first request), the host fields of the
+  outcome table's observation (`board_host`, `main_host`) and the observer's record of the apply path.
+- **Not built in LV3 (built in LV4).** The student's own attach in the window (10.4 item 11): the press listener named Lever's hosts and Submit button (see (2) below), and nothing raised
+  `RouteState.student_files_chosen`, so a file the student attached would have been refused and ended their turn; LV4 added the file-chosen signal to the same listener. The hand-over and the four outcome rows against FakeLever (10.4
+  items 6 and 7) were LV4's; the generic hand-over path in `_route` was unchanged and its inputs for Lever were in place. Scrolling a target that the cookie banner covers and trying again
+  (6.6) is not built: a covered control is left for the student by the usual failure path. A preflight that checks the shape of Lever's pages (R1) is not built.
+- **After the first review of the driver.** (1) The wait for the read comes right after the file is in the input, before the app looks at the input at all (`_attach_entry`'s `after`): a
+  check of the input that then fails (the page shows the name with its spaces squeezed, or not at all) can no longer let the fill go on while the page's reply is still to come. The file
+  name is compared with spaces read as text reads them. After the fill a last check (`hidden_mismatch`) stops the run if the location and the hidden `selectedLocation` beside it disagree
+  (6.8). (2) A file sent to a CAPTCHA endpoint or Cloudflare's path is refused as `upload_elsewhere` and ends the run like any other refused upload (the student's turn is closed the same way). A file is: the planned file's own bytes, as the whole body under any type or none or as a part of a form with or without a file name (checked by SHA-256, in every phase); and, in the app's fill and in the student's turn until the student's first press, a multipart body with a named file part, an octet-stream body or a body of any declared type that is not text, URL-encoded or JSON (a body with no declared type is left alone). These two readings are Lever's (`RoutePolicy.no_files_before_press`); Greenhouse keeps its answers, because reCAPTCHA posts protobuf. The planned file's bytes are looked for under every policy. After the press hCaptcha is running and a false reading would close the turn in the middle of it, so only the planned file's bytes are looked for. The press is seen on Lever's page: the listener (`apply.agent.press_listener`) is built from the policy's `navigation_hosts` and the adapter's `press_selector` (Lever's is the visible Submit button, `LeverAdapter.press_selector`, taken from the denylist), and counts only a trusted click, so the page's own script click on the hidden button is not a press. `tests/test_apply_lever_browser.py` `StudentPressTests` pins it: a trusted click sets `last_press_at`, and a binary write to hCaptcha after it passes while the planned bytes are still refused. The hCaptcha
+  endpoints are written only by the methods the recording saw (`Endpoint.methods`: POST to `api`, `api2` and `hcaptcha.com`; the script and frame hosts are only read). Cloudflare's
+  allowed path stays `/cdn-cgi/challenge-platform/`, wider than the one beacon path recorded, because no interstitial has been recorded and its own requests are unseen; the file check
+  above is what closes that path to the file as itself, and not to a copy a script has re-encoded (known defects). (3) Each run launches its own browser with the resolver rule of its own ATS (`ApplyAgent.run_launch_options`). (4) The independent check reads
+  the page's `eeo[...]` controls under the plan's names (`plan_key`). (5) The file posted under the attached name rewritten by the page (3.8) is
+  not read for a planned value. (6) A Cloudflare check served with 403 or 503 (`cf-mitigated: challenge`, or the title "Just a moment...") is waited for like a 200 with no form (6.3);
+  the page is a challenge whenever a Lever host shows no form and is not `/thanks`, which is wider than 6.3's title or body test. (7) FakeLever's page makes the writes a live one makes
+  as it loads (the three `/checksiteconfig` POSTs and Cloudflare's beacon), and `non_get_requests(noise=False)` leaves out only those.
+
+### 5.3 The Lever modules
+
+| Module | Holds | Imports |
+| --- | --- | --- |
+| `apply/lever.py` | Constants and URLs: `ATS_LEVER`, `ADAPTER_VERSION = "lever-1"`, `LEVER_HOSTS = ("jobs.lever.co", "jobs.eu.lever.co")`, `canonical_url(site, job_id, host)`, `identify`, the sender-domain check, and the `AtsSpec`/`RoutePolicy` for Lever. | Stdlib and its own siblings only, like `greenhouse.py`. |
+| `apply/lever_form.py` | The pure parser `parse_lever_form(html) -> LeverForm` (5.4). No I/O, no browser. | `html.parser`, `json`, `re`. |
+| `apply/lever_adapter.py` | `LeverAdapter` (the browser side, 6.4 to 6.9). It imports no Playwright: it reads through the frame, page and locators the agent hands in and acts through the agent's helpers. | `apply/lever.py`, `apply/lever_form.py`, `apply/checks.py`, `apply/agent_types.py`. |
+| `apply/schema_client.py` | A `LeverPageClient` beside `GreenhouseSchemaClient`: `fetch(site, job_id, host) -> str` of HTML. TLS on, 20 s timeout, the pipeline's user agent, response read capped at 4 MB. | Unchanged module, one added class and the factory. |
+
+**`identify`** works on the opportunity's `url`, then its source URLs, then `opportunity_sources` rows whose
+`source_key` matches `'lever:%'` (passed as a parameter, as Greenhouse does for PostgreSQL's sake). It accepts
+`https://jobs.lever.co/{site}/{uuid}` and `https://jobs.eu.lever.co/{site}/{uuid}`, with an optional `/apply`, `/thanks`,
+a query string or a fragment after the uuid, and nothing else. The uuid must match
+`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`; the site must match `^[A-Za-z0-9_-]{1,100}$`
+(the pipeline already stores the site as the source identity and the UUID as `external_id`,
+`pipeline_core/sources.py:87-125`). A company-site page that embeds Lever is identified only if its URL names
+`jobs.lever.co`; anything else is not a Lever posting for this feature. The host is kept on the result so an EU
+posting stays on the EU host.
+
+### 5.4 `parse_lever_form`: the page is the schema
+
+A pure function over the HTML of `GET {canonical_url}`. It is what `parse_schema` is for Greenhouse, and it is the
+reason a Lever role can get the read-only check with no browser.
+
+1. Find `form#application-form`. None means the page is not a form (6.0 step 5).
+2. Walk its controls in document order with `html.parser`, never a regex over the whole page (the page is up to
+   1.9 MB, mostly script). Collect for each control: `name`, tag, `type`, `required`, `disabled`, the label text of
+   its `application-label` or option label, and for `select`, `radio` and `checkbox` the option labels and values.
+   Membership and `disabled` follow HTML, not just the text between the tags: a control with a `form` attribute is in
+   the form only when it names `application-form` (so one outside the element that names it is submitted, and is
+   recorded as an unknown control, and one inside that names another form is not read); a control inside a
+   `fieldset[disabled]` is disabled, except inside that fieldset's first `legend`; and an `application-form` that sits
+   inside another form is not a form the browser builds, so the page has none. More than 100 disabled fieldsets open
+   inside one another, or more than 50 `<label>` elements open inside one another, is a page the parser will not read
+   (it returns none). The walk takes time in proportion to the page: a stray end tag is turned away at once, not found
+   by searching everything still open.
+3. **Standard fields** are recognised by exact name: `resume`, `name`, `email`, `phone`, `location`,
+   `selectedLocation`, `org`, `urls[...]`, `pronouns`, `comments`, `opportunityLocationId`, `consent[marketing]` and
+   `residentialLocation[...]`. A control with **no name** is never filled and never listed: it is not submitted.
+4. **Cards and surveys** are recognised by `cards[<uuid>][field<N>]` and `surveysResponses[<uuid>][responses][field<N>]`.
+   For each, the `[baseTemplate]` hidden input is HTML-unescaped and parsed as JSON, and `N` indexes its `fields`.
+   Limits, all failing to "unreadable" (the field is left for the student, never guessed): the JSON is at most
+   2 MB (a university dropdown's template was 622 KB, with 3,302 options), is an object, has `fields` as a list of at
+   most 200 objects with at most 20,000 options each, and each field has a string `type` in
+   `{text, textarea, dropdown, multiple-choice, multiple-select, file-upload}` and a string `text`. A survey option
+   without an `optionId` is normal.
+5. **Cross-check against the DOM.** The JSON says what the question is; the DOM says what can be filled. A field is
+   readable only if the DOM control type fits the JSON type (`dropdown` to `select`, `multiple-choice` to radios,
+   `multiple-select` to checkboxes, `text` to a text input, `textarea` to a textarea, `file-upload` to a file input),
+   the JSON `required` equals the DOM `required` **as scanned at load** (the page relaxes it after a tick, 3.11; a card's
+   required checkbox group is one question), and every option label in the DOM appears in the JSON options and the
+   reverse, **ignoring options with an empty `value`** (the `Select...` placeholder every dropdown starts with, which
+   the JSON does not list). An option's label is its `label` attribute when it has one, else its text. For a card or
+   survey choice, every option with a non-empty `value` must also submit the answer it shows: its value, with
+   whitespace collapsed, equals its label (a radio with no `value` submits "on", so it fails). A page that shows one
+   answer and submits another is a page the parser does not understand. The EEO selects and the office select keep a
+   label that is not their value (see the 2026-10-08 note). Any mismatch marks the field unreadable.
+6. **Unknown controls.** A named control outside the families above is recorded with its name and type. If it is
+   required the plan lists it as a problem ("Lever's form has a question the app doesn't read: {label}"); if it is
+   optional it is left empty and listed as "left for you".
+7. **Page-managed hidden fields** are listed in a constant and never become schema fields: `accountId`, `linkedInData`,
+   `origin`, `referer`, `timezone`, `socialReferralKey`, `socialSource`, `resumeStorageId`, `h-captcha-response`,
+   `source`, and every `[baseTemplate]`, `surveyId` and `candidateSelectedLocation`. This holds when every control under
+   the name is hidden (hCaptcha's answer textarea is the one other exception). A visible control that shares one of these
+   names is a question the page asks, so it is recorded as an unknown control (item 6).
+8. **Posting facts for the "differs from the saved role" tick** come from `<title>`, which was
+   `"{Company} - {Role}"` on all six boards read **[live]**. A role can contain " - ", so the check does not split:
+   it requires the page title, after normalization, to begin with the saved company (as whole words) and to carry the
+   saved title after it. A company named only in the role half is another employer's posting. Otherwise it asks for the
+   student's tick (`posting_confirmed`), as Greenhouse does.
+9. The output is `LeverForm(fields: tuple[SchemaField, ...], posting: {company_title, ...}, unreadable, unknown)`.
+   `SchemaField.section` is set so the existing classifier applies (6.6): `standard` for the fixed fields, `custom`
+   for cards and surveys, and `demographic` for the four `eeo[...]` names, whose `name` is one of Phase 5's EEOC
+   names (`gender`, `race`, `veteran_status`, `disability_status`).
+
+A fixture test pins every row of this list against sanitized copies of three real pages (6.x in section 10).
+
+---
+
+## 6. The run, step by step
+
+This section lists only what differs from Phase 5 section 6. A step not listed is the same.
+
+### 6.0 Preflight (read-only, no browser)
+
+1. The `apply_agent` switch is on, and so is `apply_agent_lever` (section 9). If only the first is, the answer for a
+   Lever posting is "Apply for me works with Lever postings once you turn it on in Apply agent settings".
+2. `identify` (5.3). A posting that is on neither ATS gets "Apply for me works with Greenhouse and Lever postings, for
+   now".
+3. The application lookup and every stage and duplicate check are Phase 5 6.0 steps 3 and 4, with "Greenhouse" in the
+   sentences replaced by the ATS's display name. The new `active_at_company` tick applies unchanged.
+4. **Fetch.** `GET {canonical_url}` through `LeverPageClient`. Only a **404** is "The app couldn't find this posting
+   on Lever. It may be closed" (3.1). A **403, 429 or 5xx**, a timeout, or a 200 that has no `form#application-form`
+   (a Cloudflare interstitial is a 200 page with no form) is "Lever did not answer. Try again later", never "closed".
+   The check route caches per `(ats, site, job_id)` for an hour; runs always fetch fresh.
+5. `parse_lever_form`, then `posting_difference`, then the draft plan from the schema alone (6.6 without the DOM
+   join). Every required field with no source is a problem; the UI offers an action for each (Phase 5 10.3).
+6. **Limits.** Handoff caps and the company limit, Phase 5 9.1. The rehearsal gate does not apply.
+
+### 6.1 Claim
+
+`apply_runs.claim` with `mode="handoff"` only. A `submit`, `one_click` or `unattended` claim, a `rehearse` run or a
+`lookup` run for `ats='lever'` is refused with code `ats_mode` and "Lever supports Finish in browser only, for now",
+by one check against `AtsSpec.supported_modes` in the runner and again inside the claim transaction. Greenhouse's
+`supported_modes` lists them all.
+
+### 6.2 Launch and navigate
+
+- Main-frame navigation may go only to the posting's own Lever host (`jobs.lever.co` or `jobs.eu.lever.co`).
+  Anything else, including a redirect to the company's site, is aborted and the run ends `needs_you` with "This posting
+  sends applicants to {host}".
+- The app opens `canonical_url`, which ends in `/apply`.
+
+### 6.3 Detect the page
+
+`LeverAdapter.detect_page` returns one of `application_form` (`form#application-form` present), `confirmation` (path
+ends `/thanks` and no form), `closed` (the main-frame response was HTTP 404), `challenge` (a Cloudflare interstitial: the title or
+body shows the "checking your browser" page, or no form is present on a 200), `offsite`, `unknown`.
+
+- `challenge`: the window comes to the front with "Lever is checking the browser. Finish that check in the window and
+  the app will continue." The app touches nothing on it, waits up to `person_s` (D14 A) heartbeating, and continues if
+  the form appears. No form by then is `needs_you`, `after_click=0`.
+- `confirmation` before any press is `needs_you`, `after_click=0`: "This page already says the application was
+  submitted. The app did nothing." (Reaching `/thanks` proves nothing, 3.12.)
+
+### 6.4 Scan and join
+
+`LeverAdapter` does **not** inject the shared engine in v1. The shared engine is Greenhouse-shaped in three places
+(`widgetKind` hardcodes the id `candidate-location`; `controlType` treats `role=combobox` as a react-select;
+`requiredMarkers` reads the react-select mirror, `apply-engine.js:142,450-477`), and Lever's controls are plain HTML.
+The adapter runs one read-only `frame.evaluate` that returns, for every control in `form#application-form`: name,
+tag, type, `required`, visibility, current value, option labels and the label text. Phase 5 6.4's rule still holds,
+that the output is advisory and every value the agent relies on is read back through Playwright's own reads.
+
+The join (Phase 5 6.5) is by `name`. Because the schema and the DOM come from the same HTML, a difference means
+script changed the page after load. Rules:
+
+- A planned field missing from the DOM, or present with another type or other options, is a problem and is left for
+  the student.
+- A DOM control the schema did not list is treated as an unknown control (5.4 item 6).
+- A planned field that is not visible is a problem.
+- **The app never writes a page-managed hidden field** (5.4 item 7), and the final check (6.10) compares them with
+  their scanned values.
+
+### 6.5 The résumé: attach first, wait, then overwrite
+
+This is the step that differs most from Greenhouse, because Lever's page pre-fills the form from the file (3.8).
+
+1. **If L1 is off (the default) or C:** the app attaches nothing; the résumé is a required item left for the student,
+   and this step is skipped. Nothing is sent by the app. What happens when the student attaches it is 6.12 step 7.
+2. **If L1 is A:** the résumé is attached first, before any text field is touched, with the payload form of Phase 5
+   6.9 (`set_input_files({"name": original_name, "mimeType": ..., "buffer": ...})`), so the input holds the name the
+   student sees and the form posts it under that name at Submit. Extensions and the 100 MB limit are checked first.
+   The page then posts the file to `/parseResume` (3.8; under a name it sanitizes), the request the guard lets pass
+   during the app's fill (section 7).
+3. The agent waits for the parse to end: `.resume-upload-working` is hidden and one of `.resume-upload-success`,
+   `.resume-upload-failure` or `.resume-upload-oversize` is visible, within `parse_s` (30 s). A failure is not an
+   error: Lever could not read the file, the form is as it was, and the run continues. **A timeout is different**: the
+   page's request is still pending, and a late reply would rewrite fields after the app had filled and cleared them
+   (`selectedLocation` is always rewritten, 3.8). So a timeout settles `needs_you`, `after_click=0`, **before any field
+   is touched**, with the browser closed first so the reply cannot land: "Lever did not finish reading your résumé.
+   Nothing was filled. Lever may still have the file." The run records
+   `resume_sent_to_lever` (true) and the parse result (`success`, `failure`, `oversize`, `timeout`) in
+   `apply_runs.evidence_json`, and the POST itself in `requests_json` as method, host, path and status. Never the parsed
+   values, which are Lever's guesses about the student. Closing the window or Stop during the wait settles
+   `needs_you` with `after_click=0`, as in Phase 5 6.13.
+4. Only after the parse has ended does the app fill (6.6). The page's script overwrites a field only if the user has
+   not **changed or pasted** into it (`parseResume.js` marks a field touched on `change` and `paste`, and only if it
+   then holds a value), so filling first and attaching second would leave a field the app left empty open to
+   Lever's guess. Attach, wait, then fill is the order that cannot be undone by the parser.
+
+### 6.6 Plan and fill
+
+The plan is Phase 5 6.6 with these sources. Every value is an exact confirmed fact or an exact stored answer; the
+mapping is by the control's name and the question's label.
+
+| Lever control | Source and rule |
+| --- | --- |
+| `name` | `first + " " + last` from `name_parts` (the "name for applications"), never the preferred name. Missing parts are a problem. |
+| `email`, `phone` | `contact.email`, `contact.phone`. The email is the address the confirmation watch reads (D12). |
+| `location` and `selectedLocation` | The stored `apply_ats_labels` row for `(user, 'lever', 'location')`. The adapter types the city part of the label into `location` with real key presses (`press_sequentially`: the page
+starts its search on `keydown`, and `fill()` sends none), waits for the page's own `GET /searchLocations`, and clicks the option whose text **equals** the stored label, never the first one. It reads back that `location` holds the label and that `selectedLocation` is non-empty JSON. It never leaves the field while no option is chosen (3.9). No stored label is a problem with the Phase 5 `ats_label` action. |
+| `org` ("Current company") | No Phase 5 source exists for it, so it is empty, and it was **required on four of the six boards read**. A required `org` is a problem with the action "type it in the window"; it does not stop the handoff. Under L2 A a value Lever's reader put there is cleared (6.7). |
+| `urls[<label>]` | Phase 5's label table (`policy._PROFILE_KEYS`): a label that normalizes to LinkedIn, GitHub or Portfolio and website takes `contact.linkedin`, `contact.github` or `contact.portfolio` when confirmed. Any other label (`Twitter`, `Other`, `Other Website`, `Video Link `) is empty. Nothing is guessed from a résumé. |
+| `pronouns` (checkbox and text) | Classified as an identity disclosure, like gender. Never filled. |
+| `comments` | No source. Empty. |
+| `opportunityLocationId` (a select of the posting's locations) | The app has no confirmed fact about which office the student means. Left for the student; required on one board read, so it can be a problem. |
+| `consent[marketing]` | A marketing consent is never ticked (D9 B names no exact statement for it). The hidden `0` stays. |
+| `residentialLocation[<part>]` | No Phase 5 source. Never planned; cleared under L2 A if the parser filled it. |
+| A control with no name | Never touched and never listed: it is not submitted. |
+| A card or survey field, `text` or `textarea` | The answer library, by the same exact question-key match as Greenhouse (D13 A). No saved answer: a required field is a problem, an optional one stays empty. |
+| `dropdown`, `multiple-choice` | `match_options(answer, options, several=False)`, the option whose label equals the answer. Never the first option. |
+| `multiple-select` | `match_options(..., several=True)`. A required group is satisfied by any one box (3.11), so the plan ticks only the chosen boxes. |
+| `file-upload` card | A "cover letter" field is left empty (D11 B, M7). Any other file field is left for the student: the app never attaches a file the student did not choose. |
+| `eeo[gender]`, `eeo[race]`, `eeo[veteran]` | D5 C (i): only the option whose label is a decline ("Decline to self-identify", "I decline to self-identify for protected veteran status"; `sensitive.is_decline` reads the label) and only when the student stored that answer. Otherwise left. |
+| `eeo[disability]` | **Never filled in v1.** Any answer, the decline included, makes the signature and its date required (3.6), and the app never fills those, so the app would leave the student a required signature it had just caused. The whole question is the student's. |
+| `eeo[disabilitySignature]`, `eeo[disabilitySignatureDate]` | **Never filled.** A typed signature and a date are the student's own act. |
+| A survey question (age range, ethnicity, and the like) | Classified by its label text; one that names a demographic topic falls to the broad net (`classify.NET_TOPICS`) and is never filled. |
+| A consent or certification box | D9 B: ticked only on an exact stored statement; otherwise left, with the statement shown. |
+
+Fill rules:
+
+- Helpers are Phase 5's five: `_type` (`fill`), `_tick` (`set_checked`), `_choose` (`select_option(label=...)`, which
+  covers every native `<select>`; Lever has no react-select), `_attach`, and the allowlisted `_click`. The only clicks
+  are `option_pick` (a new `CLICK_PURPOSES` entry: a `/searchLocations` result in the location dropdown, inside the
+  field's own container) and none else: **there is no `submit` click and no CAPTCHA click.**
+- **The cookie banner is never touched.** The app clicks neither Accept, Deny nor Dismiss; that is a consent the
+  student gives. If it covers a target, the adapter scrolls the target to the middle of the viewport and retries
+  once; a control that stays covered is left for the student.
+- The location field is filled last among the text fields, because a field that is left with no chosen option
+  empties itself.
+- **A challenge during the fill.** If a visible hCaptcha challenge frame appears (3.10), the app stops, brings the
+  window forward, touches nothing, heartbeats, and waits up to `person_s` for the frame to go away, then continues.
+  No change by then is `needs_you`, `after_click=0`.
+- Pacing is Phase 5's (`settle_s`, `between_fields_s`), with no disguise. The location text is typed key by key because
+  the page searches on `keydown`; that is function, not disguise, and it uses no randomized delays.
+
+### 6.7 Clear Lever's guesses (L2 A)
+
+When L1 is A and L2 is A, after the parse and the fill the app clears every field the parser can set that the plan
+left without a source. The list is the parser's own (`parseResume.js`'s `parsedInputFields` plus `selectedLocation`):
+`org`, `phone`, `name`, `email`, `location`, `selectedLocation`, `urls[LinkedIn]`, `urls[Twitter]`, `urls[Quora]`,
+`urls[GitHub]`, `urls[Other]`, and every `residentialLocation[<part>]`. The adapter keeps it as a constant, and the
+shape check compares it with the script. Each is cleared with `fill("")`. For `location`, the `input` event that
+`fill("")` sends shows the dropdown container, and the blur that follows is then answered by the page's own handler,
+which empties `selectedLocation` too (3.9). That handler does nothing while the container is hidden, so the order
+is fill, then blur, and the read-back proves it. The app then reads back that each field and, for `location`, the
+hidden field are empty. A field that cannot be cleared stops the run with `FIELD_TOOK`. Each cleared field is listed in the window as
+"left for you", with "Lever filled this from your résumé and the app did not have a confirmed value, so it
+cleared it".
+
+### 6.8 Read back
+
+Phase 5 6.8: every filled field is read back through Playwright (`input_value()`, `is_checked()`, the selected
+option's label), and a mismatch is cleared and left for the student, except a select that took a wrong option,
+which stops the run. Extra Lever reads: `resumeStorageId` is non-empty after a successful parse (it is the page's
+own and is only read), and `selectedLocation` parses as JSON with a `name` that equals the location text.
+
+### 6.9 Cover letter and other files
+
+Phase 5 6.9 for the cover letter (M7 wires it). A Lever `file-upload` card is never auto-attached in v1.
+**Uploads before hand-over:** the only upload allowed is the résumé to `/parseResume`: the planned file, once, during
+the app's fill under L1 A, and any file the student attaches during the student's turn (section 7). Any other upload
+attempt, including a second résumé POST during the app's fill, ends the run `needs_you`,
+`after_click=0`, "The form tried to send a file the app did not plan, so the app stopped it. Nothing was sent."
+The student's turn is no different until their first press of Submit: a file sent to a CAPTCHA endpoint or to Cloudflare's path in that stretch ends the turn the same way (section 7).
+
+**Wording once the résumé has gone.** Phase 5's `needs_you`, `after_click=0` sentences end "Nothing was sent." That is
+false once `resume_sent_to_lever` or `student_attached_resume` is true, because Lever has the file. For such a run each
+of those sentences ends instead "Your application was not sent. Lever received your résumé." A test pins every
+`after_click=0` sentence both ways.
+
+**Security code.** Lever has no emailed-code step **[unseen]**, so `security_code_prompt` always returns False and
+the Greenhouse reader is never started. If an unexpected code field appears, the run settles `needs_you` with
+"Lever asked for a code the app does not handle".
+
+### 6.10 The independent pre-submit check
+
+The check is Phase 5 6.10 against Lever's controls, and it adds: every planned value read back equals its plan; no
+page-managed hidden field has changed from its scan except `resumeStorageId` and `selectedLocation` (which the page
+sets); `h-captcha-response` is untouched; no required control is empty unless it is on the "left for you" list; and
+the load-time scan still matches the DOM (same names, types and options: nothing re-rendered). `required` is judged
+from the card JSON and the load-time scan, never from the DOM after a tick (3.11): a required group is on the "left
+for you" list unless a box the plan ticked is checked, whatever the browser's own validity says. A failure is a
+problem on the "left for you" list, not a silent fix.
+
+### 6.11 CAPTCHA
+
+Phase 5 6.11 and D14 A: the app never touches hCaptcha. In handoff it is entirely the student's, and it runs only
+when the student presses Submit (3.10). A challenge frame after the press waits for the student within the shared
+budget.
+
+### 6.12 Hand over and press Submit
+
+Finish in browser is Phase 5 6.13's handoff mode with these Lever facts:
+
+1. The window comes to the front with the "left for you" list, and the claim stays `claimed`. If L1 is A, the list
+   begins with "Your résumé was sent to Lever when the app attached it."
+2. The student completes what is left and presses Lever's own Submit button (`#btn-submit`). The page runs hCaptcha,
+   then clicks its hidden submit so the browser's own required-field checks run, then posts the form (3.10).
+3. The route handler recognises the submit POST by **method `POST`, the posting's own Lever host, the exact path
+   `/{site}/{job_id}/apply` (the canonical URL's path), and a `multipart/form-data` content type**. It asks the parent
+   for the hand-over (Phase 5 5.2 rule 3) **inside the handler, before `route.continue_()`**, and continues only on an
+   explicit committed True. Otherwise it aborts and the run ends `needs_you`, `after_click=0`, "The app couldn't
+   record this submission, so it stopped it. Nothing was sent. Try again."
+4. **One** such POST per attempt. A second press after the first passed is aborted. Every other non-GET to a Lever
+   host is aborted before hand-over (7), and after it.
+5. `handoff_s`, a closed window and Stop behave as in Phase 5: the browser is closed first, then the claim settles
+   `needs_you`, `after_click=0`, "You didn't submit it in the window. Your application was not sent."
+6. The agent never presses `#btn-submit` or `#hcaptchaSubmitBtn`. The static scan (section 10) fails if either
+   identifier appears in the adapter outside its denylist.
+7. **If the student attaches a résumé in the window** (always, under C), the page sends `POST /parseResume` during the
+   student's turn. The guard lets it pass if it has the exact shape of section 7. When the page's reply arrives, the
+   agent re-reads the parser's fields and tells the student, by name and never by value, which changed ("Lever filled
+   Current company and Location from the résumé you attached. Check them."), and records `student_attached_resume`
+   with the file's SHA-256 and a count. This is the student's own act and its effects are the student's to check;
+   the app does not undo them, because that would mean typing in the student's window while they are working.
+
+### 6.13 Decide the outcome
+
+The Lever rows of Phase 5 6.14's table. The window is `outcome_s` (30 s), polling every 500 ms, and page wording is
+never used. The first matching row wins.
+
+| What is seen after hand-over | Outcome |
+| --- | --- |
+| The POST to the apply URL answered 2xx or 3xx, **and** the main frame's path then equals `/{site}/{job_id}/thanks` on the same host, **and** no `form#application-form` is in the DOM | **submitted** |
+| The POST answered 4xx, with the form still present | **failed**, `after_click=1`, "Lever refused the form (HTTP {status})" and the name, never the text, of the first field the page marks invalid |
+| No POST passed the route and no main-frame navigation happened | **failed**, `after_click=0`, "Nothing that could carry the application left the window" |
+| Anything else: the POST answered 5xx or never answered, a main-frame navigation to `/thanks` without a POST, a 2xx that left the form on the page, "submitted" wording with the form still present | **unconfirmed**: "Your application may have been sent, but Lever did not show its confirmation page" |
+
+A visible hCaptcha challenge **before** a POST is not an outcome: nothing has been sent, hand-over has not happened,
+and the student is solving it. It is handled by 6.11's wait. A challenge frame after a POST is `needs_you`,
+`after_click=1`, as Phase 5 has it.
+
+What Lever answers to a successful and to a refused POST is **[unseen]** (3.12), so the first and last rows are
+written to be safe whichever it is: a redirect to `/thanks` after the POST is `submitted`, a 200 with the form
+re-rendered is `unconfirmed`, and the email watch (6.15) settles which. Open question Q1 (section 11) closes this
+with the first real handoff.
+
+### 6.14 Record the result
+
+Phase 5 6.15. The stage policy is `ask` under D1 B: on `submitted` the card asks "Lever showed its confirmation
+page. Mark as applied?" and the student's button writes the stage. The notice names the ATS.
+
+### 6.15 The confirmation watch
+
+Phase 5 6.16 with Lever's sender (`hire.lever.co`, already in `mail/data/application_senders.json`), the same
+sender-verified (DMARC) rule, and the posting matched by its UUID: `inbox._job_link` is extended to keep a
+`jobs.lever.co/{site}/{uuid}` link beside `gh_jid` (5.1). `watch.ATS_NAMES` already falls back to the title-cased key,
+so "Lever" needs no new code. A Greenhouse-only classifier, the security-code one (`mail_rules.py:181-190`), stays
+Greenhouse-only.
+
+---
+
+## 7. The request policy, Lever
+
+The phases are `checks.py`'s: `PHASE_FILL` (`before_hand_over`: the app is filling), `PHASE_STUDENT` (the window is the
+student's; it begins when the agent sends `OP_HANDOFF_READY`) and `PHASE_AFTER_HAND_OVER`. "The app's fill" below is
+the first, and "the student's turn" the second.
+
+Phase 5 4.3's routing applies, with Lever's `RoutePolicy`. Rules for every mode, in order:
+
+1. **Main-frame navigations** only to the posting's Lever host (`jobs.lever.co` or `jobs.eu.lever.co`).
+2. **WebSockets are refused**, recorded by host.
+3. **Public addresses only**, as Phase 5.
+4. **Value guard on every host.** A request whose URL, headers or body contains a planned value of 4 or more
+   characters is aborted, with exactly **three** exceptions: the hand-over POST (6.12); a GET to `/searchLocations` of
+   the field being typed, which may carry that field's text and nothing else; and the **résumé POST** below.
+
+**Hosts.** Lever hosts for documents and static assets (GET of `image`, `font`, `stylesheet`, `script`, `media`).
+`LEVER_LOOKUP_ENDPOINTS` is the one pair `{jobs.lever.co, jobs.eu.lever.co} /searchLocations`, tied to the location
+field. `CAPTCHA_ENDPOINTS` are the hCaptcha hosts (`js.hcaptcha.com`, `hcaptcha.com`, `api.hcaptcha.com`, and the
+asset and image hosts of the challenge), each an exact host and path prefix, **pinned in a fixture after a live
+recording** (the checked-in list holds only `hcaptcha.com` and `api.hcaptcha.com`, `checks.py:97-98`). Cloudflare's
+detection script is on every Lever page (3.14): its GETs, and any beacon POST under `/cdn-cgi/` on a Lever host, pass
+subject to the value guard, and an abort of one is never the turn-ending "aborted non-GET to a form host" of Phase 5's
+as-built rule (Phase 5 6.13). The exact paths are pinned after the same recording **[unseen]**. `js.hcaptcha.com` must
+be reachable by GET: on the page read, Submit does nothing without it (3.10).
+
+**Refused for every method, silently (as Greenhouse's Snowplow host is):** `googletagmanager.com`,
+`www.google-analytics.com`, and Bugsnag's host, which is `bugs.lever.co` (the page's own `bug-snag.js` tag names it). `bugs.lever.co` is a `lever.co` host, so no rule may let `lever.co` through by suffix; the policy lists exact hosts.
+
+| Mode and phase | Allowed | Aborted and recorded |
+| --- | --- | --- |
+| `handoff`, before hand-over | GET, HEAD, OPTIONS (subject to rule 4). `GET /searchLocations` for the field being typed. Non-GET to a CAPTCHA endpoint, by the method the recording saw there (`Endpoint.methods`), and to Cloudflare's challenge path (rule 4 applies, so their bodies carry no planned value); never a file (`upload_elsewhere`; Lever's `RoutePolicy.no_files_before_press`): not in the app's fill, not in the student's turn before their first press of Submit (hCaptcha asks nothing of these addresses until then), and never the planned file's own bytes in any phase. **The résumé POST** (below): once during the app's fill if L1 is A, and during the student's turn for any file the student attaches. | Every other non-GET, on any host, including every other upload, and a second résumé POST during the app's fill. |
+| `handoff`: the student's first POST to the apply URL | The handler asks the parent for the hand-over and calls `route.continue_()` only on a committed True. | The POST, on a False reply, an error, or no reply within 10 s. |
+| `handoff`, after hand-over | One POST to the apply URL per attempt. Non-GET to a CAPTCHA endpoint. GETs. | Every other non-GET. |
+
+**The résumé POST** passes only if all of these hold, each tested: during the app's fill, L1 is A and the run has not yet sent one (during the student's turn, no such
+condition); the host is
+the posting's own Lever host and the path is exactly `/parseResume`; the content type is `multipart/form-data`; the body
+has **exactly two parts**, `resume`, whose bytes, during the app's fill, equal the planned file's (checked by SHA-256 against the plan) and, during
+the student's turn, are whatever file the student chose, and
+`accountId`, which equals the value the page carries in its own hidden `accountId` field (so the app writes no value
+into it); and the URL and headers carry no planned value. The multipart body is exempt from the value guard's body check
+**only for the `resume` part**, because a résumé contains the student's name and email by design. It is recorded as
+`resume_sent_to_lever` with its SHA-256 and the page's reply status, never its body.
+
+**Navigation DNS layer.** `RESOLVABLE_HOSTS` and the Chromium resolver rule (`agent.py:299-311`) fail DNS for every host
+outside the list, independent of `route_decision`. Adding Lever means adding its hosts to that union (5.2 item 3); a test
+fails if a host in any registered `RoutePolicy` is not resolvable, and the reverse. Each run launches its own browser, so its resolver rule is built from its own ATS's names and the fonts (`ApplyAgent.run_launch_options`); the union is
+only what that test reads, and it does not widen what a Greenhouse run's browser can look up, including the requests that skip the route handler.
+
+---
+
+## 8. Bot detection and politeness
+
+Phase 5 section 8 holds. What Lever adds:
+
+- **Cloudflare sits in front of the page** (3.13) and answered a plain request to `/searchLocations` with 403 where the
+  page's own request carries its session. The app does not set a referer, copy cookies, rotate addresses or alter the
+  browser to get past that. The check route's plain GET of the apply page worked on 2026-10-04; if Cloudflare ever
+  refuses it, the answer is "Lever did not answer" (6.0 step 4), and the run, which uses a real browser window,
+  handles a challenge by waiting for the student (6.3).
+- **hCaptcha scores the session.** A Playwright-launched Chromium can be flagged even when a person clicks **[1-src,
+  Ashby]**. The app changes nothing about the browser (no user agent, timezone or locale change; Lever's page fills a
+  hidden `timezone` from the browser by itself and the app leaves it alone). Per-ATS statistics (Phase 5 R1) count
+  challenges, so a rising rate for Lever is visible.
+- **One application per attempt, the Phase 5 spacing and caps.** Lever documents no per-candidate limit **[doc]**; the
+  company limit (D4) is the app's own.
+
+---
+
+## 9. Settings, UI and sentences
+
+- **Settings.** `apply_agent_lever` (a feature registered like `apply_agent`, modes `OFF_ON` as in `automation/ledger.py`, off by default, needs `apply_agent` on) and
+  `apply_lever_resume_upload` (off by default; the L1 setting). Both are in Apply agent settings, with the wording of
+  L1 beside the second. Neither is ever on by default or turned on by an agent.
+- **Per-ATS sentences.** The about 25 student-facing sentences that say "Greenhouse" (`app-apply.js:37,381,493,873,
+  1119,1528`, `app-applications.js:46,67`, `app-automation.js:250,296,1213`, `automation/ledger.py:193`, and the server
+  strings in `preflight`, `agent`, `agent_types`, `checks`, `runs`, `runner` and `watch`) take the ATS's display name from
+  `AtsSpec`, in the LV1 seam PRs. The wording is unchanged for Greenhouse, pinned by the existing tests that name
+  `NOT_GREENHOUSE` (`test_apply_api.py`, `test_apply_handoff.py`, `test_apply_policy.py`, `test_apply_runner.py`,
+  `tests/ui/test_apply_for_me.py`).
+- **The Apply for me section** shows for a saved Lever role when both switches are on, with Finish in browser as its
+  only action. There is no rehearsal button, no "Look up options" button and no Submit.
+- **Needs you, per reason**, unchanged, plus: "Choose your current location" (the `ats_label` action for `location`), and
+  "Lever's form has a question the app doesn't read" (an unknown required control), each linking to the posting.
+- **The start confirmation** says, when L1 is A, "The app will attach your résumé. Lever reads it as soon as it is
+  attached, so it is sent to Lever before you press Submit." and the run view shows `resume_sent_to_lever`.
+- **Location labels.** The store is already per ATS (`apply_ats_labels` is keyed `(user_id, ats, field)`). Lever's
+  allowed label fields are `("location",)`; `ALLOWED_ATS_LABEL_FIELDS` becomes per ATS. The student types the label in
+  Apply agent settings, and the fill checks it against the page's own options at fill time: an exact match, or the field
+  is left. A browser "Look up options" run for Lever's location, so the student can pick from real options as they do on
+  Greenhouse, is a later milestone (12, LV5), because the endpoint answers only to a browser session (3.9).
+
+---
+
+## 10. Testing strategy
+
+Every company, site and posting in a fixture is fictional (the Phase 5 rule), and every test installs the real-data guard
+(`realdata_guard.install()`, AGENTS.md section 8 rule 12).
+
+### 10.1 Fixtures: `tests/fixtures/apply/lever/`
+
+Three pages, each **rewritten with a fictional company and fictional questions, keeping the structure and every control
+name and attribute exactly as read on 2026-10-04** (so the parser is tested against the real shape, and no third party's
+text is checked in). Each holds the `<title>`, the `form#application-form` with its inline scripts removed, and nothing
+else. `accountId` is a fixed fake UUID.
+
+| File | Modelled on | Exercises |
+| --- | --- | --- |
+| `demo_eeo_survey.html` | `leverdemo` | the full `eeo[...]` block with the disability signature and date, a `surveysResponses` survey (age range, ethnicity), `pronouns`, `urls[Other Website]`, `urls[Video Link ]` with its trailing space |
+| `cards_files_consent.html` | `rover` | a `file-upload` card ("Cover Letter:"), a required certification checkbox, an optional text card, radios, `urls[Twitter]`, `urls[Other]` |
+| `many_cards.html` | `palantir` | a 33-box required `multiple-select`, dropdowns that start with the empty-valued `Select...` placeholder the JSON does not list, two `multiple-choice` Yes/No pairs, long `textarea` cards, section headings between cards, the work-authorization and sponsorship questions |
+
+A fourth, `variants.html`, is constructed from the structures seen on the other boards: `opportunityLocationId`,
+`consent[marketing]`, `residentialLocation[...]`, a control with no name, an unnamed `select.candidate-location` beside
+survey cards, and a survey whose options carry no `optionId`. A dropdown card whose template is 600 KB with 3,000
+options is **generated by the test**, not checked in.
+
+Beside them: `thanks.html`, `closed.html` (a 404 body), `cloudflare_interstitial.html`, `parse_resume_reply.json` (a
+canned profile with a deliberately wrong `position`), `search_locations_reply.json` (the recorded shape), `search_places.json` (the places the fake offers), and `endpoints.json` (the pinned
+lookup, CAPTCHA and Cloudflare endpoints, filled from the live recording in Q3). The shared `broad_net`, `context_keys`,
+`question_keys` and `sensitive_vectors` fixtures (neutral, run by both the Python and JS suites) gain the survey and
+EEO wordings seen on the three pages.
+
+### 10.2 Pure and database tests (the default suite, no browser)
+
+- **`test_lever_form.py`:** every numbered row of 5.4, against the three fixtures: standard fields; cards and surveys by
+  `baseTemplate`; the JSON limits (oversize, non-object, 201 fields, an unknown `type`, a non-string `text`); the
+  DOM and JSON cross-check (type, `required` and option mismatches each give "unreadable"); unknown controls (required and
+  optional); page-managed fields never become schema; sections assigned (`standard`, `custom`, `demographic`); the
+  `<title>` check with a role that contains " - ".
+- **`test_lever_identify.py`:** both hosts; with and without `/apply`, `/thanks`, query and fragment; a non-uuid; a
+  site with a bad character; a `lever:%` source row; a Greenhouse URL is not identified; a company-site URL is not.
+- **`test_apply_ats_seam.py` (LV1):** old against new for `route_decision`, `decide_outcome`, `confirmation_reached`,
+  `identify` and `parse_schema` on every Greenhouse fixture and vector, from a frozen copy of the old code; the three
+  corrections (`_limit_check` by `(ats, board_token)`, `SchemaCache` key, per-run `adapter_version`); the per-ATS
+  sentences equal today's for Greenhouse.
+- **Plan truth table, Lever rows** (Phase 5 7.5 / `policy`): each row of 6.6, including that `eeo[disabilitySignature]`
+  and its date are never planned, `pronouns` is never planned, a `urls[...]` label outside the three is empty, an
+  unmatched dropdown is a problem and not the first option, and a required multiple-select ticks only the chosen boxes.
+- **Policy rows (`checks.py`):** the Lever `RoutePolicy` rows of section 7, one test per cell of the table, and one per
+  condition of the résumé POST (L1 off; second résumé POST; wrong host; wrong path; wrong content type; a third part; a
+  `resume` part whose bytes differ; an `accountId` that differs from the page's; a planned value in the URL or a
+  header). `RESOLVABLE_HOSTS` equals the union of every registered policy's hosts, and the reverse.
+- **Outcome rows:** every row of 6.13 without a browser, plus a challenge before a POST is not an outcome.
+- **Claims:** a `submit`, `one_click`, `unattended`, `rehearse` or `lookup` request for `ats='lever'` is refused with
+  `ats_mode`, in the runner and again inside the claim transaction; the company limit counts a Lever handoff and a
+  Greenhouse one for the same company key together, and a Lever site named like a Greenhouse board does not trip it.
+- **Mail:** `_job_link` keeps the Lever UUID link; a Lever confirmation from `hire.lever.co` that passes the sender rule
+  is matched to its application; the Greenhouse security-code classifier still ignores Lever mail.
+
+### 10.3 `FakeLever` and the sandbox
+
+A test server like `FakeGreenhouse` (`tests/apply_fake_ats.py:204`): the browser sees the real hostnames and a route hook
+answers them, so the adapter's host checks run as in production with no network. It serves the fixtures at
+`https://jobs.lever.co/{site}/{id}/apply` and `/thanks`; `POST /parseResume` (returning the canned profile after a short
+delay); `GET /searchLocations`; a small stand-in for `/js/parseResume.js` written to the **observed behavior** (a field is
+the user's only after `change` or `paste` and only if it holds a value; the working, success and failure indicators), not
+a copy of Lever's script; a stand-in hCaptcha script whose challenge frame can be switched on and off; and the apply
+`POST`, which per scenario answers 302 to `/thanks`, 200 with the form re-rendered, 4xx, or 5xx. A `FakeLeverPageClient`
+serves the fixtures to the preflight. `PIPELINE_SANDBOX_FAKE_APPLY=1` also seeds one Lever role, so the sandbox shows a
+Lever "what's missing" view and a canned handoff, with no window and nothing sent.
+
+**As built (LV3, `FakeLever` in `tests/apply_fake_ats.py`, self-tested by `tests/test_apply_fake_lever.py`).** The fixtures carry no scripts, so the fake adds the
+stand-ins in `tests/fixtures/apply/lever/` (`parseResume.js`, `application.js`, `hcaptcha_api.js`, `hcaptcha_frame.html`), each written from section 3 and not from
+Lever's code. The hCaptcha pieces are served from `js.hcaptcha.com`, `api.hcaptcha.com` (`/checksiteconfig` says whether the next `execute()` shows a challenge, so the
+switch works while a page is open) and `newassets.hcaptcha.com` (the challenge frame, titled "Main content of the hCaptcha challenge"); those hosts are the fake's
+own choice until Q3 pins the real ones. `execute()` sends what the real widget sends: a GET to `/checksiteconfig`, then a POST from the hidden checkbox frame to `api.hcaptcha.com/getcaptcha/{sitekey}` (and a POST to `/checkcaptcha/...` when a challenge is pressed), so a policy that blocks those POSTs leaves Submit doing nothing, as it would live (the switch `hcaptcha_posts_refused` aborts them). The widget also adds two hidden boxes named `h-captcha-response` and `g-recaptcha-response` to `#h-captcha`, inside the form, as hCaptcha documents; the page's own `h-captcha-response` input makes a second control of that name, and both are posted. The résumé reader's delay (`parse_delay_s`) is kept on the page, not in the route handler, so the browser stays free while "working" shows and a fill made then is overwritten by the reply. Every form page also calls Google Tag Manager and posts an error report to Bugsnag (3.14), unless `third_party_noise` is off. What the fake invents, because section 3 marks it unseen: the `/parseResume` reply (`parse_resume_reply.json`), the shape of
+`/searchLocations` places (`search_places.json`; the recorded shape is `search_locations_reply.json`), how a refused form marks its invalid field (`aria-invalid`) and the challenge frame's markup. Two things it cannot do
+on a route hook, so the scenarios stop short of them: a submit answered with a 302 (Playwright does not route the hop after a fulfilled redirect, so it would reach the
+real `jobs.lever.co`; "to_thanks" answers 200 with a page that moves the browser to `/thanks`), and a submit that never answers (a document POST held open freezes the
+page for Playwright). A `/parseResume` that never answers, or answers late, is fine.
+
+### 10.4 Browser tests (`browser-python`, Chromium, required in CI)
+
+Against `FakeLever`, through the real runner, child and driver:
+
+1. **Order.** With L1 on, the résumé is attached before any field is touched; the fill starts only after the parse ends;
+   the fields end up holding the student's facts, not the canned `position`.
+2. **L2 A.** A field the parser filled and the plan has no source for is cleared and read back empty, including
+   `location` and `selectedLocation` (via the blur), and appears on the "left for you" list.
+3. **L1 off.** No non-GET leaves the page before the student's turn; the résumé is on the list.
+4. **Location.** The option whose text equals the stored label is chosen, never the first; with no stored label the field
+   is left, and is never left half-typed.
+5. **Guard.** A résumé POST with other bytes, a second résumé POST, a POST to any other path, a request to a telemetry
+   host, a WebSocket, and a planned value in a GET are each aborted and recorded.
+6. **Hand-over.** The student's Submit press reaches the handler, the parent commits, and only then does the POST
+   continue; a False reply aborts it; a second press is aborted; a closed window or Stop settles `needs_you`,
+   `after_click=0`.
+7. **Outcomes.** The four rows of 6.13 against the apply `POST` scenarios.
+8. **hCaptcha.** A challenge frame during the fill makes the app wait and then continue; a challenge after the press waits
+   for the student; the app never clicks inside it.
+9. **Banner and interstitial.** The cookie banner in the fixture is never clicked (no click is recorded on it); a
+   Cloudflare interstitial makes the app wait, then continue when the form appears or settle `needs_you`.
+10. **Page-managed fields** are byte-identical before and after the fill, except `resumeStorageId` and `selectedLocation`.
+11. **The student's own attach.** During the student's turn, the page's parse POST passes and the app then names the
+    fields Lever changed; before the student's turn and after hand-over the same request is aborted.
+12. **A parse that times out** settles `needs_you` with nothing touched and the browser closed, and a reply that
+    would have arrived late changes nothing.
+13. **A page-wide checkbox relaxation:** with two required checkbox groups, ticking one leaves the other on the "left
+    for you" list, whatever the DOM's `required` says.
+14. **Keystrokes.** The location search starts only from real key events; `fill()` alone starts none, and the test
+    proves the adapter does not rely on it.
+15. **Wording.** Every `after_click=0` sentence reads "Nothing was sent" with no résumé sent and "Your application was
+    not sent. Lever received your résumé." after one.
+16. **`reads_on_attach` does not refuse the board:** a handoff on `FakeLever` starts, where the same flag set the
+    Greenhouse way (`uploads_on_attach`) would end it `HANDOFF_S3`.
+
+### 10.5 Static scans (through `tests/helpers_source.py`, a directory, never one file; rule 13)
+
+- `btn-submit` and `hcaptchaSubmitBtn` appear in `apply/` only in the adapter's denylist; no `submit` click purpose
+  exists for Lever.
+- `_click` accepts only the allowlisted purposes; `route.continue_` is called only on the hand-over path and the
+  allowed-request path.
+- No module under `apply/` builds a path from its own `__file__` (`tests/test_resource_paths.py`).
+
+### 10.6 CI and the contract tests
+
+No new route and no schema change are expected: the claim refusal reuses the existing start routes, and the new settings
+are keys. If a route or the OpenAPI document does change, it is regenerated deliberately (`UPDATE_SNAPSHOTS=1`) and said
+in the PR, never to make a refactor pass. `tests/test_layers.py` places every new module; the guards of AGENTS.md section 4
+stay as they are.
+
+### 10.7 Which milestone lands which tests
+
+| Milestone | Tests |
+| --- | --- |
+| LV1 | `test_apply_ats_seam.py`; all existing Greenhouse tests unchanged and green; layer placement |
+| LV2 | 10.2 parser, identify, plan rows, claims refusal, mail link; the Lever preflight through `FakeLeverPageClient`; UI test of the Lever "what's missing" view |
+| LV3 | 10.2 policy and résumé-POST rows; 10.3 `FakeLever`; 10.4 items 1 to 5, 8, 9, 10; 10.5 |
+| LV4 | 10.2 outcome rows; 10.4 items 6 and 7; the sandbox canned handoff; the e2e test (real runner, child and driver) |
+
+---
+
+## 11. Risks and open questions
+
+- **R1. Lever changes its markup.** The adapter carries `ADAPTER_VERSION = "lever-1"`; any change to its selectors or
+  rules bumps it. `scripts/apply_shape_check.py` (Phase 5 12.8; planned and not built yet) is built with a Lever mode, GET
+  only, that reports markers the adapter no longer finds.
+- **R2. hCaptcha challenges.** The student solves them in the window (D14 A). Per-ATS statistics count them.
+- **R3. Cloudflare refuses the check route's plain GET** at some point. The answer is "Lever did not answer", never
+  "closed" (6.0 step 4), and the one-hour cache keeps the request count low. The app does not work around it.
+- **R4. A guess left in the form.** Lever's reader fills fields from the résumé. L2 A clears the ones the app has no fact
+  for and the read-back proves it (6.7, 6.8). The risk that remains is a field the app does not know the parser fills.
+  The clear list is the parser's own field list (`parseResume.js`), recorded in the adapter and checked by the shape check.
+- **R5. Variants.** Surveys, `residentialLocation[...]` address fields, file cards and pronouns exist. Anything the parser
+  does not recognize is left for the student, never filled; a required one is a problem that blocks nothing but is listed.
+- **R6. The résumé leaves before Submit** (L1 A). Disclosed in the start confirmation, off by default, recorded.
+- **R7. Slug collisions across ATSs** (a Lever site and a Greenhouse board with one name). Fixed in the seam (5.2 item 4).
+- **R8. EU and custom hosts.** `jobs.eu.lever.co` is covered; a company's own domain that fronts Lever is not identified.
+
+**Open questions** (each answered by a recording, not by argument):
+
+- **Q1. What does Lever answer to a successful and to a refused POST?** Written for both in 6.13. The first real Finish
+  in browser records the status codes and the redirect; this file and a fixture are then updated, and the
+  `unconfirmed` row is narrowed if the answer allows.
+- **Q2. Does Lever accept a Submit whose form carries the file but no `resumeStorageId`?** Matters only for L1 B and for
+  a parse that failed (the run continues in that case, so a real Submit is the test).
+- **Q3. The exact hCaptcha and Cloudflare endpoint lists.** **Recorded at load 2026-10-08; the execute-time part is still
+  open.** Two public apply pages (the `leverdemo` board and one company board) were loaded with Chromium that aborted
+  every request but GET, and nothing was pressed. Pinned in `tests/fixtures/apply/lever/endpoints.json`. What the page
+  does by itself at load:
+  - **GET, hCaptcha:** `js.hcaptcha.com/1/api.js` and `/1/secure-api.js`; the widget's sub-frame documents
+    (`hcaptcha.html`, `hcaptcha-enclave.html`) from `newassets.hcaptcha.com/captcha/v1/...`; and four `GET /logo.png`
+    fetches, each to a different twelve-hex-digit host `<id>.w.hcaptcha.com` (pinned as a pattern).
+  - **POST, hCaptcha, at load, before anyone presses Submit:** `POST /checksiteconfig` to `api.hcaptcha.com`,
+    `api2.hcaptcha.com` and `hcaptcha.com`, about ten per page (twenty between the two pages). The recording aborted
+    them; the widget's frames still loaded. So the earlier assumption that hCaptcha posts only after Submit is wrong: the
+    policy sees these POSTs on every page, and the checked-in `CAPTCHA_ENDPOINTS` (`checks.py`) does not name
+    `api2.hcaptcha.com`. `api2.hcaptcha.com`, `api.hcaptcha.com` and `hcaptcha.com` received POSTs only, never a GET.
+    They need to resolve (7, "Navigation DNS layer") only if those POSTs are allowed; today they are deliberately
+    unresolvable, so an Allow for them answers `unlisted_host`. The GETs came from `js.hcaptcha.com` and
+    `newassets.hcaptcha.com`, and the static GETs from `jobs.lever.co`, `cdn.lever.co` and
+    `lever-client-logos.s3.amazonaws.com`: those hosts are the ones the resolver list has to cover. The shard GETs were
+    seen, but whether the widget works without them is **unknown**. Do not add a `*.w.hcaptcha.com` wildcard to the
+    resolver: `*` matches dots and any length, so a name under `w.hcaptcha.com` could carry a planned value in its labels
+    (the Greenhouse shard patterns stop at three characters, below `MIN_GUARDED_VALUE`). Before any shard pattern goes
+    into `RESOLVABLE_HOSTS`, a GET-only recording with the shards' DNS failing must show the hCaptcha frames still load
+    and `onLoad` still fires. If the shards turn out to be needed, state the residual DNS exposure (twelve characters
+    under `w.hcaptcha.com`) as an accepted risk. The widget's frames are sub-frame documents, not main-frame
+    navigations (rule 1 is not touched).
+  - **Cloudflare, on the Lever host itself:** `GET /cdn-cgi/challenge-platform/scripts/jsd/main.js` (script) and one
+    beacon `POST /cdn-cgi/challenge-platform/h/g/jsd/oneshot/<token>/<token>` (xhr) per page. No
+    `challenges.cloudflare.com` request, no interstitial.
+  - **Lever's own static hosts:** `jobs.lever.co` (`/js/*`, `/img/*`), `cdn.lever.co` (`/fonts/*`) and
+    `lever-client-logos.s3.amazonaws.com` (the company logo).
+  - **Third parties:** `www.googletagmanager.com/gtag/js` (refused, as listed above). No Bugsnag and no
+    `www.google-analytics.com` request at load. Lever's Bugsnag reports go to `bugs.lever.co` (the `data-endpoint` of
+    the `bug-snag.js` tag), so the adapter puts that exact host in `telemetry_hosts` and never allows `lever.co` by
+    suffix. **New:** the company board loaded the "Apply with LinkedIn" widget
+    (`awliV3.js` from the Lever host, then `platform.linkedin.com` and `www.linkedin.com`, with a POST to the latter);
+    it is not in the list above, and the page loaded with only the widget's POST refused (its GETs were let through), so
+    it goes into the refused hosts, for the adapter's builder to confirm. That POST is a **sub-frame document** request
+    (a form submitted into an iframe at every load), not an xhr. `student_submit_elsewhere` closes the student's turn on
+    any refused non-GET document request to a host that is not telemetry or CAPTCHA, so the adapter must put
+    `www.linkedin.com` (and `platform.linkedin.com`) in `telemetry_hosts`, or otherwise exclude them from that check;
+    otherwise a reload during the student's turn on a board with the widget ends the run as "elsewhere".
+  - No WebSocket on either page.
+  Still open: the endpoints hCaptcha uses after Submit is pressed (`getcaptcha`, `checkcaptcha` and the like), which exist
+  only at the first real handoff. Until then the run behaves as before: an unlisted non-GET is aborted and the run says
+  "The form tried to send to an address the app doesn't recognize", with nothing sent.
+- **Q4. The reply shape of `/searchLocations`** (and its option text), for the location label and its fixture.
+  **Answered 2026-10-08.** On both pages, typing a generic city name with real key presses made the page's own
+  `GET /searchLocations?text=...` (one query parameter, `text`) and it answered 200,
+  `application/json; charset=utf-8`, a JSON array of four objects, each `{"name": <string>, "id": <string>}`: a place
+  label of the form "city, state or region, country" and a 40-character hexadecimal id. No other keys. The page shows
+  the `name` and, on choice, writes the chosen object into `selectedLocation` (3.9). The app types the student's own
+  city and chooses by `name`. Fictional copy with the same shape: `tests/fixtures/apply/lever/search_locations_reply.json`.
+  An empty answer for text with no match was not tried.
+- **Q5. Does any Lever board show an emailed code?** None of six did. If one does, the run stops (6.9).
+
+---
+
+## 12. Milestones
+
+Each is one PR (or two where marked), off by default, with its `SETUP.md` change, and passes the full CI gate: unit, UI,
+extension, extension-browser, `browser-python`, fuzz, postgres, secrets. **No milestone presses Submit**, and none needs a
+change to AGENTS.md "Never auto-apply".
+
+| # | PR | Contents | Done when |
+| --- | --- | --- | --- |
+| LV0 | Decisions | The student answers L1 and L2; this file is updated with the answers. No code. | Done 2026-10-07: L1 A, L2 A (section 4). |
+| LV1a | The seam, part 1 (refactor only) | `apply/ats.py` (`AtsSpec`, registry), the `AtsAdapter` Protocol, `AgentJob.ats`, the factory argument. Greenhouse is the only registered ATS. | All existing tests green unchanged; `test_apply_ats_seam.py` parity rows green. |
+| LV1b | The seam, part 2 | `RoutePolicy` and the per-ATS `route_decision`, `decide_outcome`, `confirmation_reached`; the `RESOLVABLE_HOSTS` union; the per-ATS branches in `ApplyAgent._run` and the `uploads_on_attach` split (5.2 item 2); per-ATS sentences. **The three corrections of 5.2 item 4 land as separate commits**, each with a test that failed first. | Parity green; the three corrections' tests green; wording for Greenhouse unchanged. |
+| LV2 | Lever, read-only | `apply/lever.py`, `apply/lever_form.py`, `LeverPageClient`, the three fixtures, the `apply_agent_lever` switch, the Lever check route answer, `ats_mode` refusal, per-ATS label fields, the sandbox Lever role, `_job_link` for UUIDs. No browser. | 10.7 LV2 row green; for any saved Lever role the student sees what is missing, and the tracker is unchanged. |
+| LV3 | Lever driver | `apply/lever_adapter.py`, the Lever `RoutePolicy`, the résumé flow (L1, L2), EEO and consent rules, `FakeLever`, the load-time recording of Q3 and the reply shape of Q4, both from a browser page load with GETs only, pinned in `endpoints.json`. Reachable only in tests and the sandbox. | 10.7 LV3 row green; the load-time part of Q3 and Q4 recorded. |
+| LV4 | Finish in browser on Lever | Hand-over interception on the apply POST, the outcome table, record, the watch, the `SETUP.md` step (the two switches, L1's wording), `docs/assisted-apply.md` and the Threat model row in `docs/THREAT_MODEL.md` for the résumé POST. | 10.7 LV4 row green; the e2e test green; `portability` workflow dispatched and green (this change touches processes). |
+| LV5 | Look up options for Lever's location (optional) | A browser lookup run for the `location` label, so the student picks from the page's own options. | The label store fills from a real option list in the sandbox. |
+
+**As built (LV4).** `adapter_built` is True for Lever and `agent.ADAPTERS` holds `LeverAdapter`; the check offers Finish in browser as Lever's one action when
+`apply_agent` and `apply_agent_lever` are on, and the start routes refuse any other mode with `ats_mode` (`ats_not_built` stays for an ATS whose driver is
+not connected). The hand-over interception, the outcome table and the record are the shared handoff code, run with Lever's `RoutePolicy`
+(`agent._hand_over_and_continue`, `checks.lever_outcome`, `runner.handoff_settlement`); the watch reads Lever's sender through `AtsSpec`.
+Where the build differs from, or adds to, the text above:
+
+- **The student's own attach (6.12 step 7, 10.4 item 11).** The agent's press listener (an isolated world the page cannot reach) also reports a *trusted*
+  `change` in the résumé box of `form#application-form` (`file`), and only for a file within the page's own limit (100 MB: the page sends nothing for a
+  larger one). A file chosen in another file box of the form (a cover letter card, which Lever's page does not read) is not reported, and nor is one the
+  page will refuse as too big, so neither leaves an allowance behind. A reported choice raises `RouteState.student_files_chosen`, which is what lets one
+  `/parseResume` through in the student's turn (`resume_post_decision`); each choice is good for one read and for `STUDENT_FILE_WINDOW_S` (10 seconds), after
+  which the agent forgets it. The request can be judged before the report arrives, so a refusal for "unasked" waits `PRESS_GRACE_S` for it, as a code POST
+  does for a press. The hash cannot come from the request (the bytes of a file picked from the disk are sent by the browser itself and the route sees an empty `resume`
+  part), so the listener numbers each choice (`file:<n>`) and sends the file's SHA-256 with the same number (`sha:<n>:<hex>`); a read that passes uses up
+  the oldest choice still open, and the record names that choice's hash, never a guess (empty when it has not arrived). After the page applies its answer (the "working" sign gone and the reply seen), the agent compares the reader's fields with what
+  they held at the last look before the read (`parser_values`) and says, by question, which changed: progress steps `resume_attached` (the file went; the
+  parent records `student_attached_resume` at once, so a stop or a restart afterwards reads "Lever received your résumé") and `resume_changed` (the
+  sentence, a student's-turn phase). The same fields join the "left for you" list in the final evidence. A field the student typed in the same quarter
+  second as the read is named too (the sentence says "check"; listed in `docs/known-defects.md`). `resume_sent_to_lever` stays the app's own attach only.
+- **The ready message** carries `resume_sent_to_lever`, so a run that ends with no result after the window is ready still says Lever holds the file.
+- **The second plan** the runner builds once the page is read now carries the student's L1 choice (it did not: a run with the setting on would have left the
+  résumé for the student). Fixed in a commit of its own, with the test that failed first.
+- **The field a refusal names (6.13 row 2)** is the first control the page marked `aria-invalid`; the browser's own `:invalid` on an empty required box
+  is used only when the page marked none (after a refusal Lever draws its form again, empty).
+- **Row 3 of 6.13 after a hand-over.** Once the parent has committed and the POST was continued, "nothing left the window" is never said: the agent turns
+  it into `unconfirmed`, as it does for Greenhouse. The row is reachable only as the pure table (`tests/test_apply_lever_outcome.py`).
+- **The "form tried to send somewhere" notice works on Lever.** The press listener is built per run from the adapter's `press_selector` (`#btn-submit,
+  #hcaptchaSubmitBtn`, built from the denylist), so `RouteState.last_press_at` is set on a Lever run and a refused send after the press tells the student
+  mid-turn (`form_elsewhere`), as on Greenhouse (`PressNoticeTests` in `test_apply_lever_handoff_browser.py`).
+- **Tests.** 10.2 outcome rows (`test_apply_lever_outcome.py`, wired by `test_apply_lever_handoff_browser.py`); 10.4 items 6, 7, 11, 14 and 15 in
+  `test_apply_lever_handoff_browser.py` (items 12, 13 and 16 are in `test_apply_lever_browser.py`; LV4's own item 13 test was dropped when LV3's, on the fixture with the statement box, covered the same rule); the e2e through the real runner and a spawned
+  child in `test_apply_lever_handoff_e2e.py`; the runner's side of the student's attach in `test_apply_lever_student_attach.py`; the sandbox's canned
+  handoff and the screens in `tests/ui/test_apply_lever_handoff.py`.
+
+**Rollout checklist** (after merge, in the student's own app; not a PR condition):
+
+- after LV2: open three saved Lever roles and confirm the "what's missing" lists look right and the tracker did not change;
+- after LV4: the first Finish in browser at a Lever posting the student actually wants, watched end to end including the
+  email and the hCaptcha, with `apply_lever_resume_upload` on or off as chosen. It answers Q1 and Q2; this file and a
+  fixture are updated from what was seen before a second one is run.
+
+**Deploying** follows PLAN.md:128-131 and the memory note `restart-web-dashboard`: back up `data/platform.db` first, fast-forward
+live main, restart the server by process id. No migration is part of this plan.
+
+---
+
+## Appendix A. Ashby: what carries over, and what is still open
+
+Ashby is not designed here. It needs its own spec after LV4 has run on a real posting. What the Lever work gives it, and
+what it does not:
+
+**Carries over:** the seam (`AtsSpec`, `AtsAdapter`, `RoutePolicy`, per-ATS sentences), the classifier and sensitive store,
+the claims, limits and watch (`ashbyhq.com` is already in `application_senders.json`), and the handoff structure.
+
+**Different, and not yet decided:**
+
+1. **Autosave.** Ashby's fields autosave as they are filled **[1-src]**, so filling a form sends partial data to the employer
+   before Submit. The student must decide first whether Finish in browser may fill at all on Ashby: with a disclosure at
+   every start, only fields the student types, or not at all. Nothing in the Lever work answers this.
+2. **No read-only check without a browser, unless a fragile source is accepted.** The posting API gives the job, not the
+   form. The other project reads the form from an unauthenticated GraphQL endpoint (`ApiJobPosting`) whose introspection is
+   disabled; it is undocumented and could change. The alternative is to scan the DOM, which needs a browser.
+3. **Hydration and binding quirks [1-src]:** text typed before hydration finishes is wiped; a Yes/No pair is one checkbox that
+   does not bind on its first touch; radio groups sit outside the field container; an upload reflows the page and can wipe
+   typed values; a short answer can truncate silently at `maxLength`. Each needs a read-back rule and a fixture.
+4. **A puzzle question is always `needs_you`**, and a "please don't use AI" essay is a hard stop (Phase 5 7.4).
+5. **Per-candidate application limits** (the other project's table lists OpenAI, Mercor, Cognition and others, **[1-src]**) show
+   as a banner on the form. A banner reading is a `needs_you` rule, not a fill.
+6. **Boards embedded on a company's own site**, where the posting API is live and the public page is not, and the form may be
+   cross-origin.
+
+---
+
+## Appendix B. Files touched
+
+New: `docs/phase5-lever-handoff-spec.md` (this file); `opportunity_app/apply/ats.py`, `lever.py`, `lever_form.py`,
+`lever_adapter.py`; `tests/test_lever_form.py`, `test_lever_identify.py`, `test_apply_ats_seam.py`, `test_apply_lever_*.py`;
+`tests/fixtures/apply/lever/`; `FakeLever` in `tests/apply_fake_ats.py`.
+
+Changed: `opportunity_app/apply/agent.py` (adapter Protocol, factory, host union), `agent_types.py` (`AgentJob.ats`, sentences),
+`checks.py` (`RoutePolicy`), `schema_client.py` (the Lever page client), `preflight.py` (identify and parse by ATS, sentences,
+cache key), `policy.py` (`ALLOWED_ATS_LABEL_FIELDS` per ATS, `sources_for`), `runner.py` (ATS, adapter version, refusal),
+`runs.py` (`_limit_check`, sentences), `watch.py` (sentences), `applications/inbox.py` (`_job_link`), the Apply for me static
+scripts and Apply agent settings (the two switches and the wording), `docs/phase5-apply-agent-spec.md` (the "Later" row points
+here), `docs/assisted-apply.md`, `docs/THREAT_MODEL.md`, `SETUP.md`, `tests/test_layers.py`.
+
+Not changed: any migration, `pipeline_core/` (dependency-free, and not involved), the browser extension, `runner_child.py`,
+`claims.py`, `sessions.py`.

@@ -38,6 +38,7 @@ class RegistryTests(unittest.TestCase):
             "auto_follow_up_drafts": "outreach", "decline_thank_you": "outreach",
             "jev_inbox_suggestions": "applications", "application_mail": "applications", "resume_variant_pick": "applications",
             "application_silence": "applications", "archive_silent_applications": "applications", "apply_agent": "applications",
+            "apply_agent_lever": "applications", "apply_lever_resume_upload": "applications",
             "auto_save": "discovery", "auto_pass": "discovery",
             "desktop_notifications": "notifications",
         })

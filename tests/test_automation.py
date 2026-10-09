@@ -35,12 +35,12 @@ from opportunity_app.core.schema import ensure_product_schema
 from opportunity_app.core.database import connect_product, has_column
 from opportunity_app.core.timestamps import utc_now
 
-from helpers_platform import build_and_migrate
+from helpers_platform import as_of_today, build_and_migrate
 
 USER = "local-user"
 MIGRATIONS = Path(__file__).resolve().parent.parent / "migrations"
 LEGACY_OUTREACH_SETTINGS = {
-    "auto_drafts": "Write a draft for every company with a contact and a location",
+    "auto_drafts": "Write a draft for every company not yet contacted",
     "bounce_recovery": "After a bounce, find another contact and fix the greeting",
     "bounce_auto_resend": "After a bounce, send the approved email again to the new contact when only the greeting changed",
     "scheduled_sending": "Send approved emails on the recipient's next weekday morning",
@@ -171,7 +171,8 @@ class RegistryTests(AutomationCase):
             feature = automation.FEATURES[key]
             self.assertEqual((feature.group, feature.modes), ("outreach", ("off", "on")))
         self.assertEqual({key for key, f in automation.FEATURES.items() if f.risk == "external"},
-                         {"scheduled_sending", "bounce_auto_resend", "form_submission", "decline_thank_you", "apply_agent"})
+                         {"scheduled_sending", "bounce_auto_resend", "form_submission", "decline_thank_you", "apply_agent",
+                          "apply_agent_lever", "apply_lever_resume_upload"})
         self.assertEqual(automation.FEATURES["jev_inbox_suggestions"].group, "applications")
         self.assertEqual(automation.FEATURES["desktop_notifications"].group, "notifications")
         with self.assertRaises(ValueError):
@@ -658,7 +659,9 @@ class ActionsTests(AutomationCase):
 
     def test_an_earlier_applied_date_wins_and_a_later_one_is_ignored(self):
         stored = self.stage("app-job-b")[1]
-        update_application(self.conn, "app-job-b", stage="interview", applied_at="2026-08-20T00:00:00Z", user_id=USER)
+        # Later than the fixture's applied date, which helpers_platform moves with today, so this date moves with it.
+        later = as_of_today("2026-08-20T00:00:00+00:00")
+        update_application(self.conn, "app-job-b", stage="interview", applied_at=later, user_id=USER)
         self.assertEqual(self.stage("app-job-b"), ("interview", stored), "a later date does not replace an earlier one")
         update_application(self.conn, "app-job-b", applied_at="2026-08-01T10:00:00-05:00", user_id=USER)
         self.assertEqual(self.stage("app-job-b")[1], "2026-08-01T15:00:00.000000+00:00")

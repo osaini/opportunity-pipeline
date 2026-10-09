@@ -65,6 +65,8 @@ class ApplicationExportImportTests(HandlerMoveTestCase):
         self.assertEqual((imported.json()["imported"], imported.json()["skipped"]), (2, 0))
 
         listed = self.client.get("/api/v1/applications", headers=AUTH).json()["items"]
+        # The list also says what Apply for me did for each card (10.5); the export is the tracker's own columns only.
+        self.assertTrue(all(item.pop("apply") is None for item in listed))
         as_json = self.client.get("/api/v1/applications/export", headers=AUTH, params={"format": "json"})
         self.assertEqual(as_json.headers["content-type"], "application/json")
         self.assertEqual(as_json.headers["content-disposition"], 'attachment; filename="applications.json"')

@@ -213,7 +213,9 @@ class EeoTests(StoreCase):
 
     def test_the_decline_list_matches_the_whole_label_only(self):
         for label in ("Decline To Self Identify", "decline to self-identify", "I decline to self-identify", "I don't wish to answer",
-                      "I DO NOT WISH TO ANSWER", "I do not want to answer", "Prefer not to say", "I prefer not to answer"):
+                      "I DO NOT WISH TO ANSWER", "I do not want to answer", "Prefer not to say", "I prefer not to answer",
+                      # Lever's veteran question words its decline this way (docs/phase5-lever-handoff-spec.md 6.6).
+                      "I decline to self-identify for protected veteran status", "Decline to self-identify for protected veteran status"):
             self.assertTrue(apply_sensitive.is_decline(label), label)
         for label in ("", "Yes", "Male", "Decline", "I decline to self-identify as a veteran", "I do not wish to answer, I am a veteran",
                       "Not a veteran", "I don't know", None):

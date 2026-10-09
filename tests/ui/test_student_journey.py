@@ -13,11 +13,13 @@ job-b "Orbit Systems" arrives unsaved.
 from __future__ import annotations
 
 import re
+from datetime import date
 
 import pytest
 from playwright.sync_api import expect
 
 from conftest import sign_in_as_owner, wait_for_results
+from helpers_platform import as_of_today
 
 SAVED_COMPANY = "Acme Robotics"
 UNSAVED_COMPANY = "Orbit Systems"
@@ -375,6 +377,25 @@ def test_a_server_error_is_shown_as_itself_and_never_queued(owner_page):
     assert _outbox_entries(owner_page) == {}
 
 
+def test_an_error_raised_while_scrolled_down_floats_into_view(owner_page):
+    owner_page.evaluate("document.body.style.minHeight = '4000px'; window.scrollTo(0, 2000)")
+    owner_page.evaluate("window.OpportunityApp.showError('Scrolled away failure')")
+    banner = owner_page.locator("#error-banner")
+    expect(banner).to_have_class(re.compile(r"\bis-floating\b"))
+    expect(banner).to_be_in_viewport()
+    expect(owner_page.locator("body")).to_have_class(re.compile(r"\berror-flash\b"))
+
+    banner.click()
+    expect(banner).to_be_hidden()
+
+
+def test_an_error_raised_at_the_top_stays_in_place(owner_page):
+    owner_page.evaluate("window.scrollTo(0, 0); window.OpportunityApp.showError('Top failure')")
+    banner = owner_page.locator("#error-banner")
+    expect(banner).to_be_visible()
+    expect(banner).not_to_have_class(re.compile(r"\bis-floating\b"))
+
+
 @pytest.mark.allow_page_errors
 def test_an_offline_action_is_queued_for_this_user_and_synced_on_return(owner_page):
     owner_page.route(ACTIONS_ROUTE, lambda route: route.abort())
@@ -421,8 +442,10 @@ def test_an_expired_session_hides_the_previous_workspace(owner_page):
 
 
 def test_deadlines_keep_their_calendar_day_west_of_utc(browser, base_url):
-    """Acme's posting says "Apply by September 1"; UTC midnight read as an
-    instant in Chicago used to render as Aug 31."""
+    """Acme's posting says "Apply by September 1" (moved with today: helpers_platform.FIXTURE_AS_OF); UTC midnight
+    read as an instant in Chicago used to render as the day before."""
+    deadline = date.fromisoformat(as_of_today("2026-09-01"))
+    shown = f"{deadline:%b} {deadline.day}, {deadline.year}"
     context = browser.new_context(base_url=base_url, timezone_id="America/Chicago")
     try:
         page = context.new_page()
@@ -431,9 +454,9 @@ def test_deadlines_keep_their_calendar_day_west_of_utc(browser, base_url):
         wait_for_results(page)
         page.click("#saved-nav")
         card = _card_for(page, SAVED_COMPANY)
-        expect(card).to_contain_text("Deadline passed · Sep 1, 2026")
+        expect(card).to_contain_text(f"Deadline passed · {shown}")
         card.locator(".card-button").click()
-        expect(page.locator("#detail-panel")).to_contain_text("Sep 1, 2026 (passed)")
+        expect(page.locator("#detail-panel")).to_contain_text(f"{shown} (passed)")
     finally:
         context.close()
 

@@ -390,6 +390,19 @@ class MatchTests(MailCase):
         found = self.match(raw)
         self.assertEqual((found.tier, found.application_id), ("job_id", self.acme))
 
+    def test_a_lever_confirmation_from_hire_lever_co_matches_its_application_by_the_posting_uuid(self):
+        # The saved role's address is the application page of a Lever posting; the email links to the posting itself, with tracking after it.
+        posting = "6f1d2c3b-4a59-4687-8c7d-9e0f1a2b3c4d"
+        with self.conn:
+            self.conn.execute("UPDATE opportunities SET url=? WHERE id='job-a'", (f"https://jobs.lever.co/acmerobotics/{posting}/apply",))
+        raw = job_mail(sender="Acme Robotics <no-reply@hire.lever.co>", subject="Your application",
+                       body=f"Thanks! The posting: https://jobs.lever.co/acmerobotics/{posting}?lever-source=abc")
+        found = self.match(raw)
+        self.assertEqual((found.tier, found.application_id), ("job_id", self.acme))
+        elsewhere = job_mail(sender="Acme Robotics <no-reply@hire.lever.co>", subject="Your application",
+                             body="Thanks! The posting: https://jobs.lever.co/acmerobotics/aaaaaaaa-4a59-4687-8c7d-9e0f1a2b3c4d?lever-source=abc")
+        self.assertNotEqual(self.match(elsewhere).tier, "job_id", "another posting's uuid is not this application")
+
     def test_company_and_role_match(self):
         found = self.match(acme_confirmation())
         self.assertEqual((found.tier, found.application_id), ("company_title", self.acme))
@@ -460,6 +473,30 @@ class LiveMailTests(MailCase):
         self.assertEqual(self.message_row("m-1")["state"], "done")
         timeline = self.conn.execute("SELECT detail_json FROM application_events WHERE application_id=? AND event_type='stage_changed'", (self.acme,)).fetchall()
         self.assertEqual(json.loads(timeline[-1]["detail_json"])["source"], f"automation:{action['id']}")
+
+    def test_a_verified_sender_is_recorded_as_verified(self):
+        self.started()
+        self.deliver("m-v", acme_confirmation())
+        self.pass_once()
+        row = self.message_row("m-v")
+        self.assertEqual((row["state"], row["kind"], row["sender_verified"]), ("done", "application_confirmation", 1))
+
+    def test_a_forged_sender_is_recorded_as_unverified(self):
+        self.started()
+        self.deliver("m-f", acme_confirmation(headers=""))
+        self.pass_once()
+        row = self.message_row("m-f")
+        self.assertEqual((row["kind"], row["sender_verified"]), ("application_confirmation", 0), "no Gmail sender check, no vouching")
+
+    def test_a_message_read_while_paused_keeps_its_sender_check(self):
+        self.started()
+        automation.set_paused(self.conn, USER, True)
+        self.deliver("m-p1", acme_confirmation())
+        self.pass_once()
+        self.assertEqual(tuple(self.message_row("m-p1")[key] for key in ("state", "sender_verified")), ("awaiting_resume", 1))
+        automation.set_paused(self.conn, USER, False)
+        self.pass_once()
+        self.assertEqual(tuple(self.message_row("m-p1")[key] for key in ("state", "sender_verified")), ("done", 1))
 
     def test_one_email_makes_a_stage_change_and_a_task_each_exactly_once(self):
         self.started()
@@ -700,6 +737,16 @@ class LiveMailTests(MailCase):
         self.assertEqual(draft["source_url"], "https://jobs.ashbyhq.com/nimbus/2f1c3e4a-1111-4222-8333-944455556666")
         with self.assertRaisesRegex(ValueError, "can't be undone"):
             automation.undo(self.conn, proposal["id"], USER)
+
+    def test_a_lever_posting_link_is_kept_for_the_capture_form_without_its_tracking(self):
+        self.started()
+        posting = "6f1d2c3b-4a59-4687-8c7d-9e0f1a2b3c4d"
+        self.deliver("m-17l", job_mail(sender="Harbor Demo Labs <no-reply@hire.lever.co>", subject="Thank you for applying to Harbor Demo Labs",
+                                       body=f"Thanks for applying to Harbor Demo Labs for the Customer Success Lead position. https://jobs.lever.co/harbordemo/{posting}?lever-source=x"))
+        self.pass_once()
+        [proposal] = self.actions()
+        self.assertEqual(proposal["action_type"], "application.capture_proposal")
+        self.assertEqual(proposal["after"]["capture"]["url"], f"https://jobs.lever.co/harbordemo/{posting}")
 
     def test_a_hedged_rejection_only_proposes(self):
         self.started()
@@ -1461,6 +1508,66 @@ class ReviewFixMailTests(MailCase):
         self.assertEqual(self.message_row("m-110")["state"], "done")
         self.assertEqual(self.stage(self.acme)[0], "applied")
 
+    def age(self, gmail_id, **delta):
+        """Let time pass for a set-aside message: its two stamps move back together, as if the pass that set it aside were that much older."""
+        row = self.message_row(gmail_id)
+        stamps = [(parse_app_instant(row[column]) - timedelta(**delta)).isoformat(timespec="microseconds") for column in ("received_at", "recorded_at")]
+        with self.conn:
+            self.conn.execute("UPDATE application_mail_messages SET received_at=?, recorded_at=? WHERE user_id=? AND gmail_id=?", (*stamps, USER, gmail_id))
+
+    def test_a_message_that_could_not_be_decided_is_read_again_after_a_growing_wait_until_it_is_mended(self):
+        self.started()
+        self.deliver("m-111", acme_confirmation())
+        real = automation.perform
+        failing = {"on": True, "calls": 0}
+
+        def broken(*args, **kwargs):
+            failing["calls"] += 1
+            if failing["on"]:
+                raise ValueError("this email made the decision fail")
+            return real(*args, **kwargs)
+
+        with mock.patch.object(application_inbox.automation, "perform", side_effect=broken):
+            self.assertEqual(self.pass_once()["state"], "message_errors")
+            self.assertEqual(self.message_row("m-111")["state"], "error")
+            calls = failing["calls"]
+            self.assertEqual(self.pass_once()["state"], "ok")
+            self.assertEqual(failing["calls"], calls, "too soon: the first wait is half an hour")
+            # After the wait it is read again; still failing, it stays set aside, and the next wait is as long as the time since the first failure.
+            self.age("m-111", minutes=40)
+            self.assertEqual(self.pass_once()["state"], "message_errors")
+            self.assertGreater(failing["calls"], calls)
+            self.assertEqual(self.message_row("m-111")["state"], "error")
+            calls = failing["calls"]
+            self.assertEqual(self.pass_once()["state"], "ok")
+            self.assertEqual(failing["calls"], calls, "the second wait is longer")
+            self.age("m-111", minutes=41)
+            failing["on"] = False
+            self.assertEqual(self.pass_once()["state"], "ok")
+        row = self.message_row("m-111")
+        self.assertEqual((row["state"], row["kind"]), ("done", "application_confirmation"))
+        self.assertEqual(self.stage(self.acme)[0], "applied")
+        self.assertIn("Acme", row["subject"], "what reading it found is recorded on the same row")
+
+    def test_a_message_that_keeps_failing_is_given_up_after_14_days(self):
+        self.started()
+        self.deliver("m-112", acme_confirmation())
+        calls = []
+
+        def broken(*args, **kwargs):
+            calls.append(1)
+            raise ValueError("this email made the decision fail")
+
+        with mock.patch.object(application_inbox.automation, "perform", side_effect=broken):
+            self.pass_once()
+            tries = len(calls)
+            self.age("m-112", days=15)
+            self.pass_once()
+        self.assertEqual(len(calls), tries, "after 14 days it is no longer tried")
+        self.assertEqual(self.message_row("m-112")["state"], "error")
+        self.assertTrue(self.message_row("m-112")["sender_domain"], "the sender was read before the decision failed, so the row says who it was from")
+        self.assertEqual(self.message_row("m-112")["matched_by"], "company_title", "and which application it named, so the watch can tell whether it could be a confirmation")
+
     def test_the_first_look_back_reaches_past_when_the_live_cursor_was_taken(self):
         self.switch("on", since=now_utc() - timedelta(hours=1))
         before_call = int(datetime.now(timezone.utc).timestamp())
@@ -1655,6 +1762,42 @@ class JevTests(MailCase):
         self.assertEqual(self.stage(self.orbit)[0], "applied")
         event = self.conn.execute("SELECT event_type, status FROM monitored_events WHERE external_id='gmail:m-160'").fetchone()
         self.assertEqual(tuple(event), ("rejected", "pending"))
+
+    def test_greenhouses_security_code_email_never_reaches_jev_and_leaves_no_code_behind(self):
+        """Spec R4: the code email waits for a code, so no model is asked and nothing is stored or proposed from it."""
+        from helpers_outreach import FakeJev
+
+        code = "X7KQ2M9P"
+        raw = job_mail(
+            subject="Security code for your application to Acme Robotics",
+            body=f"Hi Sam,\n\nThank you for applying to Acme Robotics. To complete your application, enter this security code: {code}.",
+        )
+        jev = FakeJev("application_confirmation", 0.99)
+        self.started()
+        self.deliver("m-code", raw)
+        self.pass_once(decisions=jev)
+        self.assertEqual(jev.calls, [], "the email, one-time code and all, is not sent to TypeSafe")
+        row = self.message_row("m-code")
+        self.assertEqual((row["state"], row["kind"]), ("done", "unknown"), "never an application confirmation, whatever Jev would say")
+        self.assertEqual(self.actions(action_type="application.stage"), [])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM monitored_events WHERE external_id='gmail:m-code'").fetchone()[0], 0)
+        everything = []
+        for (name,) in self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+            everything += [str(value) for found in self.conn.execute(f'SELECT * FROM "{name}"').fetchall() for value in tuple(found)]
+        self.assertNotIn(code, "\n".join(everything), "the code is in no table")
+
+    def test_a_security_code_subject_from_anyone_else_is_classified_as_usual(self):
+        """The rule is Greenhouse's own wording from Greenhouse's own senders, not every email that says "security code"."""
+        from helpers_outreach import FakeJev
+
+        invite = orbit_mail("Interview invitation: Security Code Analyst at Orbit Systems",
+                            "Hi Sam,\n\nWe'd like to invite you to interview for the Security Code Analyst role at Orbit Systems.")
+        jev = FakeJev("interview", 0.9)
+        self.started()
+        self.deliver("m-sc", invite)
+        self.pass_once(decisions=jev)
+        self.assertEqual(len(jev.calls), 1, "asked as usual")
+        self.assertEqual(self.message_row("m-sc")["kind"], "interview")
 
     def test_jev_disagreeing_with_an_actionable_label_proposes(self):
         invite = orbit_mail("Interview invitation: Orbit Systems", "Hi Sam,\n\nWe'd like to invite you to interview for the Controls Co-op role at Orbit Systems.")

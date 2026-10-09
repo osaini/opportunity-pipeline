@@ -108,7 +108,10 @@
     }
     if (!changed && state.view !== "outreach") return;
     state.offset = 0;
-    if (state.view === "outreach") state.outreachKeep.clear();
+    if (state.view === "outreach") {
+      state.outreachKeep.clear();
+      state.outreachRailPicked = true;
+    }
     loadCurrentView();
     window.scrollTo?.({ top: 0 });
   }

@@ -4,9 +4,10 @@ import json
 import sys
 import tempfile
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from unittest import mock
+from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -18,7 +19,10 @@ from opportunity_app.api import create_app
 from opportunity_app.outreach.targets import create_target, get_target, list_targets
 from opportunity_app.outreach.contacts import apply_candidate, crawl_site, discover_candidates, find_contacts
 from opportunity_app.integrations.web_fetch import SafeFetcher
-from opportunity_app.outreach.discovery import DiscoveryBusy, DiscoveryManager, _RunLock, _scope_brief, last_runs, run_discovery, scope_definitions, validate_proposals
+from opportunity_app.outreach.discovery import (
+    DiscoveryBusy, DiscoveryManager, _RunLock, _scope_brief, last_runs, latest_scheduled_slot, run_discovery, scope_definitions,
+    validate_proposals,
+)
 from opportunity_app.core.schema import ensure_product_schema
 from opportunity_app.core.database import connect_product
 
@@ -508,6 +512,69 @@ class DiscoveryTests(unittest.TestCase):
                                 now=datetime.now(timezone.utc))
         self.assertTrue(skipped["skipped"])
 
+    # --- The catch-up when the computer is opened (due_since): run only when a Monday or Thursday slot is owed -------------
+    SLOT = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)  # Monday 7:00 in Chicago
+    MONDAY_MORNING = datetime(2026, 10, 5, 15, 0, tzinfo=timezone.utc)
+
+    def seed_run(self, status, started_at, trigger="scheduled"):
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO outreach_discovery_runs(id, user_id, run_trigger, status, scopes_json, started_at) VALUES(?, ?, ?, ?, '[]', ?)",
+                (f"seeded-{uuid4().hex}", USER, trigger, status, started_at.isoformat()),
+            )
+
+    def catch_up(self, now=None, **kwargs):
+        return self.run_with(proposals(), trigger="scheduled", due_since=self.SLOT, now=now or self.MONDAY_MORNING, **kwargs)
+
+    def run_count(self):
+        return self.conn.execute("SELECT COUNT(*) FROM outreach_discovery_runs").fetchone()[0]
+
+    def test_a_catch_up_runs_when_the_slot_has_no_run_even_if_one_succeeded_a_few_days_ago(self):
+        self.seed_run("succeeded", self.SLOT - timedelta(hours=60))
+        result = self.catch_up()
+        self.assertNotIn("skipped", result)
+        self.assertEqual(self.run_count(), 2)
+
+    def test_a_catch_up_is_skipped_once_the_slot_has_a_successful_run(self):
+        self.seed_run("succeeded", self.SLOT + timedelta(minutes=30))
+        self.assertTrue(self.catch_up()["skipped"])
+        self.assertEqual(self.run_count(), 1)
+
+    def test_a_manual_run_since_the_slot_settles_it_too(self):
+        self.seed_run("succeeded", self.SLOT + timedelta(minutes=45), trigger="manual")
+        self.assertTrue(self.catch_up()["skipped"])
+
+    def test_signing_in_midweek_after_the_slots_run_does_not_search_again(self):
+        # Wednesday, 52 hours after Monday's run: the 48 hour rule alone would search again on this sign-in.
+        self.seed_run("succeeded", self.SLOT + timedelta(minutes=30))
+        wednesday = self.SLOT + timedelta(hours=52)
+        self.assertTrue(self.catch_up(now=wednesday)["skipped"])
+        self.assertEqual(self.run_count(), 1)
+
+    def test_a_failed_catch_up_is_not_retried_at_every_unlock_but_is_after_a_few_hours(self):
+        self.seed_run("failed", self.MONDAY_MORNING - timedelta(hours=1))
+        self.assertTrue(self.catch_up()["skipped"])
+        self.assertEqual(self.run_count(), 1)
+        self.seed_run("failed", self.MONDAY_MORNING - timedelta(hours=4))
+        later = self.MONDAY_MORNING + timedelta(hours=3, minutes=30)
+        self.assertNotIn("skipped", self.catch_up(now=later))
+
+    def test_a_run_still_marked_running_blocks_a_catch_up_only_while_it_could_be_alive(self):
+        self.seed_run("running", self.MONDAY_MORNING - timedelta(minutes=30))
+        self.assertTrue(self.catch_up()["skipped"])
+        with self.conn:
+            self.conn.execute("DELETE FROM outreach_discovery_runs")
+        self.seed_run("running", self.MONDAY_MORNING - timedelta(hours=5))
+        self.assertNotIn("skipped", self.catch_up())
+
+    def test_a_dry_run_ignores_the_catch_up_rule(self):
+        self.seed_run("succeeded", self.SLOT + timedelta(minutes=30))
+        self.assertNotIn("skipped", self.run_with(proposals(), trigger="scheduled", due_since=self.SLOT, dry_run=True))
+
+    def test_a_catch_up_needs_an_aware_time(self):
+        with self.assertRaisesRegex(ValueError, "time zone"):
+            self.run_with(proposals(), trigger="scheduled", due_since=datetime(2026, 10, 5, 7, 0))
+
     def test_an_unreadable_reply_fails_the_run_visibly(self):
         with self.assertRaisesRegex(RuntimeError, "Every search failed. local-accelerators: "):
             self.run_with("I could not find anything, sorry.", scopes=["local-accelerators"])
@@ -577,8 +644,133 @@ class ScopeDefinitionTests(unittest.TestCase):
         self.assertNotIn("made-up", definitions)
 
 
+class ScheduledSlotTests(unittest.TestCase):
+    """latest_scheduled_slot: the newest Monday or Thursday 7:00 (local, naive) that is not in the future."""
+
+    DAYS, AT = ("Monday", "Thursday"), time(7, 0)
+
+    def slot(self, now, days=None):
+        return latest_scheduled_slot(self.DAYS if days is None else days, self.AT, now)
+
+    def test_the_slot_itself_counts_as_due(self):
+        self.assertEqual(self.slot(datetime(2026, 10, 5, 7, 0)), datetime(2026, 10, 5, 7, 0))
+
+    def test_a_computer_opened_hours_after_the_slot_owes_that_slot(self):
+        self.assertEqual(self.slot(datetime(2026, 10, 5, 8, 1)), datetime(2026, 10, 5, 7, 0))
+
+    def test_before_the_slot_the_one_before_it_is_owed(self):
+        self.assertEqual(self.slot(datetime(2026, 10, 5, 6, 59)), datetime(2026, 10, 1, 7, 0))
+
+    def test_midweek_the_last_slot_is_still_the_one_owed(self):
+        self.assertEqual(self.slot(datetime(2026, 10, 7, 21, 0)), datetime(2026, 10, 5, 7, 0))
+        self.assertEqual(self.slot(datetime(2026, 10, 10, 9, 0)), datetime(2026, 10, 8, 7, 0))
+
+    def test_a_single_day_reaches_back_a_week(self):
+        self.assertEqual(self.slot(datetime(2026, 10, 5, 0, 0), days=("monday",)), datetime(2026, 9, 28, 7, 0))
+
+    def test_day_names_are_not_case_sensitive_and_unknown_ones_are_refused(self):
+        self.assertEqual(self.slot(datetime(2026, 10, 6, 12, 0), days=("MONDAY",)), datetime(2026, 10, 5, 7, 0))
+        with self.assertRaisesRegex(ValueError, "Funday"):
+            self.slot(datetime(2026, 10, 6, 12, 0), days=("Funday",))
+        with self.assertRaises(ValueError):
+            self.slot(datetime(2026, 10, 6, 12, 0), days=())
+
+
 class CommandLineTests(unittest.TestCase):
     """The scheduled task reaches the pipeline through this entry point only."""
+
+    EVERY_DAY = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+    def run_discover(self, platform_path, root, *extra, runner=None):
+        """outreach_cli discover with no network, no model CLI and the reports in root, as the scheduled task runs it."""
+        from opportunity_app import outreach_cli
+
+        transport, _ = site_transport({"acme.com": {**ACME["acme.com"], "/about": "<p>About Acme</p>"}})
+        runner = runner or only_for(proposals(company("Acme", "https://acme.com")))
+        with (
+            mock.patch("opportunity_app.outreach_cli.resolve_discovery_agent", lambda chosen: ("claude-code", "")),
+            mock.patch.dict("opportunity_app.outreach_cli.RUNNERS", {"claude-code": runner}),
+            mock.patch("opportunity_app.outreach_cli.default_fetcher", lambda: safe_fetcher(httpx.Client(transport=transport))),
+            mock.patch("opportunity_app.outreach_cli.sec_fetcher", lambda: None),
+            mock.patch("opportunity_app.outreach_cli.default_renderer", lambda: None),
+            mock.patch("opportunity_app.outreach_cli.default_verifier", lambda: None),
+            mock.patch("opportunity_app.outreach.discovery.REPORT_DIR", root / "reports"),
+            mock.patch("opportunity_app.outreach_cli.build_provider", side_effect=RuntimeError("no model CLI in tests")),
+            mock.patch("sys.stdout"), mock.patch("sys.stderr"),
+        ):
+            return outreach_cli.main([
+                "--db", str(platform_path), "discover", "--scopes", "local-accelerators", "--provider", "claude-code",
+                "--no-locate", "--no-email-search", "--trigger", "scheduled", *extra,
+            ])
+
+    def test_a_catch_up_with_nothing_owed_exits_not_due_without_searching(self):
+        from opportunity_app import outreach_cli
+
+        asked = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, platform_path = build_and_migrate(root)
+            conn = connect_product(platform_path)
+            try:
+                ensure_product_schema(conn)
+                with conn:
+                    conn.execute(
+                        "INSERT INTO outreach_discovery_runs(id, user_id, run_trigger, status, scopes_json, started_at) VALUES(?, ?, 'scheduled', 'succeeded', '[]', ?)",
+                        ("seeded", USER, datetime.now(timezone.utc).isoformat()),
+                    )
+            finally:
+                conn.close()
+            # Every day at 00:00: the slot owed is today's midnight, and the run above began after it.
+            exit_code = self.run_discover(
+                platform_path, root, "--due-days", *self.EVERY_DAY, "--due-at", "00:00",
+                runner=lambda prompt: asked.append(prompt) or proposals(),
+            )
+        self.assertEqual(exit_code, outreach_cli.NOT_DUE_EXIT)
+        self.assertEqual(asked, [], "nothing was searched")
+
+    def test_a_catch_up_with_a_slot_owed_searches_and_exits_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, platform_path = build_and_migrate(root)
+            exit_code = self.run_discover(platform_path, root, "--due-days", *self.EVERY_DAY, "--due-at", "00:00")
+            conn = connect_product(platform_path)
+            try:
+                runs = last_runs(conn, user_id=USER)
+            finally:
+                conn.close()
+        self.assertEqual(exit_code, 0)
+        self.assertEqual([run["status"] for run in runs], ["succeeded"])
+
+    def test_the_old_arguments_still_skip_with_a_clean_exit(self):
+        # The task installed before the catch-up names only -Scheduled; its skip stays exit 0 so its backfill still runs.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, platform_path = build_and_migrate(root)
+            conn = connect_product(platform_path)
+            try:
+                ensure_product_schema(conn)
+                with conn:
+                    conn.execute(
+                        "INSERT INTO outreach_discovery_runs(id, user_id, run_trigger, status, scopes_json, started_at) VALUES(?, ?, 'scheduled', 'succeeded', '[]', ?)",
+                        ("seeded", USER, datetime.now(timezone.utc).isoformat()),
+                    )
+            finally:
+                conn.close()
+            self.assertEqual(self.run_discover(platform_path, root), 0)
+
+    def test_the_catch_up_arguments_need_each_other_and_a_scheduled_trigger(self):
+        from opportunity_app import outreach_cli
+
+        for argv in (
+            ["discover", "--trigger", "scheduled", "--due-days", "Monday"],
+            ["discover", "--trigger", "scheduled", "--due-at", "07:00"],
+            ["discover", "--due-days", "Monday", "--due-at", "07:00"],
+            ["discover", "--trigger", "scheduled", "--due-days", "Funday", "--due-at", "07:00"],
+            ["discover", "--trigger", "scheduled", "--due-days", "Monday", "--due-at", "7am"],
+        ):
+            with self.subTest(argv=argv), mock.patch("sys.stderr"), self.assertRaises(SystemExit) as raised:
+                outreach_cli.main(["--db", "unused.db", *argv])
+            self.assertEqual(raised.exception.code, 2)
 
     def test_remind_runs_against_a_database_path(self):
         from opportunity_app import outreach_cli

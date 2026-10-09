@@ -32,12 +32,23 @@ fails without Playwright.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import os
 import re
+import struct
+import subprocess
+import sys
+import time
+import zlib
 from dataclasses import dataclass, field
+from email import policy as email_policy
+from email.parser import BytesParser
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
+
+from opportunity_app.apply.agent_types import STOPPED
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "apply" / "greenhouse"
 
@@ -48,7 +59,9 @@ JOB_HOST = "job-boards.greenhouse.io"
 SUBMIT_HOST = "boards.greenhouse.io"
 API_HOST = "boards-api.greenhouse.io"
 OFFSITE_HOST = "careers.example-robotics.test"
+OTHER_JOB_ID = "4000000099"
 JOB_PATH = f"/{BOARD_TOKEN}/jobs/{JOB_ID}"
+OTHER_JOB_PATH = f"/{BOARD_TOKEN}/jobs/{OTHER_JOB_ID}"
 CONFIRMATION_PATH = f"{JOB_PATH}/confirmation"
 LEGACY_JOB_PATH = f"/{BOARD_TOKEN}/jobs/{LEGACY_JOB_ID}"
 LEGACY_CONFIRMATION_PATH = f"{LEGACY_JOB_PATH}/confirmation"
@@ -76,6 +89,10 @@ SCENARIOS = (
     "other_path_post",              # the form posts to a path other than submitPath
     "request_submit_during_fill",   # a page script calls requestSubmit() while the agent fills
     "redirect_offsite",             # the posting sends applicants to the employer's own site
+    "redirect_other_posting",       # the board sends the posting's address on to another posting of the same board
+    "popup_offsite",                # a page script opens the employer's own site in a popup as the page loads
+    "navigate_offsite_after_input", # a page script sends the main frame to the employer's own site once the first field is typed into
+    "no_portfolio",                 # the optional "Portfolio or project link" field is not drawn
     "closed",                       # the posting is closed: the schema gives 404
     "loader_missing",               # no submitPath in the HTML
     "eager_script",                 # a page script POSTs on every keystroke, like lead-capture scripts
@@ -87,6 +104,18 @@ SCENARIOS = (
     "captcha_body_leak",            # a page script POSTs a field value to a CAPTCHA endpoint
     "websocket",                    # a page script opens a WebSocket
     "s3_upload",                    # data-allow-s3="true", and attaching makes a PUT to an S3 host
+    "next_button",                  # a multi-page form: a Next button sits under the questions
+    "continue_link",                # a multi-page form: a "Save and continue" link outside the form, in the page around it
+    "step_indicator",               # a multi-page form: "Step 1 of 3" above the questions
+    "continue_to_step",             # a multi-page form: a "Continue to step 2" button under the questions
+    "next_section",                 # a multi-page form: a "Next section" button under the questions
+    "next_review",                  # a multi-page form: a "Next: Review" button under the questions
+    "page_slash_counter",           # a multi-page form: "Page 1/3" above the questions
+    "next_button_aria",             # a multi-page form: a button with only an icon and the label "Go to the next page"
+    "counter_outside",              # a multi-page form: "Step 2 of 4" in a header outside the form's own element
+    "next_review_submit",           # a multi-page form: a "Next: Review and submit" button under the questions
+    "continue_to_submit",           # a multi-page form: a "Continue to submit" button under the questions
+    "go_to_step",                   # a multi-page form: a "Go to step 2" button under the questions
 )
 
 _FORM = 'document.getElementById("application-form")'
@@ -113,12 +142,12 @@ _SCRIPTS = {
       return "https://boards-api.greenhouse.io/fake-lookup/" + kind + "?q=" + encodeURIComponent(text)
         + "&e=" + encodeURIComponent(document.getElementById("email").value);
     };""",
-    "double_submit": """var realFetch = window.fetch;
-    window.fetch = function (url, options) {
-      var first = realFetch(url, options);
-      if (options && options.method === "POST") realFetch(url, options).catch(function () {});
-      return first;
-    };""",
+    # The agent's init script makes window.fetch read-only (it strips keepalive), so the second POST comes from a submit listener of its
+    # own that runs right after the form's: the same address, the same body, while the first is still in flight.
+    "double_submit": _FORM + """.addEventListener("submit", function () {
+      if (window.grValidate()) return;
+      fetch("https://boards.greenhouse.io" + window.__loader.submitPath, {method: "POST", body: new FormData(""" + _FORM + """)}).catch(function () {});
+    });""",
     "captcha_body_leak": _FORM + """.addEventListener("input", function (e) {
       if (e.target.value) fetch("https://www.google.com/recaptcha/api2/reload?k=fixture", {method: "POST", body: e.target.value}).catch(function () {});
     });""",
@@ -126,6 +155,77 @@ _SCRIPTS = {
     "s3_upload": """document.getElementById("resume").addEventListener("change", function (e) {
       fetch("https://example-robotics-uploads.s3.amazonaws.com/resume", {method: "PUT", body: e.target.files[0]}).catch(function () {});
     });""",
+    "next_button": """(function () {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Next";
+      """ + _FORM + """.appendChild(button);
+    })();""",
+    "continue_to_step": """(function () {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Continue to step 2";
+      """ + _FORM + """.appendChild(button);
+    })();""",
+    "next_section": """(function () {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Next section";
+      """ + _FORM + """.appendChild(button);
+    })();""",
+    "next_review": """(function () {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Next: Review";
+      """ + _FORM + """.appendChild(button);
+    })();""",
+    "page_slash_counter": """(function () {
+      var note = document.createElement("p");
+      note.textContent = "Page 1/3";
+      """ + _FORM + """.insertBefore(note, """ + _FORM + """.firstChild);
+    })();""",
+    "next_button_aria": """(function () {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.setAttribute("aria-label", "Go to the next page");
+      button.textContent = "→";
+      document.body.appendChild(button);
+    })();""",
+    "counter_outside": """(function () {
+      var note = document.createElement("div");
+      note.textContent = "Step 2 of 4";
+      document.body.insertBefore(note, document.body.firstChild);
+    })();""",
+    "next_review_submit": """(function () {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Next: Review and submit";
+      """ + _FORM + """.appendChild(button);
+    })();""",
+    "continue_to_submit": """(function () {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Continue to submit";
+      """ + _FORM + """.appendChild(button);
+    })();""",
+    "go_to_step": """(function () {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Go to step 2";
+      """ + _FORM + """.appendChild(button);
+    })();""",
+    "continue_link": """(function () {
+      var link = document.createElement("a");
+      link.href = "#page-2";
+      link.setAttribute("role", "button");
+      link.textContent = "Save and continue";
+      """ + _FORM + """.parentElement.appendChild(link);
+    })();""",
+    "step_indicator": """(function () {
+      var note = document.createElement("p");
+      note.textContent = "Step 1 of 3";
+      """ + _FORM + """.insertBefore(note, """ + _FORM + """.firstChild);
+    })();""",
     "request_submit_during_fill": """(function () {
       var form = """ + _FORM + """, fired = false;
       form.addEventListener("input", function () {
@@ -141,6 +241,10 @@ _SCRIPTS = {
       window.location.assign(window.__loader.confirmationPath);
     }, true);""",
     "other_path_post": """window.__loader.submitPath = "/examplerobotics/jobs/4000000001/apply-v2";""",
+    "popup_offsite": """window.open("https://careers.example-robotics.test/apply");""",
+    "navigate_offsite_after_input": _FORM + """.addEventListener("input", function () {
+      setTimeout(function () { window.location.assign("https://careers.example-robotics.test/apply"); }, 30);
+    }, {once: true});""",
     "hang_evaluate": """setTimeout(function () { for (;;) {} }, 1500);""",
     "text_only_thanks": """window.grAfterSubmit = function () { window.location.reload(); };""",
 }
@@ -183,6 +287,9 @@ def form_values(body: str) -> dict[str, list[str]]:
 
 
 class FakeGreenhouse:
+    # The listing can say the cover letter is required; the page then carries the required marker on its upload group, as the live one does.
+    letter_required = False
+
     def __init__(self, scenario: str = "confirm") -> None:
         if scenario not in SCENARIOS:
             raise ValueError(f"unknown scenario {scenario!r}")
@@ -262,9 +369,13 @@ class FakeGreenhouse:
             if self.scenario == "redirect_offsite":
                 # A script, not a 302: the hop after a fulfilled redirect is not routed (see _submit).
                 return Reply(200, f'<html><body><script>window.location.replace("https://{OFFSITE_HOST}/apply");</script></body></html>')
+            if self.scenario == "redirect_other_posting":
+                return Reply(200, f'<html><body><script>window.location.replace("{OTHER_JOB_PATH}");</script></body></html>')
             if self.scenario == "text_only_thanks" and self.thanks_shown:
                 return Reply(200, fixture_text("text_only_thanks.html"))
             return Reply(200, self._form_html())
+        if path == OTHER_JOB_PATH and self.scenario == "redirect_other_posting":
+            return Reply(200, self._form_html())   # the same questions under another posting
         if path == CONFIRMATION_PATH:
             return Reply(200, fixture_text("new_confirmation.html"))
         if path == LEGACY_JOB_PATH:
@@ -279,6 +390,12 @@ class FakeGreenhouse:
             html = html.replace('"submitPath":"/examplerobotics/jobs/4000000001",', "")
         if self.scenario == "s3_upload":
             html = html.replace('data-allow-s3="false"', 'data-allow-s3="true"')
+        if self.letter_required:
+            html = html.replace('<label for="cover_letter">Cover Letter</label>', '<label for="cover_letter">Cover Letter <span class="required"></span></label>')
+        if self.scenario == "no_portfolio":
+            field_block = re.search(r'[ \t]*<div class="field">\s*<label for="question_4000000102">.*?</div>\s*?\n', html, flags=re.S)
+            assert field_block, "the fixture's Portfolio field moved"
+            html = html.replace(field_block.group(0), "")
         script = _SCRIPTS.get(self.scenario, "")
         return html.replace("<!--FAKE_SCENARIO-->", f"<script>{script}</script>" if script else "")
 
@@ -333,16 +450,24 @@ class FakeSchemaClient:
         if self.closed:
             return None
         if self.any_job:
-            return copy.deepcopy(fixture_json("schema_legacy.json" if self.legacy else "schema_new.json"))
+            return self._new_listing() if not self.legacy else copy.deepcopy(fixture_json("schema_legacy.json"))
         if board_token != BOARD_TOKEN:
             return None
         if job_id == JOB_ID and not self.legacy:
-            return copy.deepcopy(fixture_json("schema_new.json"))
+            return self._new_listing()
         if job_id == LEGACY_JOB_ID or (self.legacy and job_id == JOB_ID):
             return copy.deepcopy(fixture_json("schema_legacy.json"))
         return None
 
     __call__ = fetch
+
+    @staticmethod
+    def _new_listing() -> dict[str, Any]:
+        """The fictional listing; ``CANNED["letter_required"]`` makes its cover letter a required question (read at each fetch)."""
+        listing = copy.deepcopy(fixture_json("schema_new.json"))
+        if CANNED.get("letter_required"):
+            next(block for block in listing["questions"] if block["label"] == "Cover Letter")["required"] = True
+        return listing
 
     def fetch_url(self, url: str) -> dict[str, Any] | None:
         """The same, from a boards-api URL: /v1/boards/{token}/jobs/{id}."""
@@ -350,19 +475,507 @@ class FakeSchemaClient:
         return self.fetch(match.group(1), match.group(2)) if match else None
 
 
+# --- Lever: a fictional posting whose application page is a fixture, and the page client that serves it -------------------------------
+
+LEVER_FIXTURES = FIXTURES.parent / "lever"
+LEVER_SITE = "harbordemo"
+LEVER_JOB_ID = "6f1d2c3b-4a59-4687-8c7d-9e0f1a2b3c4d"
+LEVER_URL = f"https://jobs.lever.co/{LEVER_SITE}/{LEVER_JOB_ID}"
+# The page's own title is "Harbor Demo Labs - Customer Success Lead" (tests/fixtures/apply/lever/demo_eeo_survey.html).
+LEVER_COMPANY = "Harbor Demo Labs"
+LEVER_TITLE = "Customer Success Lead"
+LEVER_ROLE_ID = "lever-harbor-demo"
+
+
+def lever_fixture_text(name: str) -> str:
+    return (LEVER_FIXTURES / name).read_text(encoding="utf-8")
+
+
+class FakeLeverPageClient:
+    """Serves a Lever application page fixture, or a 404, or "did not answer", with no network.
+
+    Tests, the sandbox and the UI suite pass it as ``apply_page_client_factory``. ``fetch(site, job_id, host)`` is the real client's
+    call (apply.schema_client.LeverPageClient): it returns the page's HTML, or None for a 404. By default it answers the one fictional
+    posting; ``any_posting`` answers every site and posting with the page, which a sandbox that seeds its own roles uses.
+    ``pages`` maps a posting's ``site/job_id`` to a fixture name so a test can serve different pages. With no ``page``, the fixture named by
+    ``CANNED["lever_page"]`` is served (the in-process UI suite sets it), else the demo page.
+    """
+
+    def __init__(self, *, page: str | None = None, closed: bool = False, unavailable: bool = False, any_posting: bool = False,
+                 pages: dict[str, str] | None = None) -> None:
+        self.page = page
+        self.closed = closed
+        self.unavailable = unavailable
+        self.any_posting = any_posting
+        self.pages = dict(pages or {})
+        self.calls: list[tuple[str, str, str]] = []
+
+    def fetch(self, site: str, job_id: str, host: str) -> str | None:
+        from opportunity_app.apply.schema_client import SchemaUnavailable
+
+        self.calls.append((site, job_id, host))
+        if self.unavailable:
+            raise SchemaUnavailable("Lever did not answer (a fake that does not)")
+        if self.closed:
+            return None
+        key = f"{site}/{job_id}"
+        if key in self.pages:
+            return lever_fixture_text(self.pages[key])
+        if self.any_posting or (site, job_id) == (LEVER_SITE, LEVER_JOB_ID):
+            return lever_fixture_text(self.page or CANNED.get("lever_page") or "demo_eeo_survey.html")
+        return None
+
+    __call__ = fetch
+
+
+def seed_lever_role(conn: Any, user_id: str, *, saved: bool = True, role_id: str = LEVER_ROLE_ID) -> str:
+    """Insert the fictional Lever posting as a role (saved by default) and return its id. For the sandbox and the UI suite; the caller commits."""
+    from opportunity_app.core.timestamps import utc_now
+
+    stamp = utc_now()
+    conn.execute(
+        "INSERT INTO opportunities(id, company, title, url, first_seen_at, last_seen_at, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+        (role_id, LEVER_COMPANY, LEVER_TITLE, LEVER_URL, stamp, stamp, stamp, stamp),
+    )
+    # A role the pipeline synced has a source row, and the lists read it through one: this one is Lever's, by site and posting uuid.
+    conn.execute(
+        "INSERT INTO opportunity_sources(opportunity_id, source_key, source_name, external_id, source_url, first_seen_at, last_seen_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
+        (role_id, f"lever:{LEVER_SITE}", "Harbor Demo Lever", LEVER_JOB_ID, LEVER_URL, stamp, stamp),
+    )
+    if saved:
+        conn.execute("INSERT INTO opportunity_interactions(opportunity_id, user_id, action, created_at, source) VALUES(?, ?, 'saved', ?, 'user')", (role_id, user_id, stamp))
+    return role_id
+
+
+# Knobs the in-process UI suite may change between tests (a thread-isolated fake reads them when a run starts).
+# "handoff" is Finish in browser's canned run: "wait" is how long the fictional student takes before pressing Submit
+# application (seconds), and "outcome" is what the form then does: submitted, unconfirmed, security_code, refused (the
+# app says no to the hand-over), failed_4xx, or hang_after_hand_over. "after_front" (optional) ends the wait that many seconds
+# after the first request to bring the window forward, so a test of that request waits for it rather than racing a fixed wait.
+# "letter_required" makes the listing's cover letter a required question, so a test can see what the page does with and without an approved letter.
+# "lever_page" is the Lever fixture a ``FakeLeverPageClient`` made without a ``page`` serves (empty: the demo page).
+CANNED: dict[str, Any] = {"lever_page": "", "hang": False, "outcome": "rehearsed", "step_delay": 0.3, "handoff": {"wait": 1.5, "outcome": "submitted"}, "letter_required": False}
+HANDOFF_OUTCOMES = ("submitted", "unconfirmed", "security_code", "refused", "failed_4xx", "hang_after_hand_over")
+STOPPED_TEXT = STOPPED
+NO_OPTIONS_TEXT = "No options came back for what you typed"
+
+
+def canned_png(width: int = 480, height: int = 320) -> bytes:
+    """A small PNG (grey, with a darker band) for the canned rehearsal's picture, built with zlib and struct only."""
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+    rows = b"".join(b"\x00" + bytes([70 if 120 <= y < 170 else 215]) * (width * 3) for y in range(height))
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+
+
 class FakeApplyAgentFactory:
-    """The agent factory of a test or the sandbox: it says a window could open, and starts nothing.
+    """The agent factory of a test or the sandbox: it says a window could open, and its runs are canned.
 
     ``available()`` is the probe the apply_agent switch's requirement asks (apply_runs.setup_requirement): "" when
     Playwright and Chromium are present, else a sentence. The fake always says they are, so the same tests pass
-    with or without Playwright installed. The runs themselves arrive with the rehearsal engine (M5a).
+    with or without Playwright installed. A run opens no browser and no socket: ``CannedAgent`` reports its steps and
+    answers from the draft plan. It runs in a thread (``isolation="thread"``) so API and UI tests stay fast; pass
+    ``isolation="process"`` to test the spawned child. A knob left as None is read from ``CANNED`` when the run starts.
     """
 
-    def __init__(self, missing: str = "") -> None:
+    def __init__(self, missing: str = "", *, isolation: str = "thread", step_delay: float | None = None,
+                 outcome: str | None = None, hang: bool | None = None, handoff: dict[str, Any] | None = None) -> None:
         self.missing = missing
+        self.isolation = isolation
+        self.step_delay = step_delay
+        self.outcome = outcome
+        self.hang = hang
+        self.handoff = handoff
 
     def available(self) -> str:
         return self.missing
+
+    def __call__(self, **kwargs: Any) -> "CannedAgent":
+        return CannedAgent(
+            step_delay=CANNED["step_delay"] if self.step_delay is None else self.step_delay,
+            outcome=CANNED["outcome"] if self.outcome is None else self.outcome,
+            hang=CANNED["hang"] if self.hang is None else self.hang,
+            handoff=dict(CANNED["handoff"] if self.handoff is None else self.handoff),
+            **kwargs,
+        )
+
+
+class CannedAgent:
+    """A fictional rehearsal or lookup: no browser, no socket, every sentence value-free."""
+
+    def __init__(self, *, mode: str, run_id: str, screenshot_dir: Path | None, timeouts: Any, on_progress: Any, heartbeat: Any,
+                 step_delay: float, outcome: str, hang: bool, handoff: dict[str, Any] | None = None, ats: str = "greenhouse") -> None:
+        self.mode, self.run_id, self.screenshot_dir, self.ats = mode, run_id, screenshot_dir, ats
+        self.on_progress, self.heartbeat = on_progress, heartbeat
+        self.step_delay, self.outcome, self.hang = step_delay, outcome, hang
+        self.handoff = handoff or {"wait": 1.5, "outcome": "submitted"}
+        self.timeouts = timeouts
+        self.extra_cleanup: Any = None
+
+    def __enter__(self) -> "CannedAgent":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        if self.extra_cleanup is not None:
+            self.extra_cleanup()
+        return None
+
+    def _pause(self, cancelled: Any) -> bool:
+        """Wait one step's delay. True when the run was stopped meanwhile."""
+        waited = 0.0
+        while waited < self.step_delay:
+            if cancelled():
+                return True
+            time.sleep(0.05)
+            waited += 0.05
+        self.heartbeat()
+        return bool(cancelled())
+
+    def _step(self, step: str, text: str, cancelled: Any) -> bool:
+        self.on_progress(step, text)
+        return self._pause(cancelled)
+
+    def run(self, plan: Any, *, page_url: str, schema: list[Any], files: dict[str, Any], lookup: Any = None, replan: Any = None,
+            hand_over: Any = None, cancelled: Any = None, link: Any = None, check_file: Any = None) -> Any:
+        from opportunity_app.apply import policy as apply_policy
+        from opportunity_app.apply.agent_types import PROGRESS_STEPS, RunResult, progress_text
+
+        cancelled = cancelled or (lambda: False)
+        stopped = RunResult("failed", [STOPPED_TEXT])
+        if self.mode == "handoff":
+            return self._handoff(plan, hand_over, cancelled, link)
+        self.on_progress("open", progress_text("open", "Greenhouse"))
+        while self.hang:
+            if cancelled():
+                return stopped
+            time.sleep(0.1)
+        if self._pause(cancelled):
+            return stopped
+        if lookup is not None:
+            if self._step("lookup", PROGRESS_STEPS["lookup"].format(question=lookup.question), cancelled):
+                return stopped
+            found = [option for option in LOOKUP_OPTIONS if lookup.text.casefold() in option.casefold()][:20]
+            return RunResult(
+                "looked_up", [] if found else [NO_OPTIONS_TEXT], options={lookup.field: found},
+                evidence={"page": "application_form_new", "lookups": [{"key": lookup.key, "question": lookup.question}], "refused_total": 0},
+            )
+        entries = apply_policy.plan_entries(plan)
+        filling = sum(1 for entry in entries if entry["disposition"] == "fill")
+        for step, text in (("read", PROGRESS_STEPS["read"]), ("fill", PROGRESS_STEPS["fill"].format(n=filling)),
+                           ("check", PROGRESS_STEPS["check"]), ("picture", PROGRESS_STEPS["picture"])):
+            if self._step(step, text, cancelled):
+                return stopped
+        masked = [entry["key"] for entry in entries if entry.get("sensitive")]
+        shots: list[dict[str, Any]] = []
+        if self.screenshot_dir is not None:
+            self.screenshot_dir.mkdir(parents=True, exist_ok=True)
+            path = self.screenshot_dir / f"{self.run_id}-filled.png"
+            data = canned_png()
+            path.write_bytes(data)
+            shots.append({"step": "filled", "path": str(path), "sha256": hashlib.sha256(data).hexdigest(), "masked": masked})
+        return RunResult(
+            self.outcome, [], plan=entries, plan_hash=getattr(plan, "plan_hash", ""), join_problems=[], check_problems=[],
+            screenshots=shots, refused=[{"method": "POST", "host": "analytics.example-robotics.test", "rule": "non_get"}],
+            evidence={"page": "application_form_new", "loader": {"submit_path": True, "confirmation_path": True}, "uploads_on_attach": False,
+                      "captcha_widget": False, "lookups": [], "submit_path_hit": False, "refused_total": 1,
+                      # A file counts as attached when the runner read one for it (the résumé, an approved cover letter); there is no page to read it back from.
+                      "filled_keys": [entry["key"] for entry in entries if entry["disposition"] == "fill" and (entry.get("control") != "file" or entry["key"] in files)],
+                      "checked_keys": [entry["key"] for entry in entries if entry["disposition"] == "deferred" and entry.get("control") != "file"]},
+        )
+
+
+    # --- Finish in browser: a fictional student who takes a moment and presses Submit application ---------------------------------
+
+    def _handoff(self, plan: Any, hand_over: Any, cancelled: Any, link: Any) -> Any:
+        """The handoff script (no browser, no socket): fill, say ready, wait for the student, hand over, then one of the outcomes."""
+        from opportunity_app.apply import policy as apply_policy
+        from opportunity_app.apply.agent_types import (
+            HANDOFF_NOT_SUBMITTED, HANDOFF_UNRECORDED, LEFT_FIELD, PROGRESS_STEPS, RunResult, progress_text,
+        )
+        from opportunity_app.apply.ats import name_of
+        from opportunity_app.apply.checks import MARKED_WRONG_NOTE, REFUSED_NOTE, UNCONFIRMED_NOTE as UNCONFIRMED_TEMPLATE
+
+        ats_name = name_of(self.ats)
+        UNCONFIRMED_NOTE = UNCONFIRMED_TEMPLATE.format(ats=ats_name)
+
+        entries = apply_policy.plan_entries(plan)
+        left = [
+            {"key": entry["key"], "question": entry["question"], "reason": entry["problem"] or LEFT_FIELD.format(question=entry["question"])}
+            for entry in entries if entry["disposition"] == "left_for_you"
+        ]
+        plan_hash = getattr(plan, "plan_hash", "")
+        # On Lever the app's attach of the résumé sends it to Lever (the plan fills the file only when the student let the app attach it); the real
+        # driver reports it in the ready message and in every result after it, and so does this one.
+        resume_sent = self.ats == "lever" and any(
+            entry["disposition"] == "fill" and (entry.get("source") or {}).get("kind") == "resume" for entry in entries
+        )
+        evidence: dict[str, Any] = {
+            "resume_sent_to_lever": resume_sent,
+            "page": "application_form_new", "loader": {"submit_path": True, "confirmation_path": True}, "uploads_on_attach": False,
+            "captcha_widget": False, "lookups": [], "submit_path_hit": False, "refused_total": 0, "left_for_you": left, "page_defaults": [],
+            "handoff_end": "", "browser_closed": True, "parent_gone": False, "submit_post": False, "submit_continued": False,
+        }
+        stopped = RunResult("needs_you", [HANDOFF_NOT_SUBMITTED], plan=entries, plan_hash=plan_hash, handed_over=False, after_click=False,
+                            evidence={**evidence, "handoff_end": "stopped"})
+        self.on_progress("open", progress_text("open", ats_name))
+        if self.handoff.get("outcome") == "no_loader":
+            # A property of the board: the form sends applications somewhere the app does not know. Stops before any input, as the real agent does.
+            from opportunity_app.apply.agent_types import HANDOFF_NO_LOADER
+
+            return RunResult("needs_you", [HANDOFF_NO_LOADER], plan=entries, plan_hash=plan_hash, handed_over=False, after_click=False,
+                             evidence={**evidence, "handoff_end": "board"})
+        filling = sum(1 for entry in entries if entry["disposition"] == "fill")
+        for step, text in (("read", PROGRESS_STEPS["read"]), ("fill", PROGRESS_STEPS["fill"].format(n=filling)),
+                           ("check", PROGRESS_STEPS["check"]), ("picture", PROGRESS_STEPS["picture"])):
+            if self._step(step, text, cancelled):
+                return stopped
+        masked = [entry["key"] for entry in entries if entry.get("sensitive")]
+        shots: list[dict[str, Any]] = []
+        if self.screenshot_dir is not None:
+            self.screenshot_dir.mkdir(parents=True, exist_ok=True)
+            path = self.screenshot_dir / f"{self.run_id}-filled.png"
+            data = canned_png()
+            path.write_bytes(data)
+            shots.append({"step": "filled", "path": str(path), "sha256": hashlib.sha256(data).hexdigest(), "masked": masked})
+        if link is not None:
+            message = {"plan": entries, "plan_hash": plan_hash, "left": left, "screenshot": shots[0] if shots else None,
+                       "captcha_widget": False, "page_defaults": [], "resume_sent_to_lever": resume_sent}
+            if "in_s" in self.handoff:
+                message["handoff_in_s"] = self.handoff["in_s"]   # how long the window really stays the student's (the real agent says it)
+            link.ready(message)
+        self.on_progress("your_turn", PROGRESS_STEPS["your_turn"])
+        if self.handoff.get("elsewhere"):
+            # The student pressed Submit and the form tried to send somewhere the app does not recognize: refused, and the turn goes on.
+            self.on_progress("form_elsewhere", PROGRESS_STEPS["form_elsewhere"].format(host=str(self.handoff["elsewhere"])))
+        attach = self.handoff.get("student_attaches")
+        if attach and self.ats == "lever":
+            # The student chose a file in the window and the page sent it at once (``student_attaches``: {"changed": [the questions the page's reader then filled]}).
+            from opportunity_app.apply.agent_types import RESUME_CHANGED_STEP, STUDENT_RESUME_STEP
+
+            self.on_progress(STUDENT_RESUME_STEP, progress_text(STUDENT_RESUME_STEP, ats_name))
+            changed = [str(name) for name in attach.get("changed") or []]
+            if changed:
+                words = changed[0] if len(changed) == 1 else ", ".join(changed[:-1]) + " and " + changed[-1]
+                self.on_progress(RESUME_CHANGED_STEP, progress_text(RESUME_CHANGED_STEP, ats_name, fields=words, them="it" if len(changed) == 1 else "them"))
+            evidence["student_attached_resume"] = {"count": 1, "sha256": hashlib.sha256(b"a fictional file the student chose").hexdigest(), "changed": changed}
+            stopped = RunResult("needs_you", [HANDOFF_NOT_SUBMITTED], plan=entries, plan_hash=plan_hash, handed_over=False, after_click=False,
+                                evidence={**evidence, "handoff_end": "stopped"})
+        self._after_ready()
+        waited, beat = 0.0, 0.0
+        wait = float(self.handoff.get("wait", 1.5))
+        fronts = 0
+        while waited < wait:
+            if cancelled():
+                return stopped
+            time.sleep(0.1)
+            waited += 0.1
+            if link is not None and link.front_requested():
+                fronts += 1
+                if "after_front" in self.handoff:
+                    wait = min(wait, waited + float(self.handoff["after_front"]))
+            if waited - beat >= 1.0:
+                self.heartbeat()
+                beat = waited
+        evidence["fronts"] = fronts
+        granted = bool(hand_over()) if hand_over is not None else False
+        kind = str(self.handoff.get("outcome", "submitted"))
+        if kind == "refused" or not granted:
+            # The app said no (or we pretend it did): the POST would be aborted, and nothing the agent says may call it sent.
+            return RunResult("needs_you", [HANDOFF_UNRECORDED], plan=entries, plan_hash=plan_hash, screenshots=shots, handed_over=False,
+                             after_click=False, evidence={**evidence, "handoff_end": "refused"})
+        self.on_progress("submitting", progress_text("submitting", ats_name))
+        evidence.update(handoff_end="posted", submit_post=True, submit_continued=True, submit_status=200,
+                        confirmation_path=f"/{LEVER_SITE}/{LEVER_JOB_ID}/thanks" if self.ats == "lever" else "/examplerobotics/jobs/4000000001/confirmation")
+        if kind == "hang_after_hand_over":
+            while not cancelled():   # a process is killed; a thread is told to stop when the run ends
+                time.sleep(0.2)
+            return RunResult("unconfirmed", [UNCONFIRMED_NOTE], plan=entries, plan_hash=plan_hash, screenshots=shots, handed_over=True,
+                             after_click=True, evidence=evidence)
+        if kind == "unconfirmed":
+            evidence["submit_status"] = None
+            return RunResult("unconfirmed", [UNCONFIRMED_NOTE], plan=entries, plan_hash=plan_hash, screenshots=shots, handed_over=True,
+                             after_click=True, evidence=evidence)
+        if kind == "failed_4xx":
+            evidence.update(submit_status=422)
+            # Lever's sentence is the real driver's (REFUSED_NOTE, then MARKED_WRONG_NOTE for the field the page marked), so the sandbox shows what the student sees.
+            refused = (REFUSED_NOTE.format(ats=ats_name, status=422) + MARKED_WRONG_NOTE.format(ats=ats_name, question="Current company")
+                       if self.ats == "lever" else 'Greenhouse marked "Why do you want to work here?" as wrong')
+            return RunResult("failed", [refused], plan=entries, plan_hash=plan_hash,
+                             screenshots=shots, handed_over=True, after_click=True, evidence=evidence)
+        code = {"prompted": False, "typed": False, "fallback": False, "posted": False, "rounds": 0, "auto_submit_blocked": False, "reason": ""}
+        if kind == "security_code":
+            code.update(prompted=True, rounds=1)
+            self.on_progress("security_code", progress_text("security_code", "Greenhouse"))
+            typed = self._ask_for_the_code(link, cancelled, typed_ok=bool(self.handoff.get("code_typed", True)),
+                                           reason=str(self.handoff.get("code_reason", "")))
+            code.update(typed=typed, fallback=not typed, posted=True, reason="" if typed else str(self.handoff.get("code_reason", "")))
+            self.on_progress("code_typed" if typed else "code_yours", progress_text("code_typed" if typed else "code_yours", "Greenhouse"))
+            time.sleep(0.2)
+        evidence["security_code"] = code
+        return RunResult("submitted", [], plan=entries, plan_hash=plan_hash, screenshots=shots, handed_over=True, after_click=True,
+                         confirmation_seen=True, evidence=evidence)
+
+    def _after_ready(self) -> None:
+        """A hook for the process variant (it starts its stand-in for Chromium before the student's turn)."""
+
+    @staticmethod
+    def _ask_for_the_code(link: Any, cancelled: Any, *, typed_ok: bool = True, reason: str = "") -> bool:
+        """Ask the parent for the code without blocking and never again while an ask is outstanding. True when it was found and 'typed'.
+
+        ``typed_ok`` False plays an agent that was handed the code and could not put it in (``reason`` says why)."""
+        if link is None:
+            return False
+        ident = link.ask_code()
+        waited = 0.0
+        while waited < 30.0 and not cancelled():
+            reply = link.code_reply(ident)
+            if reply is None:
+                time.sleep(0.05)
+                waited += 0.05
+                continue
+            status = reply.get("status")
+            if status == "found":
+                link.code_result(ident, typed_ok, "" if typed_ok else reason)   # the code itself is dropped here: nothing is typed
+                return typed_ok
+            if status == "fallback":
+                return False
+            time.sleep(0.3)
+            waited += 0.3
+            ident = link.ask_code()
+        return False
+
+
+class ProcessCannedFactory:
+    """Finish in browser's canned run in a REAL child process, with a sleeping grandchild standing in for Chromium.
+
+    Module-level and picklable (``isolation = "process"``), opens no browser and no socket, and is importable as
+    ``apply_fake_ats`` from the spawned child. The grandchild is started before the student's turn (the runner snapshots the
+    child's descendants when it sees the agent is ready), its pid and the child's, each with its ``process_start``, are written
+    to ``pid_file`` as JSON (``child``, ``grandchild``, ``child_start``, ``grandchild_start``), and the child's own exit
+    stops it unless ``leak`` is True (a browser that outlives its driver), so the kill-ordering tests see real pids.
+    ``outcome`` and ``wait`` are the same knobs as ``CANNED["handoff"]``.
+    """
+
+    isolation = "process"
+
+    def __init__(self, *, outcome: str = "submitted", wait: float = 0.5, spawn_grandchild: bool = True, pid_file: str = "",
+                 leak: bool = False, step_delay: float = 0.0, crash_at: str = "") -> None:
+        self.outcome = outcome
+        self.wait = wait
+        self.spawn_grandchild = spawn_grandchild
+        self.pid_file = pid_file
+        self.leak = leak
+        self.step_delay = step_delay
+        self.crash_at = crash_at
+
+    def available(self) -> str:
+        return ""
+
+    def __call__(self, **kwargs: Any) -> "ProcessCannedAgent":
+        return ProcessCannedAgent(
+            step_delay=self.step_delay, outcome="rehearsed", hang=False, handoff={"wait": self.wait, "outcome": self.outcome}, factory=self, **kwargs,
+        )
+
+
+class ProcessCannedAgent(CannedAgent):
+    def __init__(self, *, factory: ProcessCannedFactory, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.factory = factory
+        self.grandchild: subprocess.Popen[bytes] | None = None
+
+    def _after_ready(self) -> None:
+        if self.factory.crash_at == "turn":
+            os._exit(3)   # the driver dies during the student's turn, whatever the browser does
+        if self.factory.crash_at == "after_hand_over":
+            self.crash_after_hand_over = True
+
+    def _handoff(self, plan: Any, hand_over: Any, cancelled: Any, link: Any) -> Any:
+        if self.factory.spawn_grandchild:
+            self.grandchild = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(600)"], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if self.factory.pid_file:
+                from opportunity_app.apply.runner import process_start
+
+                # Each pid with when its process started, read here while both certainly run (this process holds the grandchild's
+                # handle), so a test that looks later never takes a program that was handed a freed pid for one of them.
+                record = {"child": os.getpid(), "grandchild": self.grandchild.pid,
+                          "child_start": process_start(os.getpid()), "grandchild_start": process_start(self.grandchild.pid)}
+                Path(self.factory.pid_file).write_text(json.dumps(record), encoding="utf-8")
+            if not self.factory.leak:
+                self.extra_cleanup = self._stop_grandchild
+        if self.factory.crash_at == "after_hand_over":
+            original = hand_over
+
+            def hand_over_then_die() -> bool:
+                granted = bool(original())
+                if granted:
+                    os._exit(4)   # the driver dies right after the parent committed the hand-over
+                return granted
+
+            hand_over = hand_over_then_die
+        return super()._handoff(plan, hand_over, cancelled, link)
+
+    def _stop_grandchild(self) -> None:
+        if self.grandchild is not None and self.grandchild.poll() is None:
+            self.grandchild.kill()
+            try:
+                self.grandchild.wait(timeout=10)
+            except subprocess.SubprocessError:
+                pass
+
+
+class HangingAgentFactory:
+    """A process-isolated agent that starts a grandchild process and then never yields: only the watchdog can end it."""
+
+    isolation = "process"
+
+    def __init__(self, pid_file: str, *, driver: bool = False) -> None:
+        self.pid_file = pid_file
+        self.driver = driver   # the grandchild behaves like Playwright's driver: it ends when its stdin closes, that is, when the child dies
+
+    def available(self) -> str:
+        return ""
+
+    def __call__(self, **kwargs: Any) -> "HangingAgent":
+        return HangingAgent(self.pid_file, self.driver)
+
+
+class HangingAgent:
+    def __init__(self, pid_file: str, driver: bool = False) -> None:
+        self.pid_file = pid_file
+        self.driver = driver
+
+    def __enter__(self) -> "HangingAgent":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        return None
+
+    def run(self, plan: Any, **kwargs: Any) -> Any:
+        code = "import sys; sys.stdin.read()" if self.driver else "import time; time.sleep(600)"
+        grandchild = subprocess.Popen(
+            [sys.executable, "-c", code], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), stdin=subprocess.PIPE if self.driver else None,
+        )
+        Path(self.pid_file).write_text(f"{os.getpid()} {grandchild.pid}", encoding="utf-8")
+        while True:   # no heartbeat, no cancel check, never sleeps
+            pass
+
+
+class CrashingAgentFactory:
+    """An agent factory that raises, to see that the runner reports the type name and never the message."""
+
+    def __init__(self, isolation: str = "thread") -> None:
+        self.isolation = isolation
+
+    def available(self) -> str:
+        return ""
+
+    def __call__(self, **kwargs: Any) -> Any:
+        raise RuntimeError("boom")
 
 
 # --- playing the student, for tests that drive a page (and, in M5a, for ``student_hook``) -----------
@@ -397,3 +1010,550 @@ def press_submit(page: Any) -> None:
 def type_security_code(page: Any, code: str = "12345678") -> None:
     for index, character in enumerate(code):
         page.fill(f"#security-input-{index}", character)
+
+
+def kill_if_same_process(pid: int, started: str | None) -> bool:
+    """Kill ``pid`` only if it is still the process first seen there (``started`` is what ``process_start`` read then). True if killed.
+
+    A cleanup that kills by a bare pid after the process is gone can end a stranger's program, because the pid is handed out again
+    (quickly, on Windows). With no recorded start nothing is killed.
+    """
+    from opportunity_app.apply import runner as apply_runner
+
+    if not started or not apply_runner.process_alive(pid) or apply_runner.process_start(pid) != started:
+        return False
+    apply_runner._kill_pid(pid)
+    return True
+
+
+def still_running(pid: int, started: str | None) -> bool:
+    """Whether the process first seen at ``pid`` (``started`` is what ``process_start`` read then) has not exited. For a test's look.
+
+    ``process_alive`` says True whenever it cannot tell, which is right for the runner (it never calls a browser gone that may not be)
+    and wrong for a test asking whether the runner had killed it: on Linux a process that has exited reads as running while its new
+    parent reaps it (its /proc entry answers ESRCH), and on Windows a freed pid is soon another program's. This asks about the process
+    itself. Linux: a pidfd, readable once the process has exited (a zombie has). Windows: a handle, signaled once it has exited, which
+    keeps the pid from being handed out while it is open. A running process at the pid counts only if it started when the first one
+    did. With no start recorded the answer is True, so a test that cannot tell fails rather than passes.
+    """
+    from opportunity_app.apply import runner as apply_runner
+
+    if not started:
+        return True
+
+    def same() -> bool:
+        return apply_runner.process_start(pid) == started
+
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        handle = kernel32.OpenProcess(0x00100000 | 0x1000, False, int(pid))   # SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            if ctypes.get_last_error() in (5, 87):
+                return False   # no process has the pid (87), or only one this user may not open, never one a test started (5)
+            return apply_runner.process_alive(pid) and same()
+        try:
+            if kernel32.WaitForSingleObject(handle, 0) == 0:   # WAIT_OBJECT_0: it has exited
+                return False
+            return same()      # running, and the open handle keeps it the process at this pid
+        finally:
+            kernel32.CloseHandle(handle)
+    pidfd_open = getattr(os, "pidfd_open", None)
+    if pidfd_open is not None:
+        try:
+            descriptor = pidfd_open(pid)
+        except ProcessLookupError:
+            return False       # reaped: no process has the pid
+        except OSError:
+            descriptor = -1    # a kernel without pidfds: the look below
+        if descriptor >= 0:
+            import select
+
+            try:
+                if select.select([descriptor], [], [], 0)[0]:
+                    return False   # readable once the process has exited
+                return same()
+            finally:
+                os.close(descriptor)
+    return apply_runner.process_alive(pid) and same()
+
+
+# --- FakeLever: a local Lever board for the browser tests and the sandbox (docs/phase5-lever-handoff-spec.md 10.3) ---------------------
+#
+# Like FakeGreenhouse, the browser sees the REAL hostnames and a route hook answers them, so the adapter's host checks run as in
+# production with no network:
+#
+#     jobs.lever.co / jobs.eu.lever.co   /{site}/{id}/apply (the form), /{site}/{id}/thanks, POST /{site}/{id}/apply (the submit),
+#                                        POST /parseResume, GET /searchLocations, /js/parseResume.js, /js/application.js,
+#                                        /cdn-cgi/challenge-platform/scripts/jsd/main.js
+#     js.hcaptcha.com                    /1/api.js (a stand-in hCaptcha script, tests/fixtures/apply/lever/hcaptcha_api.js)
+#     api.hcaptcha.com                   GET /checksiteconfig and POST /getcaptcha/{sitekey} (whether the next execute() shows a challenge: the
+#                                        switch ``challenge``), POST /checkcaptcha/{sitekey}/... (a pressed challenge); the POSTs are the widget's
+#     newassets.hcaptcha.com             /captcha/v1/fake/hcaptcha.html (the challenge frame and the invisible checkbox frame)
+#     www.googletagmanager.com           GET /gtm.js and notify.bugsnag.com POST (a fictional error report): the noise every live page makes,
+#                                        on by default (``third_party_noise``); answered, and recorded like any request
+#
+# The fixture pages carry no scripts (their inline scripts were removed), so the fake adds what a Lever page does by script, written
+# from the OBSERVED behaviour in spec section 3 and not copied from Lever: the résumé reader (parseResume.js), the page's own wiring
+# (application.js: the location typeahead, Submit through hCaptcha, the page-wide required-checkbox rule, the disability rule), the
+# stand-in hCaptcha script, a cookie banner that nothing may click, and Cloudflare's detection script. The reply to /parseResume, the
+# shape of /searchLocations, how a refused form marks its invalid field and the challenge frame's markup are INVENTED where the spec
+# says they were not seen.
+#
+# What a test reads: ``requests`` (every request that reached the fake, with the parts of a multipart body), ``parse_posts()``,
+# ``apply_posts()``, ``search_gets()``, ``clicks(page)`` (clicks on the controls an agent must never press), ``challenge_frames(page)``.
+#
+# A fulfilled 302 cannot be used for "the submit answers a redirect to /thanks": Playwright does not route the hop that follows a
+# fulfilled redirect, so it leaves the fake and reaches the real jobs.lever.co (seen: it loaded the real thanks page, its fonts and a real
+# __cf_bm cookie). The "to_thanks" scenario answers the POST 200 with a page that sends the browser on to /thanks by a meta refresh and a
+# script; the main frame then really is at /thanks, and the POST's status is 200. Outcome rows that depend on the status class are
+# covered by the pure tests (test_apply_checks).
+#
+# There is no "the submit never answers" scenario, and none can be built on a route hook: a document POST that a route handler holds open
+# freezes the page for Playwright (page.evaluate stalls for minutes and then reports "Target crashed", seen with 1.62), so nothing could
+# read the page while it waited. A fetch that never answers is fine (``parse_mode`` "timeout" and "held"), and a test of the outcome row for
+# a POST that never answered has to build it without a held route.
+
+FAKE_LEVER_HOSTS = ("jobs.lever.co", "jobs.eu.lever.co")
+LEVER_HCAPTCHA_SCRIPT_HOST = "js.hcaptcha.com"
+LEVER_HCAPTCHA_API_HOST = "api.hcaptcha.com"
+LEVER_HCAPTCHA_FRAME_HOST = "newassets.hcaptcha.com"
+LEVER_HCAPTCHA_HOSTS = (LEVER_HCAPTCHA_SCRIPT_HOST, LEVER_HCAPTCHA_API_HOST, LEVER_HCAPTCHA_FRAME_HOST)
+LEVER_LOAD_CONFIG_HOSTS = ("api.hcaptcha.com", "api2.hcaptcha.com", "hcaptcha.com")   # the three hosts the widget POSTs /checksiteconfig to as the page loads (spec 11, Q3)
+LEVER_CLOUDFLARE_PREFIX = "/cdn-cgi/challenge-platform/"
+LEVER_NOISE_HOSTS = ("www.googletagmanager.com", "notify.bugsnag.com")   # the analytics and error-report hosts every Lever page calls (spec 3 item 14)
+LEVER_APPLY_PATH = f"/{LEVER_SITE}/{LEVER_JOB_ID}/apply"
+LEVER_THANKS_PATH = f"/{LEVER_SITE}/{LEVER_JOB_ID}/thanks"
+LEVER_APPLY_URL = f"{LEVER_URL}/apply"
+LEVER_THANKS_URL = f"{LEVER_URL}/thanks"
+LEVER_EU_URL = f"https://jobs.eu.lever.co/{LEVER_SITE}/{LEVER_JOB_ID}"
+LEVER_EU_APPLY_URL = f"{LEVER_EU_URL}/apply"
+LEVER_PARSE_PATH = "/parseResume"
+LEVER_SEARCH_PATH = "/searchLocations"
+LEVER_CLOUDFLARE_SCRIPT_PATH = "/cdn-cgi/challenge-platform/scripts/jsd/main.js"
+LEVER_CLOUDFLARE_BEACON_PATH = "/cdn-cgi/challenge-platform/h/b/jsd/fake"
+LEVER_PAGE_SCRIPTS = ("/js/parseResume.js", "/js/application.js")
+_LEVER_ASSET_FILES = {"/js/parseResume.js": "parseResume.js", "/js/application.js": "application.js"}
+
+# What the submit answers (the page's own URL, multipart):
+LEVER_SCENARIOS = (
+    "to_thanks",          # 200 with a page that sends the browser on to /thanks (see the note above on why not a 302)
+    "thanks_in_place",    # 200 with the "Application submitted!" page at the apply URL (no navigation to /thanks)
+    "form_again",         # 200 with the form drawn again
+    "refused_4xx",        # ``refused_status`` (422) with the form drawn again and ``invalid_field`` marked aria-invalid
+    "server_5xx",         # ``server_status`` (500), a short page with no form
+)
+# What POST /parseResume does:
+LEVER_PARSE_MODES = (
+    "success",            # the canned profile (the page applies it after ``parse_delay_s``, so "working" shows while the agent keeps acting)
+    "failure",            # 422 and a short JSON error (the page shows it after ``parse_delay_s``)
+    "timeout",            # never answers
+    "held",               # answers only when ``release_held()`` is called (a reply that arrives late)
+)
+
+
+@dataclass
+class LeverPart:
+    """One part of a multipart body, as the fake read it. A file's bytes are not kept, only their size and SHA-256."""
+
+    name: str
+    filename: str | None = None
+    content_type: str = ""
+    size: int = 0
+    sha256: str = ""
+    text: str = ""
+
+
+def parse_multipart(content_type: str, body: bytes) -> list[LeverPart]:
+    """The parts of a multipart/form-data body ([] for anything else)."""
+    if not body or not (content_type or "").lower().startswith("multipart/form-data"):
+        return []
+    message = BytesParser(policy=email_policy.default).parsebytes(b"Content-Type: " + content_type.encode("latin-1", "replace") + b"\r\n\r\n" + body)
+    if not message.is_multipart():
+        return []
+    found: list[LeverPart] = []
+    for part in message.iter_parts():
+        payload = part.get_payload(decode=True) or b""
+        filename = part.get_filename()
+        found.append(LeverPart(
+            name=str(part.get_param("name", header="content-disposition") or ""),
+            filename=filename,
+            content_type=part.get_content_type() if filename is not None else "",
+            size=len(payload),
+            sha256=hashlib.sha256(payload).hexdigest(),
+            text="" if filename is not None else payload.decode("utf-8", errors="replace"),
+        ))
+    return found
+
+
+@dataclass
+class LeverSeen(Seen):
+    """A request that reached FakeLever: ``Seen`` plus the content type, the headers, the parts of a multipart body and what the fake answered."""
+
+    content_type: str = ""
+    headers: dict[str, str] = field(default_factory=dict)
+    parts: list[LeverPart] = field(default_factory=list)
+    status: int = 0          # 0: not answered (a hang, a held reply, or an abort)
+
+    def part(self, name: str) -> LeverPart | None:
+        return next((part for part in self.parts if part.name == name), None)
+
+    def text_values(self) -> dict[str, list[str]]:
+        """{name: [values]} of the non-file parts."""
+        found: dict[str, list[str]] = {}
+        for part in self.parts:
+            if part.filename is None:
+                found.setdefault(part.name, []).append(part.text)
+        return found
+
+
+@dataclass
+class LeverReply(Reply):
+    abort: bool = False      # the request fails as a refused connection would (the hCaptcha script that cannot load)
+
+
+_HELD = object()
+
+
+class FakeLever:
+    """A Lever board: ``route`` is the Playwright route handler (``install(context)`` serves a whole context).
+
+    ``scenario`` is what the submit answers (``LEVER_SCENARIOS``) and ``parse_mode`` what /parseResume does (``LEVER_PARSE_MODES``).
+    Every other attribute below is a switch that a test may change while a page is open unless its comment says the page reads it at load.
+    """
+
+    def __init__(self, scenario: str = "to_thanks", *, parse_mode: str = "success", page: str = "demo_eeo_survey.html") -> None:
+        if scenario not in LEVER_SCENARIOS:
+            raise ValueError(f"unknown scenario {scenario!r}")
+        if parse_mode not in LEVER_PARSE_MODES:
+            raise ValueError(f"unknown parse mode {parse_mode!r}")
+        self.scenario = scenario
+        self.parse_mode = parse_mode
+        self.page = page                              # the fixture served for the one fictional posting
+        self.pages: dict[tuple[str, str], str] = {}   # (site, id) -> fixture, for other postings
+        self.any_posting = False                      # every site and id gets ``page`` (the sandbox)
+        self.closed = False                           # the posting is gone: 404
+        self.search_status = 200                      # what /searchLocations answers (a 403 for a lookup that is refused)
+        self.refused_status = 422                     # the status of "refused_4xx"
+        self.server_status = 500                      # the status of "server_5xx"
+        self.invalid_field = "email"                  # the control "refused_4xx" marks aria-invalid
+        self.challenge = False                        # the next hcaptcha.execute() shows a challenge frame instead of a token
+        self.hcaptcha_loads = True                    # False: js.hcaptcha.com cannot be reached (Submit then does nothing)
+        self.hcaptcha_posts_refused = False           # True: every non-GET to api.hcaptcha.com (getcaptcha, checkcaptcha) is aborted (Submit then does nothing)
+        self.interstitial_s = 0.0                     # the first GET of the form starts this many seconds of the Cloudflare interstitial
+        self.interstitial_status = 200                # ...answered with this status (Cloudflare's managed challenge answers 403 with ``cf-mitigated: challenge``)
+        self.cloudflare_beacon = True                 # Cloudflare's script posts a beacon under /cdn-cgi/ when it runs, once per page, as a live one does
+        self.cookie_banner = True
+        self.third_party_noise = True                 # the page loads Google Tag Manager's script and posts an error report to Bugsnag, as a live one does
+        self.inject: list[str] = []                   # extra page scripts (JS source) added to every form page: a telemetry beacon, a WebSocket
+        # Read by the page at load:
+        self.parse_delay_s = 0.15                     # how long the page shows "working" before it applies a /parseResume reply (the reply itself comes at once)
+        self.max_upload_bytes = 100 * 1024 * 1024
+        self.search_debounce_ms = 500
+        self.challenge_during_fill: tuple[float, float] | None = None   # (start, end) seconds after the widget renders: a challenge with nothing pressed
+        self.requests: list[LeverSeen] = []
+        self.websockets: list[str] = []
+        self.held: list[Any] = []                     # /parseResume requests waiting for release_held()
+        self._held_seen: dict[int, LeverSeen] = {}    # id(route) -> the request it holds, so a release marks only what a page really got
+        self.unanswered: list[Any] = []               # requests that never get an answer ("timeout")
+        self.interstitials_served = 0                 # how many GETs of the form the Cloudflare interstitial answered
+        self._interstitial_started: float | None = None
+        self._cors = {"access-control-allow-origin": "*", "access-control-allow-headers": "*"}
+
+    # --- what the tests ask --------------------------------------------------------------
+
+    def requests_to(self, host: str | None = None, path: str | None = None, method: str | None = None) -> list[LeverSeen]:
+        return [seen for seen in self.requests
+                if (host is None or seen.host == host) and (path is None or seen.path == path) and (method is None or seen.method == method)]
+
+    def parse_posts(self) -> list[LeverSeen]:
+        return [seen for seen in self.requests if seen.method == "POST" and seen.host in FAKE_LEVER_HOSTS and seen.path == LEVER_PARSE_PATH]
+
+    def apply_posts(self) -> list[LeverSeen]:
+        """The POSTs to a posting's own /apply URL: the submit."""
+        return [seen for seen in self.requests if seen.method == "POST" and seen.host in FAKE_LEVER_HOSTS and re.fullmatch(r"/[^/]+/[^/]+/apply", seen.path)]
+
+    def search_gets(self) -> list[LeverSeen]:
+        return [seen for seen in self.requests if seen.method == "GET" and seen.host in FAKE_LEVER_HOSTS and seen.path == LEVER_SEARCH_PATH]
+
+    def page_writes(self) -> list[LeverSeen]:
+        """The writes a Lever page makes by itself as it loads, before anyone does anything: the widget's POST /checksiteconfig to three hCaptcha hosts and Cloudflare's
+        beacon (``cloudflare_beacon``), recorded in the load recording (spec 11, Q3), and the Bugsnag error report (``LEVER_NOISE_HOSTS``)."""
+        return [seen for seen in self.requests if seen.method == "POST" and (
+            seen.host in LEVER_NOISE_HOSTS
+            or (seen.host in LEVER_LOAD_CONFIG_HOSTS and seen.path == "/checksiteconfig")
+            or (seen.host in FAKE_LEVER_HOSTS and seen.path.startswith(LEVER_CLOUDFLARE_PREFIX))
+        )]
+
+    def non_get_requests(self, *, noise: bool = True) -> list[LeverSeen]:
+        """Every request that is not a GET, HEAD or OPTIONS. ``noise=False`` leaves out ``page_writes``: what a page writes by itself as it loads."""
+        mine = self.page_writes() if not noise else []
+        return [seen for seen in self.requests if seen.method not in ("GET", "HEAD", "OPTIONS") and not any(seen is other for other in mine)]
+
+    @staticmethod
+    def clicks(page: Any) -> dict[str, int]:
+        """How many times the page counted a click on each control an agent must never press, not counting the page's own click on the
+        hidden submit: submit (#btn-submit), hiddenSubmit (#hcaptchaSubmitBtn), cookie (the banner's buttons) and challenge (inside the
+        hCaptcha challenge frame). A student's own press of Submit is in the count."""
+        return dict(page.evaluate("() => Object.assign({submit: 0, hiddenSubmit: 0, cookie: 0, challenge: 0}, window.__leverClicks || {})"))
+
+    @staticmethod
+    def challenge_frames(page: Any) -> int:
+        """How many visible hCaptcha challenge frames the page holds."""
+        return int(page.evaluate("""() => Array.from(document.querySelectorAll('iframe[title="Main content of the hCaptcha challenge"]'))
+            .filter((frame) => { const box = frame.getBoundingClientRect(); return box.width > 0 && box.height > 0; }).length"""))
+
+    @staticmethod
+    def show_challenge(page: Any) -> None:
+        """Draw a challenge frame now with nothing pressed (as if hCaptcha had decided to show one during a fill)."""
+        page.evaluate("() => window.hcaptcha.__fakeShow()")
+
+    @staticmethod
+    def hide_challenge(page: Any) -> None:
+        page.evaluate("() => window.hcaptcha.__fakeHide()")
+
+    def release_held(self, status: int = 200) -> int:
+        """Answer every held /parseResume now (the canned profile, or ``status`` with an error). Returns how many were held."""
+        held, self.held = self.held, []
+        for route in held:
+            body = json.dumps(lever_parse_reply()) if status == 200 else json.dumps({"error": "could not read the file"})
+            seen = self._held_seen.pop(id(route), None)
+            try:
+                if route.request.frame.page.is_closed():
+                    continue   # Playwright accepts a fulfill for a closed page without a word: the reply reached nothing, its record stays 0
+                route.fulfill(status=status, content_type="application/json", body=body)
+            except Exception:  # noqa: BLE001 - the page was closed while it waited: the reply reached nothing, so its record stays unanswered (0)
+                continue
+            if seen is not None:
+                seen.status = status
+        return len(held)
+
+    def drop_unanswered(self) -> None:
+        """Fail every request that was held or never answered, so a context can close without Playwright logging a route left open.
+        Call it before the context closes (a test's cleanup)."""
+        pending, self.held, self.unanswered = self.held + self.unanswered, [], []
+        self._held_seen.clear()
+        for route in pending:
+            try:
+                route.abort()
+            except Exception:  # noqa: BLE001 - the page is already gone
+                pass
+
+    # --- Playwright wiring ---------------------------------------------------------------
+
+    def install(self, context: Any) -> None:
+        """Serve a whole browser context from the fake (for tests that drive Chromium directly)."""
+        context.route("**/*", self.route)
+        if hasattr(context, "route_web_socket"):
+            def refuse(ws: Any) -> None:
+                self.websockets.append(ws.url)   # refused by never connecting; see FakeGreenhouse.install
+            context.route_web_socket("**/*", refuse)
+
+    def route(self, route: Any) -> None:
+        request = route.request
+        try:
+            body = request.post_data_buffer or b""
+        except Exception:  # noqa: BLE001 - no body
+            body = b""
+        try:
+            headers = dict(request.headers)
+        except Exception:  # noqa: BLE001
+            headers = {}
+        reply = self.answer(request.method, request.url, body, content_type=headers.get("content-type", ""), headers=headers,
+                            resource_type=getattr(request, "resource_type", ""))
+        if reply is None:
+            self.unanswered.append(route)   # never answers (drop_unanswered() ends it)
+            return
+        if reply is _HELD:
+            self.held.append(route)
+            self._held_seen[id(route)] = self.requests[-1]   # the request answer() just recorded (route callbacks run one at a time)
+            return
+        if getattr(reply, "abort", False):
+            route.abort("connectionrefused")
+            return
+        route.fulfill(status=reply.status, headers=reply.headers, content_type=reply.content_type, body=reply.body)
+
+    # --- the fake itself (no Playwright) ---------------------------------------------------
+
+    def answer(self, method: str, url: str, body: bytes = b"", *, content_type: str = "", headers: dict[str, str] | None = None,
+               resource_type: str = "") -> Any:
+        """The reply to one request: a ``Reply``, ``None`` (it never answers) or the held marker. Records the request first."""
+        parts = urlsplit(url)
+        host, path = (parts.hostname or "").lower(), parts.path
+        seen = LeverSeen(method, host, path, parts.query, resource_type, body.decode("utf-8", errors="replace"), content_type=content_type,
+                         headers=dict(headers or {}), parts=parse_multipart(content_type, body))
+        self.requests.append(seen)
+        reply = self._dispatch(seen, host, path, parts.query)
+        if isinstance(reply, Reply):
+            seen.status = reply.status
+        return reply
+
+    def _dispatch(self, seen: LeverSeen, host: str, path: str, query: str) -> Any:
+        method = seen.method
+        if method == "OPTIONS":
+            return Reply(204, headers=self._cors)
+        if host == LEVER_HCAPTCHA_SCRIPT_HOST:
+            if method == "GET" and path == "/1/api.js":
+                if not self.hcaptcha_loads:
+                    return LeverReply(0, abort=True)
+                return Reply(200, lever_fixture_text("hcaptcha_api.js"), "application/javascript", self._cors)
+            return Reply(404, "")
+        if host == LEVER_HCAPTCHA_API_HOST:
+            if method not in ("GET", "HEAD") and self.hcaptcha_posts_refused:
+                return LeverReply(0, abort=True)
+            if path == "/checksiteconfig" or (method == "POST" and path.startswith("/getcaptcha/")):
+                return Reply(200, json.dumps({"pass": True, "challenge": bool(self.challenge)}), "application/json", self._cors)
+            if method == "POST" and path.startswith("/checkcaptcha/"):
+                return Reply(200, json.dumps({"pass": True}), "application/json", self._cors)
+            return Reply(200, "{}", "application/json", self._cors)
+        if host == LEVER_HCAPTCHA_FRAME_HOST:
+            if method == "GET" and path == "/captcha/v1/fake/hcaptcha.html":
+                return Reply(200, lever_fixture_text("hcaptcha_frame.html"))
+            return Reply(404, "")
+        if host == "www.googletagmanager.com" and method == "GET":
+            return Reply(200, "/* a stand-in for Google Tag Manager */", "application/javascript", self._cors)
+        if host not in FAKE_LEVER_HOSTS:
+            return Reply(200, "{}" if method != "GET" else "", "application/json" if method != "GET" else "text/plain", self._cors)
+        if method == "GET":
+            return self._lever_get(path, query)
+        if method == "POST":
+            if path == LEVER_PARSE_PATH:
+                return self._parse()
+            if path.startswith("/cdn-cgi/"):
+                return Reply(204, "")
+            match = re.fullmatch(r"/([^/]+)/([^/]+)/apply", path)
+            if match and self._fixture_for(match.group(1), match.group(2)):
+                return self._apply(match.group(1), match.group(2))
+        return Reply(404, "")
+
+    def _fixture_for(self, site: str, job_id: str) -> str | None:
+        if self.closed:
+            return None
+        if (site, job_id) in self.pages:
+            return self.pages[(site, job_id)]
+        if self.any_posting or (site, job_id) == (LEVER_SITE, LEVER_JOB_ID):
+            return self.page
+        return None
+
+    def _lever_get(self, path: str, query: str) -> Reply:
+        if path in _LEVER_ASSET_FILES:
+            return Reply(200, lever_fixture_text(_LEVER_ASSET_FILES[path]), "application/javascript")
+        if path == LEVER_CLOUDFLARE_SCRIPT_PATH:
+            beacon = f'fetch("{LEVER_CLOUDFLARE_BEACON_PATH}", {{method: "POST", body: "fake"}}).catch(function () {{}});' if self.cloudflare_beacon else ""
+            return Reply(200, f"/* a stand-in for Cloudflare's detection script */ {beacon}", "application/javascript")
+        if path == LEVER_SEARCH_PATH:
+            if self.search_status != 200:
+                return Reply(self.search_status, "{}", "application/json")
+            typed = (parse_qs(query).get("text") or [""])[0].casefold()
+            found = [option for option in lever_search_options() if typed and typed in option["name"].casefold()]
+            return Reply(200, json.dumps(found), "application/json")
+        match = re.fullmatch(r"/([^/]+)/([^/]+)/(apply|thanks)", path)
+        if match:
+            site, job_id, which = match.groups()
+            fixture = self._fixture_for(site, job_id)
+            if fixture is None:
+                return Reply(404, lever_fixture_text("closed.html"))
+            if which == "thanks":
+                return Reply(200, lever_fixture_text("thanks.html"))
+            return self._apply_page(fixture)
+        match = re.fullmatch(r"/([^/]+)/([^/]+)", path)
+        if match and self._fixture_for(match.group(1), match.group(2)):
+            return Reply(200, f'<!DOCTYPE html><title>{LEVER_COMPANY} - {LEVER_TITLE}</title><a href="{path}/apply">Apply for this job</a>')
+        if path.startswith(("/js/", "/cdn-cgi/")):
+            return Reply(200, "", "application/javascript")
+        return Reply(404, "")
+
+    # --- the form page ---------------------------------------------------------------------
+
+    def _apply_page(self, fixture: str, *, marked_invalid: str = "") -> Reply:
+        cookie = {"set-cookie": "__cf_bm=fake-cloudflare-cookie; Path=/; Secure; HttpOnly; SameSite=None"}
+        if self.interstitial_s > 0:
+            if self._interstitial_started is None:
+                self._interstitial_started = time.monotonic()
+            if time.monotonic() - self._interstitial_started < self.interstitial_s:
+                page = lever_fixture_text("cloudflare_interstitial.html").replace('<meta http-equiv="refresh" content="390">', "")
+                page = page.replace("</body>", "<script>setTimeout(function () { location.reload(); }, 200);</script></body>")
+                self.interstitials_served += 1
+                marked = {"cf-mitigated": "challenge"} if self.interstitial_status != 200 else {}
+                return Reply(self.interstitial_status, page, headers={**cookie, **marked})
+        html = lever_fixture_text(fixture)
+        if marked_invalid:
+            html = re.sub(r'(<(?:input|select|textarea)\b[^>]*\bname="%s")' % re.escape(marked_invalid), r'\1 aria-invalid="true"', html, count=1)
+            html = html.replace('<form id="application-form"', '<div class="error-message" data-qa="form-error">Please check the field marked below.</div><form id="application-form"', 1)
+        if "</body>" not in html:
+            return Reply(200, html, headers=cookie)
+        return Reply(200, html.replace("</body>", self._page_additions() + "</body>", 1), headers=cookie)
+
+    def _page_additions(self) -> str:
+        config = {
+            "maxUploadBytes": self.max_upload_bytes,
+            "parseDelayMs": int(round(self.parse_delay_s * 1000)),
+            "searchDebounceMs": self.search_debounce_ms,
+            "challengeDuringFill": list(self.challenge_during_fill) if self.challenge_during_fill else None,
+        }
+        extra = "".join(f"<script>{source}</script>" for source in self.inject)
+        noise = (
+            '<script src="https://www.googletagmanager.com/gtm.js?id=GTM-FAKE" async></script>'
+            '<script>try { fetch("https://notify.bugsnag.com/", {method: "POST", body: JSON.stringify({apiKey: "fake", events: [{exceptions: [{message: "a fictional error report"}]}]})})'
+            '.catch(function () {}); } catch (error) {}</script>'
+        ) if self.third_party_noise else ""
+        banner = (
+            '<div class="cc-window cc-banner cc-type-opt-out" role="dialog" aria-label="cookieconsent" style="position:fixed;top:8px;right:8px;width:260px;'
+            'z-index:1000;background:#222;color:#fff;padding:8px"><span class="cc-message">This site uses cookies (a fictional notice).</span>'
+            '<div class="cc-compliance"><a role="button" tabindex="0" class="cc-btn cc-deny">Deny</a> <a role="button" tabindex="0" class="cc-btn cc-allow">Accept</a></div></div>'
+        ) if self.cookie_banner else ""
+        style = (
+            "<style>.resume-upload-working,.resume-upload-success,.resume-upload-failure,.resume-upload-oversize{display:none}"
+            ".hidden{display:none}.dropdown-container{display:none;position:absolute;background:#333;color:#fff;z-index:50}"
+            ".dropdown-container.open{display:block;min-width:120px;min-height:1.5em}.dropdown-no-results,.dropdown-loading-results{display:none}"
+            ".dropdown-container.empty .dropdown-no-results{display:block}.dropdown-container.loading .dropdown-loading-results{display:block}"
+            ".dropdown-option{padding:4px 8px;cursor:pointer}.dropdown-option.active{background:#555}</style>"
+        )
+        return (
+            f"{style}{banner}<script>window.__fakeLever = {json.dumps(config)};</script>"
+            + "".join(f'<script src="{path}" defer></script>' for path in LEVER_PAGE_SCRIPTS)
+            + f'<script src="https://{LEVER_HCAPTCHA_SCRIPT_HOST}/1/api.js?onload=hcaptchaOnLoad&render=explicit" async defer></script>'
+            + f'<script src="{LEVER_CLOUDFLARE_SCRIPT_PATH}" defer></script>{noise}{extra}'
+        )
+
+    # --- the reader and the submit -----------------------------------------------------------
+
+    def _parse(self) -> Any:
+        if self.parse_mode == "timeout":
+            return None
+        if self.parse_mode == "held":
+            return _HELD
+        if self.parse_mode == "failure":
+            return Reply(422, json.dumps({"error": "could not read the file"}), "application/json")
+        return Reply(200, json.dumps(lever_parse_reply()), "application/json")
+
+    def _apply(self, site: str, job_id: str) -> Reply | None:
+        fixture = self._fixture_for(site, job_id) or self.page
+        if self.scenario == "to_thanks":
+            target = f"/{site}/{job_id}/thanks"
+            return Reply(200, f'<!DOCTYPE html><meta http-equiv="refresh" content="0;url={target}"><script>location.replace("{target}");</script>')
+        if self.scenario == "thanks_in_place":
+            return Reply(200, lever_fixture_text("thanks.html"))
+        if self.scenario == "form_again":
+            return self._apply_page(fixture)
+        if self.scenario == "refused_4xx":
+            again = self._apply_page(fixture, marked_invalid=self.invalid_field)
+            return Reply(self.refused_status, again.body, again.content_type, again.headers)
+        return Reply(self.server_status, "<!DOCTYPE html><title>Something went wrong</title><h1>Something went wrong</h1>")
+
+
+def lever_parse_reply() -> dict[str, Any]:
+    """The canned profile /parseResume answers (tests/fixtures/apply/lever/parse_resume_reply.json). Every value in it is wrong on purpose."""
+    return json.loads(lever_fixture_text("parse_resume_reply.json"))
+
+
+def lever_search_options() -> list[dict[str, Any]]:
+    """The places FakeLever's /searchLocations draws its answers from (tests/fixtures/apply/lever/search_places.json; search_locations_reply.json is the recording's shape)."""
+    return json.loads(lever_fixture_text("search_places.json"))

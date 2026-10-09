@@ -10,7 +10,7 @@
 
   // From app-ui.js.
   const {
-    CLOCK_FORMAT, announce, applicationPicker, autoSaveSelect, chip, element, formatDate, formatDateTime, humanizeKey,
+    CLOCK_FORMAT, announce, applicationPicker, atsName, autoSaveSelect, chip, element, formatDate, formatDateTime, humanizeKey,
     optionElement, plural, showError, timeAgo,
   } = App;
 
@@ -33,7 +33,7 @@
   // resend after a bounce, and contact forms send anything, and only a draft
   // the student approved (a resend: approved before the bounce, greeting aside).
   const AUTOMATION_SWITCHES = [
-    ["auto_drafts", "Write drafts automatically", "Every company with a contact and a location gets a draft written, whether a deep search found it, you added it, or a contact turned up later. Each one waits for your approval."],
+    ["auto_drafts", "Write drafts automatically", "Every company you have not contacted gets a draft written, whether a deep search found it or you added it, including those that still need a contact or a location. Without a contact it greets the company's team, and the greeting changes when a contact turns up; without a checked location it says nothing about where you live, and the \"(live in ...)\" line goes in on its own once the location is checked and is where you live. Companies ready to send are drafted first. Each one waits for your approval."],
     ["bounce_recovery", "Find a new contact after a bounce", "When an email bounces, the app searches the company's site again, picks the best address that has not bounced, and updates the greeting. You review the draft and send it again, unless Resend automatically after a bounce is on."],
     ["bounce_auto_resend", "Resend automatically after a bounce", "Works with Find a new contact after a bounce. When the only change to the email you approved is the greeting for the new contact, it goes out again right away, without a click. A greeting written to someone else, or no greeting at all, waits for you. A guessed address goes only when an inbox listed on the company's site is in Cc, so a wrong guess still reaches them. Gmail is checked for a reply first, and it happens once per company; after a second bounce the draft waits for you. Needs Gmail connected."],
     ["scheduled_sending", "Send on their weekday morning", "Your confirmed Send queues the approved email for 9 to 9:40 AM on the recipient's next weekday, in their timezone (from the company's US state, or yours when it names none). Editing the draft cancels it; Send now and Cancel stay on the card. Turning this off does not cancel emails already scheduled; cancel them on their cards, or pause automation to hold them. Needs Gmail connected. Just before it goes, Gmail is checked again for a reply or a bounce; a follow-up never goes to a company that replied."],
@@ -199,8 +199,12 @@
   function syncAutomationControls(settings) {
     (settings?.features || []).forEach((feature) => {
       document.querySelectorAll(`[data-automation-key="${CSS.escape(feature.key)}"]`).forEach((control) => paintAutomationControl(control, feature));
+      // A sentence that names a switch's state ("... is on") follows it too (Apply for me settings, Lever).
+      document.querySelectorAll(`[data-automation-word="${CSS.escape(feature.key)}"]`).forEach((word) => { word.textContent = feature.mode === "on" ? "on" : "off"; });
     });
     if (settings) paintAutomationPause(settings.paused);
+    // What is built from the switches somewhere else (Apply for me settings) follows them too.
+    if (settings) document.dispatchEvent(new CustomEvent("opportunity:automation-synced", { detail: settings }));
   }
 
   async function saveAutomationMode(key, value) {
@@ -238,11 +242,16 @@
   // pressed, and an 'application' one handed to Greenhouse (Apply for me).
   // Nothing else is past stopping (a Gmail draft being saved sends
   // nothing), so any other action is left out rather than called an email.
+  // A Finish in browser window (action 'window') is not on its way anywhere: the student's own Submit is what sends, so it says
+  // what it is in its own words, from the server's label.
+  const WINDOW_OPEN = "A Finish in browser window is open. Pausing doesn't stop your own Submit; press Stop to end it.";
+
   function inFlightItem(item) {
+    if (item?.action === "window") return { window: true, label: String(item.label || WINDOW_OPEN) };
     if (item?.action !== "send" && item?.action !== "form" && item?.action !== "application") return null;
     const form = item.action === "form";
     const application = item.action === "application";
-    const how = application ? "handed to Greenhouse" : form ? "submission started" : item.source === "scheduled_send" ? "handed to Gmail" : "sending started";
+    const how = application ? `handed to ${atsName(item)}` : form ? "submission started" : item.source === "scheduled_send" ? "handed to Gmail" : "sending started";
     const when = automationWhen(item.at);
     const to = item.company ? ` to ${item.company}` : "";
     return {
@@ -255,7 +264,13 @@
 
   // What a pause could not stop, said plainly: an email Gmail already has goes.
   function inFlightSentence(items) {
-    const described = (Array.isArray(items) ? items : []).map(inFlightItem).filter(Boolean);
+    const all = (Array.isArray(items) ? items : []).map(inFlightItem).filter(Boolean);
+    const windows = [...new Set(all.filter((entry) => entry.window).map((entry) => entry.label))].join(" ");
+    const sent = inFlightSentenceOf(all.filter((entry) => !entry.window));
+    return [sent, windows].filter(Boolean).join(" ");
+  }
+
+  function inFlightSentenceOf(described) {
     if (!described.length) return "";
     if (described.length === 1) {
       const [only] = described;
@@ -282,7 +297,8 @@
       return `A Gmail draft${item.company ? ` for ${item.company}` : ""} may have been saved without the app recording it${started}. Check your Gmail Drafts; a draft sends nothing.`;
     }
     if (item.action === "application") {
-      return `The application${to} may or may not have reached Greenhouse${started}. Look for Greenhouse's confirmation email or check the company's page, then say whether it went through.`;
+      const ats = atsName(item);
+      return `The application${to} may or may not have reached ${ats}${started}. Look for ${ats}'s confirmation email or check the company's page, then say whether it went through.`;
     }
     const form = item.action === "form";
     const what = form ? "The contact form message" : item.kind === "follow_up" ? "The follow-up" : item.kind === "thank_you" ? "The thank-you" : "The email";
@@ -413,6 +429,11 @@
       const described = inFlightItem(item);
       if (!described) return;
       const row = element("li");
+      if (described.window) {
+        row.append(element("strong", "", "Window open"), element("span", "", described.label));
+        list.appendChild(row);
+        return;
+      }
       row.append(
         element("strong", "", "On its way"),
         element("span", "", `${described.article[0].toUpperCase()}${described.article.slice(1)}${described.to}: ${described.detail}. It can't be stopped.`),
@@ -1183,7 +1204,7 @@
   // event recorded. Nothing automatic is ever labelled as the student's own.
   // An automatic change reads "Automatic" until its action is looked up
   // (labelAutomaticChanges), which can tell one the student approved.
-  function changeAuthor(source) {
+  function changeAuthor(source, ats = atsName()) {
     const value = typeof source === "string" ? source : "";
     if (!value || value === "user") return "You";
     if (value.startsWith("automation-undo:")) return "Undone by you";
@@ -1192,6 +1213,10 @@
     if (value.startsWith("monitored_event:")) return "From an email (you confirmed)";
     if (value.startsWith("agent_proposal:")) return "Agent (you approved)";
     if (value === "application_import") return "Imported";
+    if (value === "apply_agent:confirmation_email") return "The confirmation email";
+    if (value === "apply_agent:student_confirmed") return "You confirmed";
+    if (value === "apply_agent:confirmation_page") return `${ats}'s confirmation page`;
+    if (value === "apply_agent:watch") return "The app, on its own";
     return humanizeKey(value.split(":")[0]);
   }
 

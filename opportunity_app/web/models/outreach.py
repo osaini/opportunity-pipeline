@@ -55,6 +55,9 @@ class OutreachTargetRequest(BaseModel):
     confirm_location: Annotated[str, Field(max_length=200)] | bool | None = None
     # True files the company under Not interested (kept, and left alone by automation); False moves it back.
     not_interested: bool | None = None
+    # True files the company under Applied directly (the student applied on its own site; kept, and left alone by
+    # automation); False moves it back.
+    applied_directly: bool | None = None
 
 
 class OutreachDraftRequest(BaseModel):

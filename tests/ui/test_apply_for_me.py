@@ -46,7 +46,7 @@ def test_a_saved_greenhouse_role_shows_what_is_missing_and_changes_nothing_in_th
     sensitive = section.locator('[data-apply-key="question_4000000105"]')
     expect(sensitive).to_contain_text("The app doesn't answer this kind of question for you")
     expect(sensitive.locator("textarea, select, input")).to_have_count(0)
-    expect(section.locator(".apply-note")).to_contain_text("Nothing in your tracker has changed")
+    expect(section.locator(".apply-note")).to_contain_text("A rehearsal changes nothing in your tracker")
     assert tracker_rows(live_server) == before, "opening the section wrote nothing"
 
 
@@ -141,6 +141,44 @@ def test_the_profile_keeps_the_email_and_phone_an_application_is_filled_with(own
     expect(owner_page.get_by_label("Email for applications")).to_have_value("sam.rivera@example.test")
 
 
+def test_the_profile_keeps_a_mailing_address_for_contact_forms_and_lets_it_be_cleared(owner_page, live_server):
+    from opportunity_app.student.profile import update_profile
+
+    with db(live_server) as conn:
+        update_profile(conn, {"contact": {"linkedin": "https://example.test/in/sam"}}, ["contact"], user_id=USER)
+    owner_page.click("#profile-nav")
+    wait_for_results(owner_page)
+    fieldset = owner_page.locator(".profile-fieldset", has_text="Mailing address (optional)")
+    expect(fieldset).to_contain_text("only then")
+    expect(fieldset).to_contain_text("a form that requires only a country, state, city or ZIP gets only that")
+    entries = {"Address line 1": "12 Example Lane", "City": "Riverton", "State or province": "Oregon", "ZIP or postal code": "97000",
+               "Country": "United States"}
+    for label, value in entries.items():
+        fieldset.get_by_label(label, exact=True).fill(value)
+    owner_page.get_by_role("button", name="Save and confirm profile").click()
+    expect(owner_page.locator(".form-status", has_text="Profile saved and confirmed.")).to_be_visible()
+
+    def stored():
+        with db(live_server) as conn:
+            row = conn.execute("SELECT value_json FROM profile_facts WHERE field_path='contact' AND confirmed=1").fetchone()
+        return json.loads(row[0]) if row else None
+
+    assert stored() == {"linkedin": "https://example.test/in/sam", "address_line1": "12 Example Lane", "city": "Riverton",
+                        "state": "Oregon", "postal_code": "97000", "country": "United States"}
+    owner_page.reload()
+    wait_for_results(owner_page)
+    owner_page.click("#profile-nav")
+    wait_for_results(owner_page)
+    fieldset = owner_page.locator(".profile-fieldset", has_text="Mailing address (optional)")
+    for label, value in entries.items():
+        expect(fieldset.get_by_label(label, exact=True)).to_have_value(value)
+    for label in entries:
+        fieldset.get_by_label(label, exact=True).fill("")
+    owner_page.get_by_role("button", name="Save and confirm profile").click()
+    expect(owner_page.locator(".form-status", has_text="Profile saved and confirmed.")).to_be_visible()
+    assert stored() == {"linkedin": "https://example.test/in/sam"}, "a cleared address is removed, and what a résumé saved is kept"
+
+
 def test_no_missing_answer_offers_use_for_any_company(apply_ready, owner_page):
     open_saved_role(owner_page)
     section = owner_page.locator(".apply-for-me")
@@ -183,7 +221,7 @@ def test_a_saved_role_that_is_not_on_greenhouse_says_so(apply_ready, owner_page,
     with db(live_server) as conn:
         actions.record_intent(conn, "job-b", "saved", user_id=USER)
     open_saved_role(owner_page, "Orbit Systems")
-    expect(owner_page.locator(".apply-for-me .apply-summary")).to_have_text("Apply for me works with Greenhouse postings only, for now")
+    expect(owner_page.locator(".apply-for-me .apply-summary")).to_have_text("Apply for me works with Greenhouse and Lever postings only, for now")
     expect(owner_page.locator(".apply-for-me button")).to_have_count(0)
 
 
@@ -229,7 +267,7 @@ def test_the_settings_show_the_limits_and_keep_an_exact_option_the_student_saves
 def test_the_profile_keeps_the_name_written_on_an_application(owner_page, live_server):
     owner_page.click("#profile-nav")
     wait_for_results(owner_page)
-    fields = owner_page.locator(".profile-fieldset")
+    fields = owner_page.locator(".profile-fieldset", has_text="Name for applications")
     expect(fields.locator("legend")).to_have_text("Name for applications")
     fields.get_by_label("First name").fill("Ana María")
     fields.get_by_label("Last name").fill("de la Cruz")

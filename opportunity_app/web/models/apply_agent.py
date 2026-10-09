@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ApplyAnswerRequest(BaseModel):
@@ -14,6 +16,8 @@ class ApplyAnswerRequest(BaseModel):
 
 class ApplyLabelRequest(BaseModel):
     label: str = Field(min_length=1, max_length=200)
+    # Whose form's list this is. Left out, it is Greenhouse's, as it was before Lever.
+    ats: str = Field(default="greenhouse", min_length=1, max_length=40)
 
 
 class ApplySensitiveAnswerRequest(BaseModel):
@@ -38,3 +42,34 @@ class ApplySensitiveEntryRequest(BaseModel):
 
 class ApplySensitiveCategoriesRequest(BaseModel):
     categories: list[str] = Field(max_length=20)
+
+
+class ApplyLookupRequest(BaseModel):
+    # The text the student typed into one typeahead, to be looked up on the form. It is sent to Greenhouse's lookup service only.
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    key: str = Field(min_length=1, max_length=200)
+    text: str = Field(min_length=1, max_length=100)
+
+
+class ApplyRehearsalRequest(BaseModel):
+    # The body is optional. A form that does not look like the saved role is rehearsed only when the student has said it is the right posting.
+    posting_confirmed: bool = False
+
+
+class ApplyHandoffRequest(BaseModel):
+    # Finish in browser: the ticks the student gave (each names an "ask" the start would otherwise refuse), and that they checked a
+    # posting that does not look like the saved role.
+    acknowledged: list[Literal["company_limit", "released_job", "unmatched_confirmation", "applying_old", "active_at_company"]] = Field(
+        default_factory=list, max_length=5,
+    )
+    posting_confirmed: bool = False
+
+
+class ApplyReviewRequest(BaseModel):
+    verdict: Literal["right", "wrong"]
+    note: str = Field(default="", max_length=500)
+
+class ApplyClaimResolveRequest(BaseModel):
+    # The card's answer for an attempt that may have reached Greenhouse: It went through, or It didn't go through.
+    went_through: bool

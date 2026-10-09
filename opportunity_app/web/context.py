@@ -32,8 +32,10 @@ import httpx
 
 from .. import APPLY_ROOT, DEFAULT_PLATFORM_DB, DEFAULT_PROFILE, STATIC_DIR
 from ..apply import preflight as apply_preflight, runs as apply_runs
+from ..apply.agent import DefaultApplyAgentFactory
+from ..apply.runner import ApplyRunner
 from ..integrations.agent_providers import AgentProvider, build_provider
-from ..apply.schema_client import SchemaClient, default_schema_client_factory
+from ..apply.schema_client import PageClient, SchemaClient, default_page_client_factory, default_schema_client_factory
 from ..opportunities.boards import BoardTracker
 from ..opportunities.captures import DEFAULT_CAPTURE_STORAGE
 from ..core.database import is_postgres_target
@@ -112,6 +114,7 @@ class AppOptions:
     outreach_form_submitter_factory: Callable[..., Any] | None = None
     apply_agent_factory: Any = None
     apply_schema_client_factory: Callable[[], SchemaClient] | None = None
+    apply_page_client_factory: Callable[[], PageClient] | None = None
     call_prep_worker: CallPrepWorker | None = None
     start_call_prep_worker: bool | None = None
     start_inbox_watcher: bool | None = None
@@ -181,6 +184,7 @@ class AppServices:
     form_submitter_factory: Callable[..., Any] | None
     gmail_client_factory: Callable[[], httpx.Client]
     apply_schema_client_factory: Callable[[], SchemaClient] | None
+    apply_page_client_factory: Callable[[], PageClient] | None
     apply_agent_factory: Any
     pdf_renderer: Callable[[str], bytes] | None
     refresh_manager: RefreshManager | None
@@ -226,6 +230,8 @@ class AppRuntime:
     # (static_dir resolved, its mtime_ns, the names it lists, name -> resolves inside it): see web/assets.py.
     asset_listing: tuple[Any, int, frozenset[str], dict[str, bool]] | None = None
     apply_schema_cache: apply_preflight.SchemaCache = field(default_factory=apply_preflight.SchemaCache)
+    # Apply for me's single slot for a rehearsal or an option lookup. One per app, which in the real server is one per process.
+    apply_runner: ApplyRunner = field(default_factory=ApplyRunner)
 
 
 @dataclass(frozen=True)
@@ -325,7 +331,9 @@ def build_context(options: AppOptions) -> AppContext:
     # the real app. A sandbox or a test may opt in with fakes (no network, no browser); without them the check and
     # the start routes answer 503 at once, which is also what the fuzzer sees.
     resolved_apply_schema_client_factory = options.apply_schema_client_factory or (default_schema_client_factory if real_product_db else None)
-    resolved_apply_agent_factory = options.apply_agent_factory or (apply_runs.PlaywrightProbe() if real_product_db else None)
+    # Lever has no listing, so its check reads the posting's own application page; the same rule for who gets the real client.
+    resolved_apply_page_client_factory = options.apply_page_client_factory or (default_page_client_factory if real_product_db else None)
+    resolved_apply_agent_factory = options.apply_agent_factory or (DefaultApplyAgentFactory() if real_product_db else None)
     apply_runs.configure_agent_factory(resolved_apply_agent_factory)
     # The status panel reads this machine's scheduler, daily-run state and
     # data/pipeline.db, which only describe the real product database.
@@ -439,6 +447,7 @@ def build_context(options: AppOptions) -> AppContext:
             form_submitter_factory=resolved_form_submitter_factory,
             gmail_client_factory=resolved_gmail_client_factory,
             apply_schema_client_factory=resolved_apply_schema_client_factory,
+            apply_page_client_factory=resolved_apply_page_client_factory,
             apply_agent_factory=resolved_apply_agent_factory,
             pdf_renderer=resolved_pdf_renderer,
             refresh_manager=refresh_manager,

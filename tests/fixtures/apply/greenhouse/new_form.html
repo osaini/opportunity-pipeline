@@ -19,8 +19,10 @@
   input[type=text], input[type=email], input[type=tel], textarea, select { width: 100%; padding: .4rem; box-sizing: border-box; }
   .visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
   .required::after { content: "*"; margin-left: .2rem; }
+  .rs { position: relative; }
   .select__control { border: 1px solid #888; border-radius: 4px; padding: .3rem; }
-  .select__menu { border: 1px solid #888; background: #fff; }
+  /* Over what follows it, as react-select's menu is: an open menu covers the next field. */
+  .select__menu { position: absolute; left: 0; right: 0; z-index: 10; border: 1px solid #888; background: #fff; }
   .select__option { padding: .3rem .5rem; cursor: pointer; }
   .select__multi-value { display: inline-block; background: #ddd; margin-right: .3rem; padding: 0 .3rem; }
   .error { color: #b00020; }
@@ -268,6 +270,24 @@
       menu.hidden = labels.length === 0;
       input.setAttribute("aria-expanded", String(labels.length > 0));
     }
+    // Imitates react-select's onControlMouseDown: a press on the control opens a closed menu, and closes an open one
+    // only when the press is NOT on the input itself (react-select leaves the menu open then). A lookup list shows nothing
+    // until something is typed (as the live one), so opening it empty leaves the menu closed.
+    mount.querySelector(".select__control").addEventListener("mousedown", function (event) {
+      if (!menu.hidden) {
+        if (event.target.tagName !== "INPUT" && event.target.tagName !== "TEXTAREA") { menu.hidden = true; input.setAttribute("aria-expanded", "false"); }
+      } else {
+        show(lookup ? [] : options);
+      }
+    });
+    // A press on the menu keeps the input focused (react-select does the same), so choosing an option is not a blur.
+    menu.addEventListener("mousedown", function (event) { event.preventDefault(); });
+    // The input losing focus closes the menu and clears what was typed to search, as react-select's onInputBlur does.
+    input.addEventListener("blur", function () {
+      input.value = "";
+      menu.hidden = true;
+      input.setAttribute("aria-expanded", "false");
+    });
     input.addEventListener("input", function () {
       var text = input.value.trim().toLowerCase();
       if (!text) { show([]); return; }

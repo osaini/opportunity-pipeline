@@ -147,7 +147,11 @@ def _decode_list(value: str | None) -> list[Any]:
 
 def _evidence_for_reason(reason: str) -> dict[str, Any]:
     lowered = reason.lower()
-    if "region" in lowered or "location" in lowered:
+    if "post-graduation" in lowered:
+        profile_field, opportunity_fields = "graduation_year", ["description"]
+    elif "pays" in lowered or "unpaid" in lowered:
+        profile_field, opportunity_fields = "compensation_preferences", ["description"]
+    elif "region" in lowered or "location" in lowered:
         profile_field, opportunity_fields = "regions", ["location"]
     elif "skill" in lowered or "tool" in lowered:
         profile_field, opportunity_fields = "skills", ["title", "description"]
@@ -159,7 +163,7 @@ def _evidence_for_reason(reason: str) -> dict[str, Any]:
         profile_field, opportunity_fields = "remote_ok", ["location", "description"]
     elif "term" in lowered or "summer" in lowered or "spring" in lowered or "fall" in lowered:
         profile_field, opportunity_fields = "available_terms", ["title", "description"]
-    elif "experience" in lowered or "senior" in lowered:
+    elif "experience" in lowered or "senior" in lowered or "years" in lowered:
         profile_field, opportunity_fields = "max_years_experience", ["title", "description"]
     elif "sponsor" in lowered or "authorization" in lowered:
         profile_field, opportunity_fields = "requires_sponsorship", ["description"]
