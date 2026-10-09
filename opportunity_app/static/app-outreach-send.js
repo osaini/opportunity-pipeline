@@ -299,10 +299,10 @@
   // A company that publishes no email may still have a contact form on its
   // site. The approved first email goes in through it, as the student, once.
   // Like Send, the first click only asks and a second click sends. Finish in
-  // browser opens a window on this computer with the form filled in, for a
-  // CAPTCHA that asks a person; the app sends the form once it is solved.
+  // browser opens a window on this computer with the form filled in as far as
+  // the app can; the student finishes it and presses its send button there.
   const FORM_STATE_NOTES = {
-    unconfirmed: "The form was sent, but their page did not say it arrived.",
+    unconfirmed: "The form may have been sent.",
     needs_you: "Nothing was sent.",
     failed: "Nothing was sent.",
   };
@@ -340,7 +340,7 @@
       return `Sent through ${item.company}'s contact form.${said}${changed} ${item.company} is marked sent; replies are read from Gmail.`;
     }
     if (result.outcome === "unconfirmed") {
-      return `The form was sent, but ${item.company}'s page did not say it arrived. Look for a confirmation email from them; if it came, press "It arrived".`;
+      return `${result.note || `${item.company}'s form may have been sent`}. If ${item.company} confirms it arrived, press "It arrived".`;
     }
     return `Nothing was sent to ${item.company}. ${result.note}`;
   }
@@ -362,8 +362,8 @@
       onConfirm: async () => {
         button.disabled = true;
         button.textContent = inBrowser ? "Waiting for you in the browser…" : "Sending…";
-        // 10 minutes is PERSON_WAIT_SECONDS in outreach/forms.py.
-        if (inBrowser) announce(`A browser window is opening with the form filled in as far as the app can. ${yourTurn} The window waits 10 minutes.`);
+        // 4 minutes is PERSON_WAIT_SECONDS in outreach/forms.py.
+        if (inBrowser) announce(`A browser window is opening with the form filled in as far as the app can. ${yourTurn} The window waits 4 minutes.`);
         try {
           const result = await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/form-submit`, {
             method: "POST",
@@ -399,7 +399,7 @@
       section.appendChild(where);
       if (form.captcha) {
         section.appendChild(element("p", "outreach-note",
-          `It has a ${form.captcha === "recaptcha" ? "reCAPTCHA" : form.captcha === "hcaptcha" ? "hCaptcha" : "Cloudflare Turnstile"}. A checkbox is ticked for you; a picture challenge is yours to solve under Finish in browser.`));
+          `It has a ${form.captcha === "recaptcha" ? "reCAPTCHA" : form.captcha === "hcaptcha" ? "hCaptcha" : "Cloudflare Turnstile"}. When the app sends the form, it ticks a checkbox CAPTCHA; under Finish in browser, any CAPTCHA is yours to solve.`));
       }
       if (form.state === "submitted") section.appendChild(element("p", "outreach-note", `Your first email went through this form${form.attempted_at ? ` on ${formatCalendarDate(form.attempted_at.slice(0, 10))}` : ""}.`));
       else if (form.note && FORM_STATE_NOTES[form.state]) section.appendChild(element("p", "outreach-note outreach-guess", `${FORM_STATE_NOTES[form.state]} ${form.note}`));
