@@ -1,14 +1,17 @@
 """Contact forms for companies with no email: found by the crawl, filled truthfully, sent once."""
 
+import gzip
 import json
 import socket
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 from urllib.parse import parse_qs, urlsplit
@@ -787,13 +790,20 @@ class FormSendTests(unittest.TestCase):
         with closing(connect_product(self.platform_path)) as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM outreach_events WHERE event_type=?", (outreach_forms.SAID_NOT_SENT_EVENT,)).fetchone()[0], 1)
 
-    def test_a_form_the_app_itself_pressed_is_not_said_to_be_the_students_press(self):
+    def test_a_form_the_app_itself_pressed_stays_possibly_sent_after_a_window_that_sent_nothing(self):
+        # The app pressed send and their page said nothing; the student opens Finish in browser and closes it with
+        # nothing pressed. The earlier send may still have gone: it stays so, without saying the student pressed.
         self.submitter.outcomes = ["unconfirmed", "needs_you"]
         target = self.approved()
-        self.send(target)  # the app pressed send; their page said nothing
+        self.send(target)
         answered = self.send(target, in_browser=True, retry_unconfirmed=True).json()
-        self.assertEqual((answered["outcome"], answered["asked_again"]), ("needs_you", False))
-        self.assertFalse(self.get(target)["contact_form"]["asks"])
+        self.assertEqual((answered["outcome"], answered["asked_again"], answered["still_possibly_sent"]), ("unconfirmed", False, True))
+        form = self.get(target)["contact_form"]
+        self.assertEqual((form["state"], form["asks"], form["note"]), ("unconfirmed", False, outreach_forms.STILL_UNCONFIRMED))
+        with closing(connect_product(self.platform_path)) as conn:
+            self.assertEqual(conn.execute("SELECT state FROM outreach_send_claims").fetchone()["state"], "unconfirmed")
+            self.assertEqual(form_due(conn, user_id=USER), [])
+        self.assertEqual(self.send(target).status_code, 428, "the app does not press it again without a check")
 
     def test_the_press_is_logged_where_replies_and_thank_yous_read_it(self):
         target = self.pressed_in_browser()
@@ -828,6 +838,9 @@ class FormSendTests(unittest.TestCase):
         self.assertEqual((self.get(target)["status"], form["state"], form["asks"]), ("sent", "submitted", False))
         with closing(connect_product(self.platform_path)) as conn:
             self.assertEqual([row["state"] for row in conn.execute("SELECT state FROM outreach_send_claims")], ["sent"])
+            self.assertIsNone(conn.execute("SELECT 1 FROM outreach_events WHERE event_type=? AND detail LIKE ?",
+                                           (outreach_forms.UNCONFIRMED_EVENT, f"%{outreach_forms.ASKED_AGAIN}%")).fetchone(),
+                              "the window that sent nothing does not ask again over the Yes")
 
     def test_a_yes_that_lands_before_the_press_is_recorded_is_kept(self):
         target = self.pressed_in_browser()
@@ -1642,6 +1655,77 @@ class FinishInBrowserTests(unittest.TestCase):
         result, site, pressed = self.submit(typeless, student)
         self.assertNothingSent(result, site, pressed)
 
+    def test_a_reconnecting_chat_widget_never_decides_nothing_was_sent(self):
+        # The form goes as a base64 read the app cannot read, while a chat widget's socket keeps reconnecting and being
+        # refused: the card asks (the read may have been the form), and the widget is named once.
+        chatty = ENCODED_GET_FORM.replace("<html><body>", """<html><body><script>
+          (function c() { const w = new WebSocket('wss://chat.example/socket'); w.onclose = () => setTimeout(c, 200); })();
+        </script>""")
+
+        def student(window, site):
+            window.wait_for_timeout(600)
+            window.get_by_role("button", name="Send").click()
+            window.wait_for_timeout(600)
+
+        result, site, _pressed = self.submit(chatty, student, pages={"/s": "ok"})
+        self.assertAsked(result)
+        self.assertEqual(result["held_back"].count("WEBSOCKET chat.example"), 1, result["held_back"])
+
+    def test_a_socket_the_page_tried_to_send_on_after_the_press_was_its_way(self):
+        # Another site's socket, made and sent on as the student presses; nothing else leaves, and the page thanks them.
+        page = SCRIPT_FORM.replace(
+            'await fetch("/api/contact", {method: "POST", body: JSON.stringify({',
+            'const ws = new WebSocket("wss://forms.example/send"); try { ws.send("x"); } catch (error) {}\n'
+            '    root.innerHTML = "<p>Thank you for your message!</p>"; return;\n'
+            '    await fetch("/api/contact", {method: "POST", body: JSON.stringify({')
+        result, site, _pressed = self.submit(page, lambda window, site: window.get_by_role("button", name="Send").click(), close=False, wait=3)
+        self.assertEqual((result["outcome"], site.posts), ("needs_you", []), result)
+        self.assertIn("so nothing was sent, even if the page said thank you", result["note"])
+
+    def test_a_failure_after_something_left_on_the_students_press_still_asks(self):
+        def student(window, site):
+            window.locator("[name=budget]").fill("Under $10k")
+            window.get_by_role("button", name="Send message").click()
+            raise RuntimeError("the window went wrong")
+
+        result, site, _pressed = self.submit(BUDGET_FORM, student)
+        self.assertEqual([path for path, _ in site.posts], ["/send"])
+        self.assertAsked(result)
+
+    def test_a_press_the_app_never_recorded_says_so(self):
+        def never():
+            raise sqlite3.OperationalError("database is locked")
+
+        def student(window, site):
+            window.get_by_role("button", name="Send").click()
+            window.wait_for_timeout(300)
+
+        result, site, _pressed = self.submit(SCRIPT_FORM, student, on_press=never)
+        self.assertEqual((result["outcome"], site.posts), ("needs_you", []), result)
+        self.assertIn(outreach_forms.UNRECORDED_NOTE, result["note"])
+
+    def test_a_form_sent_by_going_to_its_address_stays_on_screen_when_the_press_is_not_recorded(self):
+        tries = []
+
+        def once():
+            tries.append(1)
+            if len(tries) == 1:
+                raise sqlite3.OperationalError("database is locked")
+
+        seen = []
+
+        def student(window, site):
+            window.locator("[name=budget]").fill("Under $10k")
+            window.get_by_role("button", name="Send message").click()
+            window.wait_for_timeout(800)
+            seen.append((window.url.startswith("http"), window.get_by_role("button", name="Send message").count(), list(site.posts)))
+            window.get_by_role("button", name="Send message").click()
+
+        result, site, _pressed = self.submit(BUDGET_FORM, student, on_press=once)
+        self.assertEqual(seen, [(True, 1, [])], "the form stayed on screen and nothing left on the unrecorded press")
+        self.assertEqual([path for path, _ in site.posts], ["/send"])
+        self.assertAsked(result)
+
     def test_a_captcha_is_left_for_the_student(self):
         seen = []
 
@@ -2007,6 +2091,56 @@ class _StubPage:
         pass
 
 
+@requires_chromium
+class SpeculationHeaderTests(unittest.TestCase):
+    """Finish in browser: a page's own Speculation-Rules header never has the browser fetch a page before the press."""
+
+    def test_a_speculation_rules_header_never_prefetches(self):
+        heard = []
+        rules = json.dumps({"prefetch": [{"source": "list", "urls": ["/p?v=Sam+Rivera"]}],
+                            "prerender": [{"source": "list", "urls": ["/r?v=Sam+Rivera"]}]}).encode()
+        page = gzip.compress(PLAIN_FORM.encode())  # as most sites send it: the page is handed on whole all the same
+
+        class Server(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - the http.server name
+                heard.append(self.path)
+                if self.path.startswith("/contact"):
+                    body, kind = page, "text/html"
+                elif self.path.startswith("/rules.json"):
+                    body, kind = rules, "application/speculationrules+json"
+                else:
+                    body, kind = b"<html><body>later</body></html>", "text/html"
+                self.send_response(200)
+                self.send_header("Content-Type", kind)
+                if self.path.startswith("/contact"):
+                    self.send_header("Content-Encoding", "gzip")
+                    self.send_header("Speculation-Rules", '"/rules.json"')
+                    self.send_header("Link", '</p?v=Sam+Rivera>; rel=prefetch')
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Server)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        port = server.server_address[1]
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        # The guard fetches the page itself, so the server is reached at its own address, let through for this test only.
+        loopback = mock.patch.object(outreach_forms, "request_allowed", lambda url, *_args: urlsplit(url).hostname == "127.0.0.1")
+        with loopback, FormSubmitter(person_wait=2, screenshot_dir=Path(tempdir.name),
+                                     student_hook=lambda window: window.wait_for_timeout(1_500)) as submitter:
+            result = submitter.submit(f"http://127.0.0.1:{port}/contact", identity=IDENTITY, subject="s", body=LETTER, name="bovi")
+        self.assertEqual(result["outcome"], "needs_you", result)
+        self.assertTrue(result["filled"], "the gzipped page reached the browser whole and was filled")
+        self.assertTrue(any(path.startswith("/contact") for path in heard), heard)
+        self.assertEqual([path for path in heard if not path.startswith("/contact")], [], "nothing fetched outside the route")
+
+
 class _GateRoute:
     def __init__(self, method, url, resource_type="fetch"):
         self.request = type("Request", (), {"method": method, "url": url, "resource_type": resource_type})()
@@ -2037,8 +2171,8 @@ class FinishInBrowserGateTests(unittest.TestCase):
         self.assertEqual([route.aborted for route in routes], [True, False, False, True, True, True, True, True, False],
                          "anything carrying the student's name is held, whatever it is and wherever it goes, and a script's "
                          "read of the form's own site; the page's own images still load")
-        self.assertEqual(submitter.held_back, ["POST bovi.test", "GET bovi.test", "GET api.example", "GET www.google.com", "GET bovi.test"],
-                         "only what goes to the form's site or carries the student's details is named")
+        self.assertEqual(submitter.held_back, ["POST bovi.test", "GET bovi.test", "GET api.example", "GET www.google.com"],
+                         "only what goes to the form's site or carries the student's details is named, and each once")
 
     def test_the_students_details_are_everything_of_theirs_alone_the_app_may_type(self):
         needles = outreach_forms._needles({**IDENTITY, **ADDRESS}, "Robotics internship question", LETTER)
@@ -2067,7 +2201,7 @@ class FinishInBrowserGateTests(unittest.TestCase):
 
 @requires_chromium
 class FormSubmitterSocketTests(unittest.TestCase):
-    """A contact page's WebSocket is closed before it connects, as the renderer's is: no route sees one."""
+    """In a rehearsal, a contact page's WebSocket fails as a blocked connection does (SOCKET_GUARD): no route sees one."""
 
     def test_a_page_opens_no_websocket(self):
         listener = socket.socket()
