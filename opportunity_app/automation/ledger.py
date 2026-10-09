@@ -551,8 +551,9 @@ def _write_pause(conn: sqlite3.Connection, user_id: str, on: bool, now: str) -> 
     )
 
 
-# The claim state a contact form moves to as its send button is pressed
-# (outreach_forms.submit_contact_form); from then on a pause cannot stop it.
+# The claim state a contact form moves to as its send button is pressed, by the
+# app or, in Finish in browser, by the student (outreach_forms.submit_contact_form);
+# from then on a pause cannot stop it.
 FORM_HANDED_OVER = "clicking"
 
 

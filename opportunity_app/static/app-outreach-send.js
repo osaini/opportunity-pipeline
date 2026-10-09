@@ -103,6 +103,9 @@
     form_submitted: "Sent through their contact form",
     form_unconfirmed: "Contact form may have been sent",
     form_not_sent: "Contact form not sent",
+    form_pressed: "You pressed send on their contact form",
+    form_said_sent: "Contact form sent, you said",
+    form_said_not_sent: "Contact form not sent, you said",
     gmail_draft_created: "Draft created in Gmail",
     gmail_sent: "Sent from Gmail",
     bounced: "Bounced",
@@ -313,10 +316,10 @@
   // A company that publishes no email may still have a contact form on its
   // site. The approved first email goes in through it, as the student, once.
   // Like Send, the first click only asks and a second click sends. Finish in
-  // browser opens a window on this computer with the form filled in, for a
-  // CAPTCHA that asks a person; the app sends the form once it is solved.
+  // browser opens a window on this computer with the form filled in as far as
+  // the app can; the student finishes it and presses its send button there.
   const FORM_STATE_NOTES = {
-    unconfirmed: "The form was sent, but their page did not say it arrived.",
+    unconfirmed: "The form may have been sent.",
     needs_you: "Nothing was sent.",
     failed: "Nothing was sent.",
   };
@@ -339,6 +342,14 @@
     if (form.note && FORM_STATE_NOTES[form.state]) {
       controls.appendChild(element("p", "outreach-note is-wide", `${FORM_STATE_NOTES[form.state]} ${form.note}`));
     }
+    if (form.asks) {
+      // The student pressed send in Finish in browser, and only they saw what the page said: the pane adds "Yes, it was
+      // sent" beside this, and No opens the window again (never an automatic send).
+      controls.appendChild(element("p", "outreach-note is-wide",
+        "Answer No only if their page showed an error or nothing, and no confirmation email came from them."));
+      controls.appendChild(formSendButton(item, { retry: true, inBrowser: true, label: "No, it was not sent" }));
+      return controls;
+    }
     const retry = form.state === "unconfirmed";
     controls.appendChild(formSendButton(item, { retry, inBrowser: false }));
     if (form.state === "needs_you" || form.captcha) controls.appendChild(formSendButton(item, { retry, inBrowser: true }));
@@ -349,28 +360,41 @@
     if (result.outcome === "submitted") {
       if (result.marked === false) return `Sent through ${item.company}'s contact form, but it could not be marked sent. Press "It arrived" to catch it up.`;
       const said = result.confirmation ? ` Their page said: "${result.confirmation}"` : "";
-      return `Sent through ${item.company}'s contact form.${said} ${item.company} is marked sent; replies are read from Gmail.`;
+      // Finish in browser: a box of the app's the student changed before pressing send is named.
+      const changed = result.note ? ` ${result.note}.` : "";
+      return `Sent through ${item.company}'s contact form.${said}${changed} ${item.company} is marked sent; replies are read from Gmail.`;
     }
     if (result.outcome === "unconfirmed") {
-      return `The form was sent, but ${item.company}'s page did not say it arrived. Look for a confirmation email from them; if it came, press "It arrived".`;
+      if (result.asked_again) return `Nothing was sent from that window, but your earlier press may still have sent ${item.company}'s form, so its card still asks.`;
+      if (result.still_possibly_sent) return `Nothing was sent from that window, but ${item.company}'s form may have been sent before: look for a confirmation email from them before sending it again.`;
+      if (result.target?.contact_form?.asks) return `You pressed send in ${item.company}'s form. Say on its card whether their page said your message was sent.`;
+      return `${result.note || `${item.company}'s form may have been sent`}. If ${item.company} confirms it arrived, press "It arrived".`;
     }
     return `Nothing was sent to ${item.company}. ${result.note}`;
   }
 
-  function formSendButton(item, { retry, inBrowser }) {
-    const label = inBrowser ? "Finish in browser" : retry ? "Checked — send the form again" : "Send through contact form";
+  function formSendButton(item, { retry, inBrowser, label: named }) {
+    const label = named || (inBrowser ? "Finish in browser" : retry ? "Checked — send the form again" : "Send through contact form");
+    const again = Boolean(named);
     const button = element("button", inBrowser ? "secondary-button outreach-compose" : "primary-button outreach-compose outreach-send", label);
     button.type = "button";
-    if (inBrowser) button.title = "Opens a browser window on this computer with the form filled in. Solve the CAPTCHA there; the app sends the form once it is solved.";
+    // Finish in browser: the student finishes the form in the window and presses its send button; the app never does.
+    const yourTurn = "Fill in the boxes outlined in orange, solve any CAPTCHA, then press the form's own send button. Nothing is sent until you press it.";
+    if (inBrowser) button.title = `Opens a browser window on this computer with the form filled in as far as the app can. ${yourTurn}`;
     const reset = armConfirm(button, {
       idleLabel: () => label,
-      armedLabel: () => `Send through ${formHost(item)}'s form?`,
-      prompt: () => `Press again to send the approved email through ${item.company}'s contact form as you, from ${item.contact_form.page_url}.`,
+      armedLabel: () => again ? `Open ${formHost(item)}'s form again?` : inBrowser ? `Open ${formHost(item)}'s form?` : `Send through ${formHost(item)}'s form?`,
+      prompt: () => again
+        ? `Press again only if it was not sent: ${item.company}'s form opens again in a window, and if it did go, pressing its send button would send it twice.`
+        : inBrowser
+        ? `Press again to open ${item.company}'s contact form from ${item.contact_form.page_url} in a browser window, filled in as far as the app can (nothing, on a sales form). You press its send button there.`
+        : `Press again to send the approved email through ${item.company}'s contact form as you, from ${item.contact_form.page_url}.`,
       beforeClick: () => refuseUnsavedHandOff(button, "initial"),
       onConfirm: async () => {
         button.disabled = true;
         button.textContent = inBrowser ? "Waiting for you in the browser…" : "Sending…";
-        if (inBrowser) announce("A browser window is opening with the form filled in. Solve the CAPTCHA there; the app sends the form once it is solved.");
+        // 4 minutes is PERSON_WAIT_SECONDS in outreach/forms.py.
+        if (inBrowser) announce(`A browser window is opening with the form filled in as far as the app can. ${yourTurn} The window waits 4 minutes.`);
         try {
           const result = await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/form-submit`, {
             method: "POST",
@@ -406,7 +430,7 @@
       section.appendChild(where);
       if (form.captcha) {
         section.appendChild(element("p", "outreach-note",
-          `It has a ${form.captcha === "recaptcha" ? "reCAPTCHA" : form.captcha === "hcaptcha" ? "hCaptcha" : "Cloudflare Turnstile"}. A checkbox is ticked for you; a picture challenge waits for you under Finish in browser.`));
+          `It has a ${form.captcha === "recaptcha" ? "reCAPTCHA" : form.captcha === "hcaptcha" ? "hCaptcha" : "Cloudflare Turnstile"}. When the app sends the form, it ticks a checkbox CAPTCHA; under Finish in browser, any CAPTCHA is yours to solve.`));
       }
       if (form.state === "submitted") section.appendChild(element("p", "outreach-note", `Your first email went through this form${form.attempted_at ? ` on ${formatCalendarDate(form.attempted_at.slice(0, 10))}` : ""}.`));
       else if (form.note && FORM_STATE_NOTES[form.state]) section.appendChild(element("p", "outreach-note outreach-guess", `${FORM_STATE_NOTES[form.state]} ${form.note}`));
@@ -954,7 +978,7 @@
     const email = gmail?.connected
       ? "approved emails send from your Gmail only when you press Send and confirm the recipient"
       : "approved emails open in your own email, where you press Send";
-    const byClick = "only when you press Send through contact form and confirm";
+    const byClick = "only when you press Send through contact form and confirm, or press the form's own send button under Finish in browser";
     const form = automation?.form_submission ? "" : gmail?.connected ? `, and a contact form ${byClick}` : `; a contact form goes out ${byClick}`;
     if (!automatic) return `Nothing sends on its own. ${email.charAt(0).toUpperCase()}${email.slice(1)}${form}.`;
     return `${automatic.running.replace(/\.$/, "")}, while automation is running. Anything else goes out only by your own click: ${email}${form}.`;
