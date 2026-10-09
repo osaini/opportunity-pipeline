@@ -1157,7 +1157,10 @@ CLOSE_GUARD = r"""(() => {
   // the document and in every shadow root a script can reach: one made with attachShadow, one a custom element reaches
   // through its ElementInternals, and every open one, those the page's HTML declares (<template shadowrootmode>)
   // included. The parser attaches those with no call to see, so the tree is walked for them on every change, and once
-  // the document is parsed. A closed root the page's HTML declares is out of reach (docs/known-defects.md).
+  // the document is parsed. A closed root made with attachShadow is never clonable, and every closed root the guard
+  // knows is swept before anything is copied (cloneNode, importNode, a range's contents): a copy of a closed root is
+  // one the browser builds with no call to see. A closed root the page's HTML declares is out of reach
+  // (docs/known-defects.md).
   const SPECULATION = 'script[type="speculationrules" i], link[rel~="prerender" i], link[rel~="prefetch" i]';
   const Observer = MutationObserver, observe = MutationObserver.prototype.observe;
   const removeNode = Element.prototype.remove, itemOf = NodeList.prototype.item;
@@ -1166,6 +1169,17 @@ CLOSE_GUARD = r"""(() => {
   const seen = new WeakSet(), isSeen = WeakSet.prototype.has, markSeen = WeakSet.prototype.add;
   const shadowOf = Object.getOwnPropertyDescriptor(Element.prototype, 'shadowRoot').get;
   const walkerOf = Document.prototype.createTreeWalker, nextOf = TreeWalker.prototype.nextNode;
+  const modeOf = Object.getOwnPropertyDescriptor(ShadowRoot.prototype, 'mode').get;
+  const typeOf = Object.getOwnPropertyDescriptor(MutationRecord.prototype, 'type').get;
+  // Only an added or removed node can bring a shadow root (attachShadow and ElementInternals are watched where they are
+  // called, and a parsed page is walked once it is parsed), so a change of attributes or text is swept but not walked.
+  const addsNodes = (records) => {
+    try {
+      for (let index = 0; index < records.length; index += 1) if (call(typeOf, records[index]) === 'childList') return true;
+      return false;
+    } catch (error) { return true; }
+  };
+  const closedRoots = [];
   let watch = () => {};
   const reach = (root) => {
     try {
@@ -1187,7 +1201,11 @@ CLOSE_GUARD = r"""(() => {
     try {
       if (call(isSeen, seen, root)) return;
       call(markSeen, seen, root);
-      call(observe, new Observer(() => { sweep(root, find); reach(root); }), root, {childList: true, subtree: true, attributes: true, characterData: true});
+      if (root !== document) {
+        try { if (call(modeOf, root) !== 'open') define(closedRoots, closedRoots.length, {value: root, writable: true, enumerable: true, configurable: true}); }
+        catch (error) { /* not a shadow root */ }
+      }
+      call(observe, new Observer((records) => { sweep(root, find); if (addsNodes(records)) reach(root); }), root, {childList: true, subtree: true, attributes: true, characterData: true});
       sweep(root, find);
       reach(root);
     } catch (error) { /* not observable */ }
@@ -1206,13 +1224,32 @@ CLOSE_GUARD = r"""(() => {
     }});
   } catch (error) { /* no element internals */ }
   try {
-    const attach = Element.prototype.attachShadow;
+    // The page's options are read once into an object of the guard's own (a getter, or a mode whose text changes,
+    // cannot answer one way here and another to the browser), and a closed root is never made clonable.
+    const attach = Element.prototype.attachShadow, createObject = Object.create, toText = String;
+    const OPTIONS = ['mode', 'delegatesFocus', 'slotAssignment', 'serializable', 'clonable', 'customElementRegistry', 'referenceTarget'];
+    const set = (target, key, value) => define(target, key, {value, writable: true, enumerable: true, configurable: true});
     fix(Element.prototype, 'attachShadow', function attachShadow(init) {
-      const root = apply(attach, this, arguments);
+      const own = createObject(null);
+      if (init !== null && (typeof init === 'object' || typeof init === 'function')) {
+        for (let index = 0; index < OPTIONS.length; index += 1) {
+          const value = init[OPTIONS[index]];
+          if (value !== undefined) set(own, OPTIONS[index], OPTIONS[index] === 'mode' ? toText(value) : value);
+        }
+      }
+      if (own.mode !== 'open') set(own, 'clonable', false);
+      const root = apply(attach, this, [own]);
       watch(root, findIn.fragment);
       return root;
     });
   } catch (error) { /* no shadow roots */ }
+  try {
+    const sweepClosed = () => { for (let index = 0; index < closedRoots.length; index += 1) sweep(closedRoots[index], findIn.fragment); };
+    for (const [target, name] of [[Node.prototype, 'cloneNode'], [Document.prototype, 'importNode'], [Range.prototype, 'cloneContents']]) {
+      const native = target[name];
+      fix(target, name, {[name](...args) { sweepClosed(); return apply(native, this, args); }}[name]);
+    }
+  } catch (error) { /* nothing to copy with */ }
 })();"""
 # Finish in browser and a rehearsal, whose promise is that nothing leaves before the student's press (or ever): a
 # WebSocket is a channel no route sees, and a route's own refusal leaves the page a socket that looks open and swallows
@@ -1452,6 +1489,7 @@ class FormSubmitter:
         # Sockets the page opened after the press (one it then sends on may be the form's way), whether anything went to
         # another site after the press (an image too: then a refused socket decides nothing), and the hosts of what the
         # "other" refusal held back (named when no form appears).
+        self._sockets_before_press: set[str] = set()
         self._opened_after_press: set[str] = set()
         self._went_elsewhere = False
         self._held_other: list[str] = []
@@ -1520,14 +1558,16 @@ class FormSubmitter:
     def _note_socket(self, url: str, *, sent: bool = False) -> None:
         url = re.sub(r"^(wss?://[^/:?#]+?)\.(?=[:/?#]|$)", r"\1", url)  # a host's trailing dot, as SOCKET_GUARD drops it
         own = any(same_site(url, site) for site in self._sites)
-        if self._gate == "open" and not sent:
-            self._opened_after_press.add(url)
+        if self._gate != "open":
+            self._sockets_before_press.add(url)
+        elif not sent and url not in self._sockets_before_press:
+            self._opened_after_press.add(url)  # not a widget reconnecting to an address it used before the press
         opened_after = url in self._opened_after_press
-        # Named only when it could be the form's: on the form's own site, or opened after the press. Taken as the page's
-        # way of sending only when on the form's own site, or opened after the press and sent on. A chat widget elsewhere,
-        # whether it reconnects before the press, opens once after the fill, or beats on a socket it opened before the
-        # press, is no reason the form will not send and decides nothing.
-        if own or opened_after:
+        # Named when it could be the form's: on the form's own site, opened after the press, or sent on after the press
+        # (the card's question then names it). Taken as the page's way of sending only when on the form's own site, or
+        # opened after the press and sent on. A chat widget elsewhere, whether it reconnects, opens once after the fill,
+        # or beats on a socket it opened before the press, is no reason the form will not send and decides nothing.
+        if own or opened_after or (sent and self._gate == "open"):
             self._hold(f"WEBSOCKET {urlsplit(url).hostname or ''}")
         if own or (sent and opened_after):
             self._socket_was_the_way = True
@@ -1555,9 +1595,8 @@ class FormSubmitter:
             # the press, no "other" request goes: the rules never load, and nothing is prefetched. A CAPTCHA's own
             # loads are left to the gate, since its worker's scripts (importScripts) are "other" too. A page's own fetch
             # of an address it preloaded fails with the preload, so what is held back is named if no form appears.
-            host = urlsplit(request.url).hostname or ""
-            if host not in self._held_other and len(self._held_other) < MAX_HELD_BACK:
-                self._held_other.append(host)
+            if request.url not in self._held_other and len(self._held_other) < MAX_HELD_BACK:
+                self._held_other.append(request.url)
             route.abort("blockedbyclient")
             return
         # Finish in browser fails closed: until the student's press is seen, and once the window's outcome is decided,
@@ -1580,8 +1619,9 @@ class FormSubmitter:
                 else:
                     route.abort("blockedbyclient")
                 return
-        if self._left_sink is not None and self._gate == "open" and not any(same_site(request.url, site) for site in self._sites):
-            self._went_elsewhere = True  # after the press, something (an image too) went to another site
+        if self._left_sink is not None and self._gate == "open" and getattr(request, "resource_type", "") not in {"stylesheet", "font"} \
+                and not any(same_site(request.url, site) for site in self._sites):
+            self._went_elsewhere = True  # after the press, something (an image too, though not the page's styles) went to another site
         (self._route_hook or self._guard)(route)
 
     def _could_carry(self, request: Any, *, closed: bool) -> bool:
@@ -1650,7 +1690,7 @@ class FormSubmitter:
             self._needles = _needles(identity, subject, body)
             self.held_back = []
             self._socket_was_the_way = self._student_left = self._went_elsewhere = False
-            self._opened_after_press, self._held_other = set(), []
+            self._sockets_before_press, self._opened_after_press, self._held_other = set(), set(), []
             page = self._context.new_page()
             self._window = page
             # Before the page loads, so the press listener is in place ahead of every script of the page.
@@ -1669,10 +1709,11 @@ class FormSubmitter:
                 result["note"] = ("The contact form is on the page but hidden (it opens from a button), so it is not filled blind"
                                   if read and read.get("hidden") else
                                   "No contact form on the page (it may be gone, or built in a way the app cannot read)")
-                if self._held_other and not (read and read.get("hidden")):
+                held = self._held_preloads(page) if self._held_other and not (read and read.get("hidden")) else []
+                if held:
                     result["note"] = (
                         f"No contact form appeared in this window. The app held back what the page loads by itself "
-                        f"({', '.join(self._held_other)}), and the form may be built from it: send it from the page in your own browser")
+                        f"({', '.join(held)}), and the form may be built from it: send it from the page in your own browser")
                 return result
             if self.person_wait:
                 clicked = self._hand_to_student(
@@ -2051,7 +2092,10 @@ class FormSubmitter:
                 if not result["note"].endswith((".", "?")):
                     result["note"] += "."
                 result["note"] += (" Their page also tried a connection the app refused (a WebSocket), which may have been "
-                                   "its way of sending: if it showed an error, answer No.")
+                                   "its way of sending: if it showed an error, answer No." if left else
+                                   " Nothing that could carry your message left their page that the app could see, but it tried "
+                                   "to send over a connection the app refused (a WebSocket). If that is how it sends, nothing "
+                                   "went, even if it said thank you: answer Yes only if you know it went (an email from them, say).")
         else:
             minutes = max(1, round(self.person_wait / 60))
             parts = ["You closed the window before the form was sent. Nothing was sent" if closed else
@@ -2070,6 +2114,14 @@ class FormSubmitter:
             result.update(outcome="needs_you", note=". ".join(parts))
         result["held_back"] = list(self.held_back)
         return bool(left or vanished)
+
+    def _held_preloads(self, page: Any) -> list[str]:
+        """The hosts of what the "other" refusal held back that the page preloads (a favicon or a prefetch hint is no form)."""
+        try:
+            preloaded = set(page.evaluate("() => Array.from(document.querySelectorAll('link[rel~=preload i]'), (link) => link.href)") or [])
+        except Exception:  # noqa: BLE001 - the page cannot be asked
+            return []
+        return list(dict.fromkeys(urlsplit(url).hostname or "" for url in self._held_other if url in preloaded))
 
     @staticmethod
     def _form_on_screen(frame: Any) -> bool | None:

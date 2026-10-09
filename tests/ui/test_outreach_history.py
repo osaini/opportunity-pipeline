@@ -32,18 +32,31 @@ EVENTS = [
 ]
 
 
-def history_tab(page, base_url, live_server):
-    target = seed_target(page, base_url, company="Orbital Demo", website="https://www.orbital.example")
+# A contact form the student pressed in Finish in browser, said No to, and then Yes.
+ANSWERED = [
+    ("2026-10-06T15:00:00+00:00", "form_pressed", None, None, json.dumps({"pressed_at": "2026-10-06T15:00:00+00:00"})),
+    ("2026-10-06T15:01:00+00:00", "form_unconfirmed", None, None, json.dumps({
+        "kind": "initial", "page_url": "https://www.harbor.example/contact", "confirmation": "",
+        "note": "You pressed the form's send button in the Finish in browser window. Did their page say your message was sent?",
+        "in_browser": True, "filled": ["name"],
+    })),
+    ("2026-10-06T15:02:00+00:00", "form_said_not_sent", None, None, json.dumps({"in_browser": True})),
+    ("2026-10-06T15:03:00+00:00", "form_said_sent", None, None, json.dumps({"asked": True})),
+]
+
+
+def history_tab(page, base_url, live_server, *, company="Orbital Demo", website="https://www.orbital.example", events=EVENTS):
+    target = seed_target(page, base_url, company=company, website=website)
     with db(live_server) as conn, conn:
         conn.execute("DELETE FROM outreach_events WHERE target_id=?", (target["id"],))
-        for number, (stamp, event_type, before, after, detail) in enumerate(EVENTS):
+        for number, (stamp, event_type, before, after, detail) in enumerate(events):
             conn.execute(
                 "INSERT INTO outreach_events(id, target_id, user_id, event_type, from_status, to_status, detail, created_at) "
                 "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
-                (f"ev-history-{number}", target["id"], USER, event_type, before, after, detail, stamp),
+                (f"ev-history-{target['id']}-{number}", target["id"], USER, event_type, before, after, detail, stamp),
             )
     open_outreach(page, "all")
-    card = card_for(page, "Orbital Demo")
+    card = card_for(page, company)
     card.get_by_role("tab", name="Replies and history", exact=True).click()
     timeline = card.locator(".outreach-timeline")
     expect(timeline).to_be_visible()
@@ -95,3 +108,16 @@ def test_a_long_reply_is_quoted_and_folded_until_asked(owner_page, base_url, liv
     expect(quote).not_to_have_class(re.compile(r"\bis-folded\b"))
     expect(reply.get_by_role("button", name="Show less")).to_have_attribute("aria-expanded", "true")
     assert_accessible(owner_page, "the outreach history tab")
+
+
+def test_the_answers_to_the_contact_form_question_read_as_what_happened(owner_page, base_url, live_server):
+    _, timeline = history_tab(owner_page, base_url, live_server, company="Harbor Answer Demo", website="https://www.harbor.example",
+                              events=ANSWERED)
+    expect(event(timeline, "Contact form may have been sent").locator(".outreach-event-detail")).to_have_text(
+        "You pressed send in the Finish in browser window. · harbor.example/contact")
+    for title, tone in (("You pressed send on their contact form", "is-soon"), ("Contact form not sent, you said", "is-warning"),
+                        ("Contact form sent, you said", "is-good")):
+        expect(event(timeline, title)).to_have_class(re.compile(rf"\b{tone}\b"))
+        expect(event(timeline, title).locator(".outreach-event-detail")).to_have_count(0)
+    expect(timeline).not_to_contain_text("Did their page say")
+    expect(timeline).not_to_contain_text("Finished in a browser window")

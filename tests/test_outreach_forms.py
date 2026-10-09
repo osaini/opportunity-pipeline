@@ -1663,7 +1663,8 @@ class FinishInBrowserTests(unittest.TestCase):
 
     def test_a_reconnecting_chat_widget_never_decides_nothing_was_sent(self):
         # The form goes as a base64 read the app cannot read, while a chat widget's socket keeps reconnecting and being
-        # refused: the card asks (the read may have been the form), and the widget is named once.
+        # refused: the card asks (the read may have been the form), and the widget, reconnecting to the address it used
+        # before the press, is not named.
         chatty = ENCODED_GET_FORM.replace("<html><body>", """<html><body><script>
           (function c() { const w = new WebSocket('wss://chat.example/socket'); w.onclose = () => setTimeout(c, 200); })();
         </script>""")
@@ -1675,7 +1676,7 @@ class FinishInBrowserTests(unittest.TestCase):
 
         result, site, _pressed = self.submit(chatty, student, pages={"/s": "ok"})
         self.assertAsked(result)
-        self.assertEqual(result["held_back"].count("WEBSOCKET chat.example"), 1, result["held_back"])
+        self.assertNotIn("WEBSOCKET chat.example", result["held_back"])
 
     def test_a_socket_the_page_tried_to_send_on_after_the_press_was_its_way(self):
         # Another site's socket, made and sent on as the student presses; nothing else leaves, and the page thanks them.
@@ -1851,6 +1852,62 @@ class FinishInBrowserTests(unittest.TestCase):
         self.assertEqual([path for path, _ in site.posts], ["/send"])
         self.assertAsked(result)
         self.assertIn(". Their page also tried a connection", result["note"])
+
+    @mock.patch.object(outreach_forms, "AFTER_PRESS_SECONDS", 3)
+    def test_a_socket_to_another_site_sent_on_after_the_press_is_named_in_the_question(self):
+        # The page opens a socket to its form service as it loads, sends on it when pressed, and thanks the student;
+        # nothing else leaves. The card asks, and says plainly that the refused socket may mean nothing went.
+        page = SCRIPT_FORM.replace('<div id="root"></div><script>', '<div id="root"></div><script>\n  const ws = new WebSocket("wss://forms.example/send");').replace(
+            'await fetch("/api/contact", {method: "POST", body: JSON.stringify({',
+            'try { ws.send(document.getElementById("e").value); } catch (error) {}\n'
+            '    root.innerHTML = "<p>Thank you for your message!</p>"; return;\n'
+            '    await fetch("/api/contact", {method: "POST", body: JSON.stringify({')
+        result, site, _pressed = self.submit(page, lambda window, site: window.get_by_role("button", name="Send").click(), close=False, wait=3)
+        self.assertAsked(result)
+        self.assertIn("WEBSOCKET forms.example", result["held_back"])
+        self.assertIn("If that is how it sends, nothing went, even if it said thank you", result["note"])
+
+    @mock.patch.object(outreach_forms, "AFTER_PRESS_SECONDS", 3)
+    def test_a_chat_widget_never_decides_over_a_form_sent_as_an_image_to_its_own_site(self):
+        # The form goes as an image's address on its own site, in a form the app cannot read, beside a chat widget that
+        # either beats on the socket it opened at load or reconnects and pings: the card asks either way.
+        widgets = {
+            "heartbeat": 'const beat = new WebSocket("wss://chat.example/socket"); setInterval(() => { try { beat.send("ping"); } catch (error) {} }, 300);',
+            "reconnecting": 'setInterval(() => { const w = new WebSocket("wss://chat.example/socket"); try { w.send("ping"); } catch (error) {} }, 300);',
+        }
+        for name, widget in widgets.items():
+            with self.subTest(widget=name):
+                page = SCRIPT_FORM.replace('<div id="root"></div><script>', '<div id="root"></div><script>\n  ' + widget).replace(
+                    'await fetch("/api/contact", {method: "POST", body: JSON.stringify({',
+                    'new Image().src = "/p.gif?d=" + btoa(document.getElementById("e").value);\n'
+                    '    root.innerHTML = "<p>Thank you for your message!</p>"; return;\n'
+                    '    await fetch("/api/contact", {method: "POST", body: JSON.stringify({')
+                result, site, _pressed = self.submit(page, lambda window, site: window.get_by_role("button", name="Send").click(),
+                                                     close=False, wait=3)
+                self.assertAsked(result)
+
+    @mock.patch.object(outreach_forms, "AFTER_PRESS_SECONDS", 3)
+    def test_the_thank_yous_own_styles_leave_the_refused_socket_deciding_but_a_pixel_does_not(self):
+        # The page's own socket was its way and nothing left. A thank-you that loads a font stylesheet from another host
+        # still ends "nothing was sent"; one that fires a pixel elsewhere asks, saying plainly what the socket may mean.
+        for dressing, outcome in (("<link rel='stylesheet' href='https://fonts.example/css?family=X'>", "needs_you"),
+                                  ("<img src='https://pixel.example/conv.gif?label=contact'>", "unconfirmed")):
+            with self.subTest(dressing=dressing):
+                page = QUEUED_SOCKET_FORM.replace('root.innerHTML = "<p>Thank you for your message!</p>";',
+                                                  f'root.innerHTML = "{dressing}<p>Thank you for your message!</p>";')
+                result, site, _pressed = self.submit(page, lambda window, site: window.get_by_role("button", name="Send").click(),
+                                                     close=False, wait=3)
+                self.assertEqual((result["outcome"], site.posts), (outcome, []), result)
+                if outcome == "unconfirmed":
+                    self.assertIn("If that is how it sends, nothing went, even if it said thank you", result["note"])
+
+    def test_a_page_with_no_form_is_said_to_have_none_whatever_hint_was_held_back(self):
+        # A prefetch hint (or, in the visible window, a favicon) is refused before the press as "other": no form is built
+        # from one, so the note stays the plain one.
+        page = """<html><head><link rel="prefetch" href="/later"><link rel="icon" href="/favicon.png"></head><body><p>Call us.</p></body></html>"""
+        result, site, pressed = self.submit(page, lambda window, site: None)
+        self.assertEqual((result["outcome"], site.posts, pressed), ("failed", [], []), result)
+        self.assertTrue(result["note"].startswith("No contact form on the page"), result["note"])
 
     def test_a_captcha_is_left_for_the_student(self):
         seen = []
@@ -2350,6 +2407,30 @@ class SpeculationShadowTests(unittest.TestCase):
                     result = self.window(port, mode)
                     self.assertEqual(result["outcome"], "rehearsed" if "rehearse" in mode else "needs_you", result)
                     self.assertTrue(any(path.startswith("/contact") for path in heard), heard)
+                    self.assertEqual([path for path in heard if "Sam" in path], [], "nothing carrying the name was fetched")
+
+    def test_rules_in_a_copy_of_a_closed_shadow_root_never_prefetch_the_name(self):
+        # Once the name is filled, a script makes a detached host with a closed root asking to be clonable, puts a list
+        # rule naming the name in it, and copies the host into the page (the copy's root is one the browser builds).
+        copy = """<script>
+          setInterval(() => {
+            const value = document.querySelector("[name=name]").value;
+            if (!value || window.done) return;
+            window.done = true;
+            const host = document.createElement("div");
+            const root = host.attachShadow({mode: "closed", clonable: true});
+            const rules = document.createElement("script"); rules.type = "speculationrules";
+            rules.textContent = JSON.stringify({prefetch: [{source: "list", urls: ["/cln?v=" + encodeURIComponent(value)]}]});
+            root.append(rules);
+            document.body.append(COPY);
+          }, 100);
+        </script>"""
+        for way in ("host.cloneNode(true)", "document.importNode(host, true)"):
+            page = PLAIN_FORM.replace("</form>", "</form>" + copy.replace("COPY", way))
+            for mode in self.MODES:
+                with self.subTest(way=way, mode=sorted(mode)):
+                    port, heard = self.serve(page)
+                    self.window(port, mode)
                     self.assertEqual([path for path in heard if "Sam" in path], [], "nothing carrying the name was fetched")
 
     @unittest.expectedFailure
