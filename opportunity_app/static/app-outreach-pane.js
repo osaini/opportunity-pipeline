@@ -288,11 +288,11 @@
     row.type = "button";
     row.dataset.rowId = item.id;
     row.setAttribute("aria-pressed", String(selected));
+    // The name keeps the whole line, with the priority beside it; the place goes under it, so a long name never cuts it off.
     const top = element("span", "outreach-row-top");
-    top.append(
-      element("strong", "outreach-row-company", item.company),
-      element("span", "outreach-row-meta", [item.location_region || item.location, item.priority].filter(Boolean).join(" · "))
-    );
+    top.appendChild(element("strong", "outreach-row-company", item.company));
+    if (item.priority) top.appendChild(element("span", "outreach-row-priority", item.priority));
+    const where = item.location_region || item.location;
     const contact = element("span", "outreach-row-contact");
     const health = item.contact_email ? (item.contact_confidence === "confirmed" ? "is-good" : "is-soon") : item.contact_form ? "is-soon" : "is-bad";
     contact.append(
@@ -304,7 +304,7 @@
     const next = outreachNextStep(item);
     const bottom = element("span", "outreach-row-bottom");
     bottom.append(chip(next.label, next.tone || ""), element("span", "outreach-row-status", OUTREACH_STATUS_LABELS[item.status] || item.status));
-    row.append(top, contact, bottom);
+    row.append(...[top, where ? element("span", "outreach-row-meta", where) : null, contact, bottom].filter(Boolean));
     if (item.tags?.length) {
       row.appendChild(element("span", "outreach-row-tags", item.tags.map((tag) => `#${tag.tag}`).join(" ")));
     }

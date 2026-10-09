@@ -445,7 +445,8 @@
         list.appendChild(row);
         return;
       }
-      // A box beside the row, not in it: a button cannot hold a checkbox. Shift picks the run since the last tick.
+      // A box over the row's left edge, not in it: a button cannot hold a checkbox (styles.css lines the two up). Shift
+      // picks the run since the last tick. A row with no box keeps the same indent, so every name starts at one edge.
       const wrap = element("div", "outreach-row-pick");
       if (pickableIds.has(item.id)) {
         const box = document.createElement("input");
@@ -462,8 +463,6 @@
         });
         boxes.set(item.id, box);
         wrap.appendChild(box);
-      } else {
-        wrap.appendChild(element("span", "outreach-pick-spacer"));
       }
       wrap.appendChild(row);
       list.appendChild(wrap);
