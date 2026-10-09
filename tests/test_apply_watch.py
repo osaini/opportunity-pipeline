@@ -955,7 +955,7 @@ class CardRouteCase(api_tests.ApplyApiCase):
         return self.browser.request(method, path, json=body, headers=self.csrf)
 
     def claim(self, *, state="unconfirmed", mode="handoff", policy="ask", verification="", stage="applying", job="job-a", after_click=1,
-              handed=None, instance=SERVER_INSTANCE):
+              handed=None, instance=SERVER_INSTANCE, ats="greenhouse"):
         """A claim on the seeded Acme application (created here), written directly."""
         self.serial += 1
         now = utc_now()
@@ -968,8 +968,8 @@ class CardRouteCase(api_tests.ApplyApiCase):
             self.conn.execute(
                 "INSERT INTO application_submit_claims(token, application_id, user_id, opportunity_id, instance, mode, state, after_click, ats, board_token, "
                 "job_ref, company_key, stage_policy, plan_hash, handed_over_at, heartbeat_at, verification, submitted_at, created_at, updated_at) "
-                "VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'greenhouse', 'acme', ?, 'acme robotics', ?, '', ?, ?, ?, ?, ?, ?)",
-                (f"tok-{self.serial}", f"app-{job}", api_tests.USER, job, instance, mode, state, after_click, f"acme/{self.serial}", policy,
+                "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'acme', ?, 'acme robotics', ?, '', ?, ?, ?, ?, ?, ?)",
+                (f"tok-{self.serial}", f"app-{job}", api_tests.USER, job, instance, mode, state, after_click, ats, f"acme/{self.serial}", policy,
                  handed, handed, verification, handed if state == "submitted" else None, now, now),
             )
         return f"tok-{self.serial}"
@@ -1065,6 +1065,21 @@ class CardRouteTests(CardRouteCase):
         stats = self.get("/api/v1/apply-agent/settings").json()["ats_statistics"]
         self.assertEqual([item["ats"] for item in stats], ["greenhouse"])
         self.assertEqual(stats[0]["lines"], ["No applications submitted with Apply for me on Greenhouse yet."])
+
+    def test_the_settings_count_lever_attempts_once_there_are_any(self):
+        self.claim(state="submitted", verification="awaiting_email", ats="lever")
+        stats = {item["ats"]: item for item in self.get("/api/v1/apply-agent/settings").json()["ats_statistics"]}
+        self.assertEqual(sorted(stats), ["greenhouse", "lever"], "a Lever attempt was never counted")
+        self.assertEqual((stats["lever"]["handed_over"], stats["lever"]["submitted"], stats["lever"]["watching"]), (1, 1, 1))
+        self.assertEqual(stats["greenhouse"]["handed_over"], 0, "the Lever attempt was counted as Greenhouse's")
+
+    def test_the_settings_show_lever_statistics_when_its_switch_is_on_even_with_no_attempt(self):
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, 'apply_agent_lever', 'on', ?)", (api_tests.USER, "2026-09-29T12:00:00+00:00"),
+            )
+        stats = {item["ats"]: item for item in self.get("/api/v1/apply-agent/settings").json()["ats_statistics"]}
+        self.assertEqual(stats["lever"]["lines"], ["No applications submitted with Apply for me on Lever yet."])
 
 
 if __name__ == "__main__":

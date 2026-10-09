@@ -2039,8 +2039,9 @@
         limits,
         element("p", "profile-help", `Screenshots of a filled form would be kept for ${settings.evidence_days} days, then deleted. Their fingerprints stay.`),
       );
+      // One list for each ATS the answer counts (each line names its ATS), under one heading.
+      if ((settings.ats_statistics || []).length) host.appendChild(element("h5", "", "How Apply for me has gone"));
       (settings.ats_statistics || []).forEach((entry) => {
-        host.appendChild(element("h5", "", "How Apply for me has gone"));
         const stats = element("ul", "reason-list apply-stats");
         entry.lines.forEach((line) => stats.appendChild(element("li", "", line)));
         host.appendChild(stats);
