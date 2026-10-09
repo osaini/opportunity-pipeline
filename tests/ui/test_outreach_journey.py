@@ -1016,6 +1016,25 @@ def test_the_split_view_shows_one_company_with_its_next_step(owner_page, base_ur
     expect(card.get_by_label("Confirmed deadline")).to_be_visible()
 
 
+def test_refresh_keeps_the_company_list_where_it_was_scrolled(owner_page, base_url):
+    for number in range(1, 15):
+        seed_target(owner_page, base_url, company=f"Company {number:02d}", website=f"https://company{number}.example")
+    open_outreach(owner_page)
+    company_list = owner_page.locator(".outreach-list")
+    assert company_list.evaluate("list => list.scrollHeight > list.clientHeight + 300"), "the list must scroll for this test"
+    company_list.evaluate("list => { list.scrollTop = 300; }")
+
+    owner_page.locator(".outreach-refresh").click()
+    expect(owner_page.locator("#action-status")).to_contain_text("Outreach is up to date.")
+    # A new list was drawn, at the old place in it.
+    assert owner_page.locator(".outreach-list").evaluate("list => list.scrollTop") == 300
+    expect(owner_page.locator(".outreach-refresh")).to_be_focused()
+
+    # Picking the rail tab starts the list at the top.
+    open_tab(owner_page, "to-contact")
+    assert owner_page.locator(".outreach-list").evaluate("list => list.scrollTop") == 0
+
+
 def test_switching_companies_asks_before_dropping_unsaved_edits(owner_page, base_url):
     seed_target(owner_page, base_url, company="First Co", contact_email="a@first.example", contact_confidence="confirmed")
     seed_target(owner_page, base_url, company="Second Co")

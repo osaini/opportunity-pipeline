@@ -210,7 +210,8 @@
       state.outreachKeep.clear();
       await loadOutreach();
       announce(leaving ? `${plural(leaving, "company", "companies")} moved out of this list.` : "Outreach is up to date.");
-      els.results.querySelector(".outreach-refresh")?.focus();
+      // Back on the button, without scrolling the page to it.
+      els.results.querySelector(".outreach-refresh")?.focus({ preventScroll: true });
     });
     toolbar.append(search, sortLabel, refresh);
     return toolbar;
@@ -219,6 +220,10 @@
   function outreachUnsavedEdits(pane) {
     return [...(pane?.querySelectorAll("form [name]") || [])].some((control) => control.value !== control.dataset.initial);
   }
+
+  // The rail tab whose company list is on the page, so a reload of that same list
+  // keeps its place in it.
+  let listedTab = null;
 
   // A batch of follow-ups running now ({ how }), and what the last one did, kept
   // until the next batch or a new pick of the rail tab.
@@ -527,6 +532,10 @@
       // action never makes the card vanish from under the pointer.
       if (state.outreachOpen) state.outreachKeep.add(state.outreachOpen);
       captureUnsavedOutreachEdits();
+      // A reload of the same list (Refresh, or after an action) keeps the list scrolled where it was; picking a rail
+      // tab starts it at the top.
+      const listTop = !railPicked && listedTab === tab.id ? els.results.querySelector(".outreach-list")?.scrollTop || 0 : 0;
+      listedTab = null;
       els.results.replaceChildren();
 
       if (tab.id === "deep-search") {
@@ -589,9 +598,12 @@
                     : "Pick another tab beside the page."));
           els.results.appendChild(empty);
         } else {
-          els.results.appendChild(outreachSplitView(items, tab, {
+          const split = outreachSplitView(items, tab, {
             compose: payload.compose, gmail: payload.gmail_drafts, automation: payload.automation, research: payload.company_research,
-          }));
+          });
+          els.results.appendChild(split);
+          listedTab = tab.id;
+          if (listTop) split.querySelector(".outreach-list").scrollTop = listTop;
         }
         els.resultCount.textContent = `${plural(items.length, "company", "companies")} · ${tab.label}`;
       }
