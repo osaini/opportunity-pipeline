@@ -1017,7 +1017,9 @@ class FinishInBrowserTests(unittest.TestCase):
             document.querySelector('button').click();
           }, 50);
         </script>""")
-        result, site, pressed = self.submit(forging, lambda window, site: None, wait=3)
+        # The window is left alone, so it lasts the whole wait: long enough for the page's script on a busy machine.
+        result, site, pressed = self.submit(forging, lambda window, site: None, wait=10)
+        self.assertEqual(len(site.posts), 1, result)
         self.assertEqual(parse_qs(site.posts[0][1])["budget"], ["found:none"], "the binding is in a world of its own")
         self.assertEqual(pressed, [], "a script's press is not the student's")
         self.assertEqual(result["outcome"], "unconfirmed", "the form did go, so it is never called unsent, nor sent by the student")
