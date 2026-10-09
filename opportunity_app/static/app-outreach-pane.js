@@ -1520,9 +1520,11 @@
     const historyPanel = panel("history");
     const contacted = Boolean(item.sent_at) || !["not_started", "drafted"].includes(item.status);
     const timeline = element("section", "tracker-subsection outreach-history");
-    timeline.appendChild(element("h4", "", "History"));
+    const timelineHead = element("div", "outreach-history-head");
+    const timelineCount = element("span", "outreach-history-count");
+    timelineHead.append(element("h4", "", "History"), timelineCount);
     const timelineBody = element("div");
-    timeline.appendChild(timelineBody);
+    timeline.append(timelineHead, timelineBody);
     if (contacted) historyPanel.appendChild(outreachReplySection(item));
     else historyPanel.appendChild(element("p", "outreach-note", "Replies can be logged once the email is sent."));
     historyPanel.appendChild(timeline);
@@ -1543,7 +1545,7 @@
       prepPanels.push(prepPanel);
     }
     form.append(...prepPanels, draftPanel, ...followUpPanels, researchPanel, contactPanel, timingPanel, historyPanel, footer);
-    loadOutreachTimeline(item.id, timelineBody);
+    loadOutreachTimeline(item.id, timelineBody, timelineCount);
     contactsSection.load();
 
     form.addEventListener("submit", async (event) => {
