@@ -173,6 +173,9 @@ MAX_HELD_BACK = 30
 SOCKET_ADDRESS = re.compile(r"^wss?://[a-z0-9.-]{1,253}(:\d{1,5})?(/|\?|$)", re.IGNORECASE)
 TRIED_BEFORE = ("You said your last press did not send this form. If their page or an email from them says it did, "
                 "close this window: pressing send again would send it twice.")
+# A form the app itself pressed, which may have gone, opened in Finish in browser: the student never said it did not.
+EARLIER_SEND = ("An earlier send of this form may have gone. If their page or an email from them says it did, close this "
+                "window: pressing send again would send it twice.")
 
 
 # --- Finding the form in a crawled page ----------------------------------------------
@@ -1096,6 +1099,9 @@ CAPTCHA_ENDPOINTS = re.compile(
     r"^https://(www\.)?(google\.com|recaptcha\.net)/recaptcha/|^https://([a-z0-9-]+\.)*hcaptcha\.com/|^https://challenges\.cloudflare\.com/",
     re.IGNORECASE,
 )
+# What the "other" refusal leaves to the gate before the press: a CAPTCHA's own addresses, and reCAPTCHA's script host
+# (a worker in its frame loads its scripts with importScripts, which the browser calls "other").
+CAPTCHA_LOADS = re.compile(CAPTCHA_ENDPOINTS.pattern + r"|^https://www\.gstatic\.com/recaptcha/", re.IGNORECASE)
 CAPTCHA_WIDGETS = (
     # (name, the challenge's own frame, what to click in it, the token it leaves in the page)
     ("recaptcha", "iframe[src*='/recaptcha/'][src*='anchor']:not([src*='size=invisible'])", "#recaptcha-anchor", "textarea[name='g-recaptcha-response']"),
@@ -1148,12 +1154,28 @@ CLOSE_GUARD = r"""(() => {
   catch (error) { /* no worklets */ }
   // Speculation rules, a prerender link and a prefetch link make the browser itself fetch a page, with no request a
   // route sees. Each is removed as it is inserted (the observer's microtask runs before the browser acts on it), in
-  // the document and in every shadow root.
+  // the document and in every shadow root a script can reach: one made with attachShadow, one a custom element reaches
+  // through its ElementInternals, and every open one, those the page's HTML declares (<template shadowrootmode>)
+  // included. The parser attaches those with no call to see, so the tree is walked for them on every change, and once
+  // the document is parsed. A closed root the page's HTML declares is out of reach (docs/known-defects.md).
   const SPECULATION = 'script[type="speculationrules" i], link[rel~="prerender" i], link[rel~="prefetch" i]';
   const Observer = MutationObserver, observe = MutationObserver.prototype.observe;
   const removeNode = Element.prototype.remove, itemOf = NodeList.prototype.item;
   const lengthOf = Object.getOwnPropertyDescriptor(NodeList.prototype, 'length').get;
   const findIn = {document: Document.prototype.querySelectorAll, fragment: DocumentFragment.prototype.querySelectorAll};
+  const seen = new WeakSet(), isSeen = WeakSet.prototype.has, markSeen = WeakSet.prototype.add;
+  const shadowOf = Object.getOwnPropertyDescriptor(Element.prototype, 'shadowRoot').get;
+  const walkerOf = Document.prototype.createTreeWalker, nextOf = TreeWalker.prototype.nextNode;
+  let watch = () => {};
+  const reach = (root) => {
+    try {
+      const walker = call(walkerOf, document, root, 1);
+      for (let node = call(nextOf, walker); node; node = call(nextOf, walker)) {
+        const shadow = call(shadowOf, node);
+        if (shadow) watch(shadow, findIn.fragment);
+      }
+    } catch (error) { /* gone */ }
+  };
   const sweep = (root, find) => {
     try {
       const found = call(find, root, SPECULATION);
@@ -1161,13 +1183,28 @@ CLOSE_GUARD = r"""(() => {
       for (let index = 0; index < count; index += 1) call(removeNode, call(itemOf, found, index));
     } catch (error) { /* gone */ }
   };
-  const watch = (root, find) => {
+  watch = (root, find) => {
     try {
-      call(observe, new Observer(() => sweep(root, find)), root, {childList: true, subtree: true, attributes: true, characterData: true});
+      if (call(isSeen, seen, root)) return;
+      call(markSeen, seen, root);
+      call(observe, new Observer(() => { sweep(root, find); reach(root); }), root, {childList: true, subtree: true, attributes: true, characterData: true});
       sweep(root, find);
+      reach(root);
     } catch (error) { /* not observable */ }
   };
   watch(document, findIn.document);
+  try {
+    const addListener = EventTarget.prototype.addEventListener;
+    for (const type of ['DOMContentLoaded', 'load']) call(addListener, window, type, () => reach(document), true);
+  } catch (error) { /* no events */ }
+  try {
+    const internalsRoot = Object.getOwnPropertyDescriptor(ElementInternals.prototype, 'shadowRoot').get;
+    define(ElementInternals.prototype, 'shadowRoot', {configurable: false, enumerable: true, get: function shadowRoot() {
+      const root = call(internalsRoot, this);
+      if (root) watch(root, findIn.fragment);
+      return root;
+    }});
+  } catch (error) { /* no element internals */ }
   try {
     const attach = Element.prototype.attachShadow;
     fix(Element.prototype, 'attachShadow', function attachShadow(init) {
@@ -1194,13 +1231,27 @@ SOCKET_GUARD = r"""(() => {
   const report = (kind, url) => {
     try { log("__TOKEN__ " + kind + " " + String(url).slice(0, 300)); } catch (error) { /* nothing to report through */ }
   };
+  // The address as the real constructor takes it: relative to the page, http(s) as ws(s), and a host's trailing dot
+  // dropped, so a socket to the form's own site is known as one however it is written. An invalid one throws, as there.
+  const NativeURL = URL;
+  const address = (url) => {
+    const parsed = new NativeURL(String(url), location.href);
+    if (parsed.protocol === "http:") parsed.protocol = "ws:";
+    else if (parsed.protocol === "https:") parsed.protocol = "wss:";
+    if ((parsed.protocol !== "ws:" && parsed.protocol !== "wss:") || parsed.hash) throw new TypeError("not a socket address");
+    if (parsed.hostname.endsWith(".")) parsed.hostname = parsed.hostname.slice(0, -1);
+    return parsed.href;
+  };
   class WebSocket extends EventTarget {
     constructor(url, protocols) {
       super();
-      define(this, "url", {value: String(url)});
+      let resolved;
+      try { resolved = address(url); }
+      catch (error) { throw new DOMException("Failed to construct 'WebSocket': The URL '" + String(url) + "' is invalid.", "SyntaxError"); }
+      define(this, "url", {value: resolved});
       this.binaryType = "blob";
       this.onopen = null; this.onmessage = null; this.onerror = null; this.onclose = null;
-      report("open", url);
+      report("open", resolved);
       setTimeout(() => {
         const error = new Event("error");
         this.dispatchEvent(error);
@@ -1398,6 +1449,12 @@ class FormSubmitter:
         # exception escaping the window still knows.
         self._socket_was_the_way = False
         self._student_left = False
+        # Sockets the page opened after the press (one it then sends on may be the form's way), whether anything went to
+        # another site after the press (an image too: then a refused socket decides nothing), and the hosts of what the
+        # "other" refusal held back (named when no form appears).
+        self._opened_after_press: set[str] = set()
+        self._went_elsewhere = False
+        self._held_other: list[str] = []
         # What only the student's form would carry (``_needles``), and the window, for the gate; and what the gate held back
         # (method and host), which the window's note and the history name, so a form that will not send explains itself.
         self._needles: list[str] = []
@@ -1461,14 +1518,18 @@ class FormSubmitter:
             self.held_back.append(entry)
 
     def _note_socket(self, url: str, *, sent: bool = False) -> None:
+        url = re.sub(r"^(wss?://[^/:?#]+?)\.(?=[:/?#]|$)", r"\1", url)  # a host's trailing dot, as SOCKET_GUARD drops it
         own = any(same_site(url, site) for site in self._sites)
-        # Named only when it could be the form's: on the form's site, or opened once the app began filling it. A chat
-        # widget's socket at page load is no reason the form will not send.
-        if self._gate != "load" or own:
+        if self._gate == "open" and not sent:
+            self._opened_after_press.add(url)
+        opened_after = url in self._opened_after_press
+        # Named only when it could be the form's: on the form's own site, or opened after the press. Taken as the page's
+        # way of sending only when on the form's own site, or opened after the press and sent on. A chat widget elsewhere,
+        # whether it reconnects before the press, opens once after the fill, or beats on a socket it opened before the
+        # press, is no reason the form will not send and decides nothing.
+        if own or opened_after:
             self._hold(f"WEBSOCKET {urlsplit(url).hostname or ''}")
-        # Its way of sending, as far as the window's outcome goes: a socket to the form's own site, or one the page tried
-        # to send on after the press. A widget that only reconnects decides nothing.
-        if own or (sent and self._gate == "open"):
+        if own or (sent and opened_after):
             self._socket_was_the_way = True
 
     def _close_sockets(self) -> None:
@@ -1487,12 +1548,16 @@ class FormSubmitter:
             route.abort("blockedbyclient")
             return
         before_press = self.rehearse or (self.person_wait and self._gate != "open")
-        if before_press and getattr(request, "resource_type", "") == "other" and not CAPTCHA_ENDPOINTS.search(request.url):
+        if before_press and getattr(request, "resource_type", "") == "other" and not CAPTCHA_LOADS.search(request.url):
             # A page's own Speculation-Rules header has the browser load a rules file and then fetch the pages it names
             # itself, where no route sees them; a Link header's prefetch is a read the gate cannot judge. The browser
             # calls both "other", and the request says nothing more, so in a rehearsal, and in Finish in browser until
             # the press, no "other" request goes: the rules never load, and nothing is prefetched. A CAPTCHA's own
-            # address is left to the gate, since its worker's scripts (importScripts) are "other" too.
+            # loads are left to the gate, since its worker's scripts (importScripts) are "other" too. A page's own fetch
+            # of an address it preloaded fails with the preload, so what is held back is named if no form appears.
+            host = urlsplit(request.url).hostname or ""
+            if host not in self._held_other and len(self._held_other) < MAX_HELD_BACK:
+                self._held_other.append(host)
             route.abort("blockedbyclient")
             return
         # Finish in browser fails closed: until the student's press is seen, and once the window's outcome is decided,
@@ -1515,6 +1580,8 @@ class FormSubmitter:
                 else:
                     route.abort("blockedbyclient")
                 return
+        if self._left_sink is not None and self._gate == "open" and not any(same_site(request.url, site) for site in self._sites):
+            self._went_elsewhere = True  # after the press, something (an image too) went to another site
         (self._route_hook or self._guard)(route)
 
     def _could_carry(self, request: Any, *, closed: bool) -> bool:
@@ -1551,7 +1618,7 @@ class FormSubmitter:
     def submit(
         self, page_url: str, *, identity: dict[str, str], subject: str, body: str, attachment: str = "", name: str = "form",
         should_continue: Callable[[], bool] | None = None, on_press: Callable[[], Any] | None = None,
-        tried_before: bool = False,
+        tried_before: bool = False, earlier_send: bool = False,
     ) -> dict[str, Any]:
         """Fill and send the form. Never raises: the outcome says whether anything left the page.
 
@@ -1561,7 +1628,8 @@ class FormSubmitter:
         ``on_press`` is told when the student presses send in Finish in browser
         (``person_wait``); it cannot stop a press that has already happened.
         ``tried_before`` (the student said their last press did not send it) puts
-        a warning in the window that the form may already have the message.
+        a warning in the window that the form may already have the message; ``earlier_send``
+        (the app's own press may have sent it) a gentler one.
         """
         # "attached" names the file only once it is in the form's file field; most forms have none.
         result: dict[str, Any] = {"outcome": "failed", "note": "", "confirmation": "", "filled": [], "screenshot": "", "filled_screenshot": "", "attached": ""}
@@ -1581,7 +1649,8 @@ class FormSubmitter:
             self._sites = {website_domain(page_url)} - {""}
             self._needles = _needles(identity, subject, body)
             self.held_back = []
-            self._socket_was_the_way = self._student_left = False
+            self._socket_was_the_way = self._student_left = self._went_elsewhere = False
+            self._opened_after_press, self._held_other = set(), []
             page = self._context.new_page()
             self._window = page
             # Before the page loads, so the press listener is in place ahead of every script of the page.
@@ -1600,11 +1669,15 @@ class FormSubmitter:
                 result["note"] = ("The contact form is on the page but hidden (it opens from a button), so it is not filled blind"
                                   if read and read.get("hidden") else
                                   "No contact form on the page (it may be gone, or built in a way the app cannot read)")
+                if self._held_other and not (read and read.get("hidden")):
+                    result["note"] = (
+                        f"No contact form appeared in this window. The app held back what the page loads by itself "
+                        f"({', '.join(self._held_other)}), and the form may be built from it: send it from the page in your own browser")
                 return result
             if self.person_wait:
                 clicked = self._hand_to_student(
                     page, frame, read, result, identity=identity, subject=subject, body=body, attachment=attachment,
-                    name=name, on_press=on_press, watching=watching, tried_before=tried_before,
+                    name=name, on_press=on_press, watching=watching, tried_before=tried_before, earlier_send=earlier_send,
                 )
                 return result
             purpose = _sales_purpose(read)
@@ -1796,7 +1869,7 @@ class FormSubmitter:
     def _hand_to_student(
         self, page: Any, frame: Any, read: dict[str, Any], result: dict[str, Any], *, identity: dict[str, str],
         subject: str, body: str, attachment: str, name: str, on_press: Callable[[], Any] | None, watching: bool,
-        tried_before: bool = False,
+        tried_before: bool = False, earlier_send: bool = False,
     ) -> bool:
         """Finish in browser: fill what the app truthfully can, then the window is the student's until they press send.
 
@@ -1900,7 +1973,7 @@ class FormSubmitter:
         self._press_sink = heard
         self._left_sink = gone
         frame.evaluate(OUTLINE_SCRIPT, [entry["index"] for entry in plan["left"]])
-        lines = ([TRIED_BEFORE] if tried_before else []) + (["Fill in the boxes outlined in orange."] if plan["left"] else []) + notes + [
+        lines = ([TRIED_BEFORE] if tried_before else [EARLIER_SEND] if earlier_send else []) + (["Fill in the boxes outlined in orange."] if plan["left"] else []) + notes + [
             "If pressing send does nothing, the app did not see your press and nothing left: close this window."]
         try:
             page.evaluate(NOTE_SCRIPT, {"lines": lines + held_line(), "seconds": int(self.person_wait)})
@@ -1958,7 +2031,11 @@ class FormSubmitter:
             closed = True
         self._gate = "closed"
         self._left_sink = None
-        if presses and not left and self._socket_was_the_way:
+        if presses and not left and unrecorded:
+            # The app itself held back what the press sent (it could not record the press): nothing went, whatever the
+            # page then showed (it may thank the student as it submits into a hidden frame).
+            vanished = False
+        if presses and not left and not unrecorded and self._socket_was_the_way and not self._went_elsewhere:
             # Nothing left the window after the press, and the page's way of sending was a socket the app refused: nothing
             # went, whatever the page then showed (it may thank the student for a message it only queued).
             result.update(outcome="needs_you", confirmation="", note=(
@@ -1971,6 +2048,8 @@ class FormSubmitter:
             result.update(outcome="unconfirmed", confirmation="", note=FORM_PRESSED_NOTE)
             self._note_students_part(result, plan, held, presses[-1] if presses else {})
             if any(entry.startswith("WEBSOCKET ") for entry in self.held_back):
+                if not result["note"].endswith((".", "?")):
+                    result["note"] += "."
                 result["note"] += (" Their page also tried a connection the app refused (a WebSocket), which may have been "
                                    "its way of sending: if it showed an error, answer No.")
         else:
@@ -2335,7 +2414,7 @@ def submit_contact_form(
                          "No opens Finish in browser again")
     identity = identity_for(conn, user_id)
     stale_token = ""
-    tried_before = False
+    earlier_send = False
     existing = send_claim_row(conn, target_id, user_id, "initial")
     if existing is not None:
         # Another process's mid-press claim on a form already waiting on the student's answer, older than any window can
@@ -2355,14 +2434,16 @@ def submit_contact_form(
             raise SendNeedsCheckError(
                 "An earlier send of this message may have gone out. Check before sending it again.", "form-unconfirmed",
             )
-        # The student said an earlier try did not go ("No, it was not sent", or a checked resend): the history says
-        # so, and Finish in browser warns them the form may already have it.
-        tried_before = existing["state"] in {"unconfirmed", automation.FORM_HANDED_OVER}
+        earlier_send = existing["state"] in {"unconfirmed", automation.FORM_HANDED_OVER}
         stale_token = existing["token"]
-    # ... or did so before, and that window closed with nothing pressed (its claim is gone, the history is not).
-    tried_before = tried_before or in_browser and bool(target["contact_form"]["asks"]) or in_browser and conn.execute(
+    # The student said their press did not send it ("No, it was not sent"), now or before (that window closed with
+    # nothing pressed: its claim is gone, the history is not): Finish in browser warns them the form may already have
+    # it. A form the app itself pressed, which the student never answered for, gets a gentler line.
+    asks = bool(target["contact_form"]["asks"])
+    tried_before = in_browser and (asks or conn.execute(
         "SELECT 1 FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=? LIMIT 1", (target_id, user_id, SAID_NOT_SENT_EVENT),
-    ).fetchone() is not None
+    ).fetchone() is not None)
+    earlier_send = in_browser and not tried_before and (earlier_send or target["contact_form"]["state"] == "unconfirmed")
     path = attachment_path()
     attachment = str(path) if path and not attachment_problem(path) else ""
 
@@ -2410,9 +2491,10 @@ def submit_contact_form(
                 log_event(conn, target_id, user_id, PRESSED_EVENT, detail=json.dumps({"pressed_at": pressed_at}))
 
         submit_options: dict[str, Any] = (
-            {"should_continue": hand_over} if automatic else {"on_press": student_pressed, "tried_before": tried_before} if in_browser else {}
+            {"should_continue": hand_over} if automatic else
+            {"on_press": student_pressed, "tried_before": tried_before, "earlier_send": earlier_send} if in_browser else {}
         )
-        if retry_unconfirmed and (bool(target["contact_form"]["asks"]) or existing is not None and existing["state"] in {"unconfirmed", automation.FORM_HANDED_OVER}):
+        if retry_unconfirmed and asks:
             with conn:
                 log_event(conn, target_id, user_id, SAID_NOT_SENT_EVENT, detail=json.dumps({"in_browser": in_browser}))
         page_url = fresh["contact_form"]["page_url"]

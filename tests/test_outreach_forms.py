@@ -803,6 +803,11 @@ class FormSendTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT state FROM outreach_send_claims").fetchone()["state"], "unconfirmed")
             self.assertEqual(form_due(conn, user_id=USER), [])
         self.assertEqual(self.send(target).status_code, 428, "the app does not press it again without a check")
+        # The student never said it did not go: the window's line is the gentler one, and the history has no No.
+        call = self.submitter.calls[-1]
+        self.assertEqual((call["tried_before"], call["earlier_send"]), (False, True))
+        with closing(connect_product(self.platform_path)) as conn:
+            self.assertIsNone(conn.execute("SELECT 1 FROM outreach_events WHERE event_type=?", (outreach_forms.SAID_NOT_SENT_EVENT,)).fetchone())
 
     def test_the_press_is_logged_where_replies_and_thank_yous_read_it(self):
         target = self.pressed_in_browser()
@@ -1280,7 +1285,8 @@ class FinishInBrowserTests(unittest.TestCase):
     app does not judge what the page says, and the card asks the student.
     """
 
-    def submit(self, page, student, *, wait=20, pages=None, launch_args=None, close=True, tried_before=False, on_press=None):
+    def submit(self, page, student, *, wait=20, pages=None, launch_args=None, close=True, tried_before=False, on_press=None,
+               earlier_send=False):
         # The CAPTCHA box, if the app ticked it, would solve itself: the student's own solving is then the only way past it.
         site = Site({"/contact": page, "/recaptcha/api2/anchor": ANCHOR_SOLVES, **(pages or {})})
         tempdir = tempfile.TemporaryDirectory()
@@ -1298,6 +1304,7 @@ class FinishInBrowserTests(unittest.TestCase):
             result = submitter.submit(
                 "https://bovi.test/contact", identity=IDENTITY, subject="Robotics internship question",
                 body=LETTER, name="bovi", on_press=on_press or (lambda: pressed.append(1)), tried_before=tried_before,
+                earlier_send=earlier_send,
             )
         return result, site, pressed
 
@@ -1727,14 +1734,20 @@ class FinishInBrowserTests(unittest.TestCase):
 
     def test_a_captchas_own_worker_loads_its_scripts_before_the_press(self):
         # A CAPTCHA may compute in a worker in its own frame, and the browser calls the worker's importScripts "other":
-        # unlike any other "other" request before the press, it loads.
+        # unlike any other "other" request before the press, it loads (hCaptcha from its own host, reCAPTCHA from gstatic).
+        for frame_url, script in (("https://newassets.hcaptcha.com/captcha/v1/frame", "https://newassets.hcaptcha.com/c/hsw.js"),
+                                  ("https://www.google.com/recaptcha/api2/bframe?k=x", "https://www.gstatic.com/recaptcha/releases/abc/recaptcha__en.js")):
+            with self.subTest(frame=frame_url):
+                self.assertEqual(self.worker_in_captcha_frame(frame_url, script), ["loaded"])
+
+    def worker_in_captcha_frame(self, frame_url, script):
         frame = """<html><body><script>
           const worker = new Worker(URL.createObjectURL(new Blob([
-            "try { importScripts('https://newassets.hcaptcha.com/c/hsw.js'); postMessage(self.solved || 'empty'); }"
+            "try { importScripts('SCRIPT'); postMessage(self.solved || 'empty'); }"
             + " catch (error) { postMessage('refused'); }"], {type: "text/javascript"})));
           worker.onmessage = (event) => parent.postMessage(event.data, "*");
-        </script></body></html>"""
-        page = PLAIN_FORM.replace("</form>", '</form><iframe src="https://newassets.hcaptcha.com/captcha/v1/frame"></iframe>'
+        </script></body></html>""".replace("SCRIPT", script)
+        page = PLAIN_FORM.replace("</form>", f'</form><iframe src="{frame_url}"></iframe>'
                                   '<script>addEventListener("message", (event) => { document.body.dataset.worker = event.data; });</script>')
         original = Site.route
 
@@ -1751,9 +1764,93 @@ class FinishInBrowserTests(unittest.TestCase):
             seen.append(window.evaluate("document.body.dataset.worker || ''"))
 
         with mock.patch.object(Site, "route", with_scripts):
-            result, site, pressed = self.submit(page, student, pages={"/captcha/v1/frame": frame})
-        self.assertEqual(seen, ["loaded"])
+            result, site, pressed = self.submit(page, student, pages={urlsplit(frame_url).path: frame})
         self.assertNothingSent(result, site, pressed)
+        return seen
+
+    def test_a_form_the_app_may_have_sent_gets_the_gentler_warning_in_the_window(self):
+        seen = []
+
+        def student(window, site):
+            seen.append(window.evaluate("() => document.querySelector('[data-pipeline-note]').shadowRoot.textContent"))
+
+        result, site, pressed = self.submit(BUDGET_FORM, student, earlier_send=True)
+        self.assertIn(outreach_forms.EARLIER_SEND, seen[0])
+        self.assertNotIn("You said", seen[0])
+        self.assertNothingSent(result, site, pressed)
+
+    def test_a_form_drawn_from_what_the_page_preloads_names_what_was_held_back(self):
+        # The page preloads its form's markup (a request the browser calls "other", refused before the press) and draws
+        # the form from its own fetch of it, which fails with the preload: no form appears, and the note says why.
+        page = """<html><head><link rel="preload" as="fetch" href="/form.json" crossorigin></head><body><div id="root"></div><script>
+          fetch("/form.json").then((response) => response.text()).then((html) => { document.getElementById("root").innerHTML = html; });
+        </script></body></html>"""
+        form = PLAIN_FORM.split("<body>", 1)[1].split("</body>", 1)[0]
+        result, site, pressed = self.submit(page, lambda window, site: None, pages={"/form.json": form})
+        self.assertEqual((result["outcome"], site.posts, pressed), ("failed", [], []), result)
+        self.assertIn("held back what the page loads by itself (bovi.test)", result["note"])
+
+    @mock.patch.object(outreach_forms, "AFTER_PRESS_SECONDS", 3)
+    def test_a_press_the_app_never_recorded_is_said_so_whatever_the_page_does(self):
+        # The page also keeps a socket to its own site, or thanks the student as it submits into a hidden frame: either
+        # way the app itself held the request back, and the card says that rather than blame a socket or ask.
+        def never():
+            raise sqlite3.OperationalError("database is locked")
+
+        def student(window, site):
+            window.locator("[name=budget]").fill("Under $10k")
+            window.get_by_role("button", name="Send message").click()
+
+        socketed = BUDGET_FORM.replace("</form>", '</form><script>new WebSocket("wss://bovi.test/realtime");</script>')
+        sunk = BUDGET_FORM.replace('<form action="/send" method="post">', '<iframe name="sink" hidden></iframe><form action="/send" '
+                                   'method="post" target="sink" onsubmit="setTimeout(() => { this.outerHTML = \'<p>Thank you for your message!</p>\'; }, 0)">')
+        for name, page in (("own-site socket", socketed), ("hidden frame", sunk)):
+            with self.subTest(page=name):
+                # The window stays open, so the app sees the form go from the page (the hidden frame's thank-you).
+                result, site, _pressed = self.submit(page, student, on_press=never, close=False, wait=3)
+                self.assertEqual((result["outcome"], site.posts), ("needs_you", []), result)
+                self.assertTrue(result["note"].startswith(outreach_forms.UNRECORDED_NOTE), result["note"])
+
+    def test_a_chat_widget_that_opens_after_the_fill_is_not_blamed(self):
+        page = PLAIN_FORM.replace("</form>", "</form><script>setTimeout(() => new WebSocket('wss://widget.intercom.example/x'), 1200);</script>")
+        result, site, pressed = self.submit(page, lambda window, site: window.wait_for_timeout(2_000))
+        self.assertNothingSent(result, site, pressed)
+        self.assertEqual(result["held_back"], [])
+        self.assertNotIn("intercom", result["note"])
+
+    @mock.patch.object(outreach_forms, "AFTER_PRESS_SECONDS", 3)
+    def test_a_socket_to_the_forms_own_site_is_known_however_it_is_written(self):
+        for written in ("/socket", "https://bovi.test/socket", "wss://bovi.test./socket"):
+            with self.subTest(written=written):
+                page = QUEUED_SOCKET_FORM.replace('new WebSocket("wss://bovi.test/socket")', f'new WebSocket("{written}")')
+                result, site, _pressed = self.submit(page, lambda window, site: window.get_by_role("button", name="Send").click(),
+                                                     close=False, wait=3)
+                self.assertEqual((result["outcome"], site.posts), ("needs_you", []), result)
+                self.assertIn("WEBSOCKET bovi.test", result["held_back"])
+
+    @mock.patch.object(outreach_forms, "AFTER_PRESS_SECONDS", 3)
+    def test_an_image_sent_elsewhere_after_the_press_keeps_a_refused_socket_from_deciding(self):
+        # The form goes as an image's address the app cannot read, beside the page's own refused socket: the card asks.
+        page = QUEUED_SOCKET_FORM.replace(
+            'queue.push(document.getElementById("e").value);',
+            'new Image().src = "https://forms.example/p.gif?d=" + btoa(document.getElementById("e").value); queue.push(document.getElementById("e").value);')
+        result, site, _pressed = self.submit(page, lambda window, site: window.get_by_role("button", name="Send").click(), close=False, wait=3)
+        self.assertAsked(result)
+
+    def test_the_question_reads_as_sentences_beside_the_students_own_text_and_a_refused_socket(self):
+        demo = PLAIN_FORM.replace("<form", "<h2>Request a demo</h2><form", 1).replace(
+            "</form>", '</form><script>new WebSocket("wss://bovi.test/realtime");</script>')
+
+        def student(window, site):
+            for name, value in (("name", "Sam Rivera"), ("email", "sam@example.org"), ("message", "A question about your robots.")):
+                window.locator(f"[name={name}]").fill(value)
+            window.locator("[name=consent]").check()
+            window.get_by_role("button", name="Send message").click()
+
+        result, site, _pressed = self.submit(demo, student)
+        self.assertEqual([path for path, _ in site.posts], ["/send"])
+        self.assertAsked(result)
+        self.assertIn(". Their page also tried a connection", result["note"])
 
     def test_a_captcha_is_left_for_the_student(self):
         seen = []
@@ -2173,6 +2270,103 @@ class SpeculationHeaderTests(unittest.TestCase):
                 self.assertEqual(result["outcome"], "rehearsed" if "rehearse" in mode else "needs_you", result)
                 self.assertTrue(result["filled"], result)
                 self.assertEqual([path for path in heard if not path.startswith("/contact")], [], "nothing fetched but the page")
+
+
+# Links whose addresses take the filled name, and document rules that would prefetch and prerender them at once.
+NAME_LINKS = """<a id="d" href="/leakd">a</a><a id="r" href="/leakr">b</a><script>
+  setInterval(() => {
+    const value = encodeURIComponent(document.querySelector("[name=name]").value);
+    if (value) { document.getElementById("d").href = "/leakd?v=" + value; document.getElementById("r").href = "/leakr?v=" + value; }
+  }, 100);
+</script>"""
+DOCUMENT_RULES = ('<script type="speculationrules">{"prefetch": [{"source": "document", "where": {"href_matches": "/leakd*"}, '
+                  '"eagerness": "immediate"}], "prerender": [{"source": "document", "where": {"href_matches": "/leakr*"}, '
+                  '"eagerness": "immediate"}]}</script>')
+# A script that, once the name is filled, puts a list rule naming it into the root it is handed.
+LIST_RULE_INTO = """setInterval(() => {
+    const value = document.querySelector("[name=name]").value, root = ROOT;
+    if (value && !window.done) {
+      window.done = true;
+      const rules = document.createElement("script"); rules.type = "speculationrules";
+      rules.textContent = JSON.stringify({prefetch: [{source: "list", urls: ["/lst?v=" + encodeURIComponent(value)]}]});
+      root.append(rules);
+    }
+  }, 100);"""
+
+
+@requires_chromium
+class SpeculationShadowTests(unittest.TestCase):
+    """Finish in browser and a rehearsal: speculation rules in a shadow root never fetch an address carrying the filled name."""
+
+    MODES = ({"person_wait": 3, "student_hook": lambda window: window.wait_for_timeout(2_000)}, {"rehearse": True})
+
+    def serve(self, page):
+        heard = []
+
+        class Server(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - the http.server name
+                heard.append(self.path)
+                body = (page if self.path.startswith("/contact") else "<html><body>later</body></html>").encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Server)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server.server_address[1], heard
+
+    def window(self, port, mode):
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        # Served from the loopback address, which the browser takes as a secure origin (where it acts on speculation
+        # rules), and which the request guard is told to let through for this test only.
+        loopback = mock.patch.object(outreach_forms, "request_allowed", lambda url, *_args: urlsplit(url).hostname == "127.0.0.1")
+        with loopback, FormSubmitter(screenshot_dir=Path(tempdir.name), **mode) as submitter:
+            return submitter.submit(f"http://127.0.0.1:{port}/contact", identity=IDENTITY, subject="s", body=LETTER, name="bovi")
+
+    def test_rules_in_a_shadow_root_a_script_can_reach_never_prefetch_the_name(self):
+        pages = {
+            # An open root the page's HTML declares (the parser attaches it with no call to see), with document rules.
+            "declared open": PLAIN_FORM.replace("</form>", f'</form><div><template shadowrootmode="open">{DOCUMENT_RULES}</template></div>{NAME_LINKS}'),
+            # An empty open root the HTML declares, which a script fills with a list rule once the name is in.
+            "declared open, filled by script": PLAIN_FORM.replace("</form>", '</form><div id="h"><template shadowrootmode="open"></template></div><script>'
+                                                                  + LIST_RULE_INTO.replace("ROOT", 'document.getElementById("h").shadowRoot') + "</script>"),
+            # A closed root the HTML declares, reached by its custom element through ElementInternals.
+            "declared closed, reached by its element": PLAIN_FORM.replace("</form>", """</form><x-box><template shadowrootmode="closed"></template></x-box><script>
+              customElements.define("x-box", class extends HTMLElement { constructor() { super(); this.internals = this.attachInternals(); } });
+              """ + LIST_RULE_INTO.replace("ROOT", 'document.querySelector("x-box").internals.shadowRoot') + "</script>"),
+        }
+        for name, page in pages.items():
+            for mode in self.MODES:
+                with self.subTest(page=name, mode=sorted(mode)):
+                    port, heard = self.serve(page)
+                    result = self.window(port, mode)
+                    self.assertEqual(result["outcome"], "rehearsed" if "rehearse" in mode else "needs_you", result)
+                    self.assertTrue(any(path.startswith("/contact") for path in heard), heard)
+                    self.assertEqual([path for path in heard if "Sam" in path], [], "nothing carrying the name was fetched")
+
+    @unittest.expectedFailure
+    def test_rules_in_a_closed_shadow_root_the_page_declares_are_out_of_reach(self):
+        # docs/known-defects.md, Finish in browser gap (9): the parser attaches a closed root with no call any script
+        # sees, and no script of the page can reach it, so its rules stay. Take this marker off when that is fixed.
+        port, heard = self.serve(PLAIN_FORM.replace(
+            "</form>", f'</form><div><template shadowrootmode="closed">{DOCUMENT_RULES}</template></div>{NAME_LINKS}'))
+
+        def student(window):
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not any("Sam" in path for path in heard):
+                window.wait_for_timeout(100)
+
+        self.window(port, {"person_wait": 8, "student_hook": student})
+        self.assertEqual([path for path in heard if "Sam" in path], [])
+
 
 
 class _GateRoute:
