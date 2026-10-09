@@ -934,6 +934,12 @@ GET_SENT_FORM = SCRIPT_FORM.replace(
     'await fetch("/mail?" + new URLSearchParams({').replace(
     "message: document.getElementById(\"m\").value})});", "message: document.getElementById(\"m\").value}));").replace(
     "Thank you for your message! We'll reply soon.", "Done.")
+# A script-built form sent by GET to another site with its values base64-encoded, which the app cannot read.
+ENCODED_GET_FORM = SCRIPT_FORM.replace(
+    'await fetch("/api/contact", {method: "POST", body: JSON.stringify({',
+    'await fetch("https://forms.example/s?d=" + btoa(JSON.stringify({').replace(
+    "message: document.getElementById(\"m\").value})});", "message: document.getElementById(\"m\").value.slice(0, 5)})));").replace(
+    "Thank you for your message! We'll reply soon.", "Done.")
 # A form whose send button posts a beacon to its own site on every click, as a CDN's page-speed script does.
 BEACON_FORM = BUDGET_FORM.replace("</form>", "</form><script>document.querySelector('button').addEventListener("
                                   "'click', () => fetch('/cdn-cgi/rum', {method: 'POST', body: 'rum'}));</script>")
@@ -1093,7 +1099,7 @@ class FinishInBrowserTests(unittest.TestCase):
     app does not judge what the page says, and the card asks the student.
     """
 
-    def submit(self, page, student, *, wait=20, pages=None, launch_args=None, close=True, tried_before=False):
+    def submit(self, page, student, *, wait=20, pages=None, launch_args=None, close=True, tried_before=False, on_press=None):
         # The CAPTCHA box, if the app ticked it, would solve itself: the student's own solving is then the only way past it.
         site = Site({"/contact": page, "/recaptcha/api2/anchor": ANCHOR_SOLVES, **(pages or {})})
         tempdir = tempfile.TemporaryDirectory()
@@ -1110,7 +1116,7 @@ class FinishInBrowserTests(unittest.TestCase):
                            student_hook=hook) as submitter:
             result = submitter.submit(
                 "https://bovi.test/contact", identity=IDENTITY, subject="Robotics internship question",
-                body=LETTER, name="bovi", on_press=lambda: pressed.append(1), tried_before=tried_before,
+                body=LETTER, name="bovi", on_press=on_press or (lambda: pressed.append(1)), tried_before=tried_before,
             )
         return result, site, pressed
 
@@ -1249,6 +1255,48 @@ class FinishInBrowserTests(unittest.TestCase):
         result, site, pressed = self.submit(elsewhere, student)
         self.assertAsked(result)
         self.assertEqual(([path for path, _ in site.posts], pressed), (["/send"], [1]))
+
+    def test_a_press_the_app_could_not_record_sends_nothing_until_the_next_one(self):
+        # Recording the press fails once (the database is busy): the form's post is held back rather than let go
+        # unrecorded, and the student's second press records it and sends.
+        tries = []
+
+        def recorded():
+            tries.append(1)
+            if len(tries) == 1:
+                raise sqlite3.OperationalError("database is locked")
+
+        def student(window, site):
+            send = window.get_by_role("button", name="Send")
+            send.click()
+            window.wait_for_timeout(300)
+            seen.append(list(site.posts))
+            send.click()
+
+        seen = []
+        result, site, _pressed = self.submit(SCRIPT_FORM, student, on_press=recorded)
+        self.assertEqual(seen, [[]], "nothing left while the press could not be recorded")
+        self.assertEqual(([path for path, _ in site.posts], tries), (["/api/contact"], [1, 1]))
+        self.assertAsked(result)
+
+    def test_after_the_press_a_form_that_goes_from_the_page_with_nothing_seen_leaving_still_asks(self):
+        # Only an image loads after the press (not counted), but the page drops the form for a thank-you: something the
+        # app cannot see may have sent it, so it asks rather than say nothing was sent.
+        unseen = SCRIPT_FORM.replace(
+            'await fetch("/api/contact", {method: "POST", body: JSON.stringify({',
+            'new Image().src = "https://forms.example/p.gif"; root.innerHTML = "<p>Thanks!</p>"; return;\n'
+            '    await fetch("/api/contact", {method: "POST", body: JSON.stringify({')
+        result, site, pressed = self.submit(unseen, lambda window, site: window.get_by_role("button", name="Send").click(), close=False, wait=3)
+        self.assertAsked(result)
+        self.assertEqual(site.posts, [])
+
+    def test_after_the_press_a_send_the_app_cannot_read_still_makes_it_ask(self):
+        # The values go base64-encoded in a read's address, to another site: nothing the app can recognise, yet after the
+        # student's press anything but the page's own images, styles and scripts may be the form, so the card asks.
+        result, site, pressed = self.submit(ENCODED_GET_FORM, lambda window, site: window.get_by_role("button", name="Send").click(),
+                                            pages={"/s": "ok"})
+        self.assertAsked(result)
+        self.assertEqual(pressed, [1])
 
     def test_a_form_sent_by_get_goes_after_the_press(self):
         result, site, pressed = self.submit(GET_SENT_FORM, lambda window, site: window.get_by_role("button", name="Send").click(),

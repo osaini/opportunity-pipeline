@@ -1317,18 +1317,20 @@ class FormSubmitter:
             route.abort("blockedbyclient")
             return
         # Finish in browser fails closed: until the student's press is seen, and once the window's outcome is decided,
-        # nothing that could carry the form leaves, so a press the app did not see sends nothing. After the press, what
-        # the gate lets through that it would otherwise hold is what may carry the form: the window's record follows it
-        # (``_left_sink``), told before the request goes.
-        if (self._gate != "open" or self._left_sink is not None) and self._could_carry(request, closed=self._gate != "load"):
-            if self._gate != "open" and not self._press_arrives():
-                if _carries(request, self._needles) or any(same_site(request.url, site) for site in self._sites):
-                    # What the window's note and the history name: not a third party's beacon, which no form needs.
-                    self.held_back.append(f"{request.method} {urlsplit(request.url).hostname or ''}")
+        # nothing that could carry the form leaves, so a press the app did not see sends nothing.
+        if self._gate != "open" and self._could_carry(request, closed=self._gate != "load") and not self._press_arrives():
+            if _carries(request, self._needles) or any(same_site(request.url, site) for site in self._sites):
+                # What the window's note and the history name: not a third party's beacon, which no form needs.
+                self.held_back.append(f"{request.method} {urlsplit(request.url).hostname or ''}")
+            route.abort("blockedbyclient")
+            return
+        # After the press, anything but the page's own images, styles, fonts and media may be the form, whatever its
+        # site and however it is encoded: the window's record follows it (``_left_sink``), told before it goes, and a
+        # request whose going the app could not record is held back instead (the student presses again).
+        if self._left_sink is not None and self._gate == "open" and _may_be_the_form(request, self._needles):
+            if not self._left_sink(request):
                 route.abort("blockedbyclient")
                 return
-            if self._left_sink is not None:
-                self._left_sink(request)
         (self._route_hook or self._guard)(route)
 
     def _could_carry(self, request: Any, *, closed: bool) -> bool:
@@ -1683,15 +1685,20 @@ class FormSubmitter:
                 presses.append(values)
                 self._gate = "open"  # the student pressed send: what the form sends may leave
 
-        def gone(request: Any) -> None:
-            left.append(f"{request.method} {urlsplit(request.url).hostname or ''}")
-            if len(left) == 1:
-                result["pressed_at"] = utc_now()
+        unrecorded: list[str] = []  # requests held back because the press they followed could not be recorded
+
+        def gone(request: Any) -> bool:
+            """Whether this request, which may carry the form, may go: only once the press is recorded."""
+            if not left:
                 if on_press is not None:
                     try:
                         on_press()
-                    except Exception:  # noqa: BLE001 - recording it cannot hold the student's own send back
-                        pass
+                    except Exception:  # noqa: BLE001 - a press the app cannot record sends nothing: the next one tries again
+                        unrecorded.append(f"{request.method} {urlsplit(request.url).hostname or ''}")
+                        return False
+                result["pressed_at"] = utc_now()
+            left.append(f"{request.method} {urlsplit(request.url).hostname or ''}")
+            return True
 
         def held_line() -> list[str]:
             hosts = sorted({entry.split(" ", 1)[1] for entry in self.held_back if " " in entry})
@@ -1714,9 +1721,25 @@ class FormSubmitter:
             self._student_hook(page)
 
         deadline = time.monotonic() + self.person_wait
-        said_left, closed, said_held = False, False, len(self.held_back)
+        said_left, closed, said_held, said_unrecorded, vanished = False, False, len(self.held_back), 0, False
         try:
             while True:
+                if len(unrecorded) > said_unrecorded and not left:
+                    said_unrecorded = len(unrecorded)
+                    try:
+                        page.evaluate(NOTE_SCRIPT, {
+                            "lines": ["The app could not record your press, so it held the form back. Press send again."],
+                            "seconds": max(0, int(deadline - time.monotonic())), "title": "Nothing was sent yet."})
+                    except Exception:  # noqa: BLE001
+                        pass
+                if presses and not left and not vanished and self._form_on_screen(frame) is False:
+                    # The form went from the page after a press with nothing the app saw leave: something it cannot see
+                    # (a worker's request) may have sent it, so the card asks rather than say nothing was sent.
+                    found, _read = self._find_form(page)
+                    if found is None:
+                        vanished = True
+                    else:
+                        frame = found
                 if left and not said_left:
                     said_left = True
                     try:
@@ -1741,7 +1764,7 @@ class FormSubmitter:
             closed = True
         self._gate = "closed"
         self._left_sink = None
-        if left:
+        if left or vanished:
             # The app does not judge what the page said: the student does, on the card.
             result.update(outcome="unconfirmed", confirmation="", note=FORM_PRESSED_NOTE)
             self._note_students_part(result, plan, held, presses[-1] if presses else {})
@@ -1760,7 +1783,15 @@ class FormSubmitter:
                              "so this form may not send from Finish in browser: send it from the page in your own browser")
             result.update(outcome="needs_you", note=". ".join(parts))
         result["held_back"] = list(self.held_back)
-        return bool(left)
+        return bool(left or vanished)
+
+    @staticmethod
+    def _form_on_screen(frame: Any) -> bool | None:
+        """Whether the app's marked form is on screen; None when the frame cannot be asked (the window closed)."""
+        try:
+            return bool(frame.locator("[data-pipeline-form]").first.is_visible())
+        except Exception:  # noqa: BLE001
+            return None
 
     @staticmethod
     def _note_students_part(result: dict[str, Any], plan: dict[str, Any], held: dict[str, str], values: dict[str, Any]) -> None:
@@ -1955,6 +1986,13 @@ def _needles(identity: dict[str, str], subject: str, body: str) -> list[str]:
     found = [identity.get(key, "") for key in ("email", "name", "school", "link", "address_line1", "address_line2")]
     found += [phone, digits if len(digits) >= 7 else "", subject, opening]
     return list(dict.fromkeys(str(text).strip().casefold() for text in found if len(str(text).strip()) >= 6))
+
+
+def _may_be_the_form(request: Any, needles: list[str]) -> bool:
+    """After the student's press: anything but a read of the page's own images, styles, fonts and media may be the form."""
+    if request.method != "GET" or _carries(request, needles):
+        return True
+    return getattr(request, "resource_type", "") not in {"image", "stylesheet", "font", "media"}
 
 
 def _carries(request: Any, needles: list[str]) -> bool:
