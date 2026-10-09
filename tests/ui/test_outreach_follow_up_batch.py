@@ -232,3 +232,39 @@ def test_unsaved_edits_in_the_open_follow_up_stop_a_batch(owner_page, live_serve
     expect(send).to_have_text("Send all now")
     assert requests == []
     owner_page.unroute_all(behavior="ignoreErrors")
+
+
+def test_the_bar_and_the_cards_share_one_edge_and_one_spacing(owner_page, live_server, base_url):
+    # A long name wraps; it used to squeeze the place and priority beside it into an ellipsis.
+    for company, place in (("Alpha Co", "Austin, TX"), ("Bravo Autonomous Underwater Robotics Laboratories", "San Jose, CA"), ("Charlie Co", "")):
+        seed_target(owner_page, base_url, **due(company, location=place, priority="P1"))
+    turn_on_scheduling(live_server)
+    gmail_listing(owner_page, bounce_check=True)
+    open_outreach(owner_page, "follow-ups-due")
+    expect(owner_page.locator(".outreach-pick")).to_have_count(3)
+    layout = owner_page.evaluate("""() => {
+      const box = (node) => node.getBoundingClientRect();
+      const bar = box(document.querySelector('.outreach-batch'));
+      const rows = [...document.querySelectorAll('.outreach-row')];
+      return {
+        search: box(document.querySelector('.outreach-search')).left, bar: bar.left,
+        cards: rows.map((row) => box(row).left),
+        selectAll: box(document.querySelector('.outreach-batch-all input')).left,
+        boxes: rows.map((row) => box(row.parentElement.querySelector('.outreach-pick')).left),
+        boxInside: rows.map((row) => {
+          const pick = box(row.parentElement.querySelector('.outreach-pick')), name = box(row.querySelector('.outreach-row-company'));
+          return pick.left > box(row).left && pick.right < name.left && pick.top >= name.top && pick.bottom <= name.top + 24;
+        }),
+        names: rows.map((row) => box(row.querySelector('.outreach-row-company')).left),
+        gaps: [box(rows[0]).top - bar.bottom, ...rows.slice(1).map((row, i) => box(row).top - box(rows[i]).bottom)],
+        places: rows.map((row) => row.querySelector('.outreach-row-meta')?.textContent ?? null),
+        clipped: rows.flatMap((row) => [...row.querySelectorAll('.outreach-row-meta, .outreach-row-priority')]).filter((node) => node.scrollWidth > node.clientWidth).length,
+      };
+    }""")
+    assert layout["bar"] == layout["search"] and set(layout["cards"]) == {layout["bar"]}, layout
+    assert set(layout["boxes"]) == {layout["selectAll"]}, "Select all lines up with every row's box"
+    assert all(layout["boxInside"]), "each box sits inside its card, beside the name's first line"
+    assert len(set(layout["names"])) == 1, "every name starts at one edge"
+    assert len(set(layout["gaps"])) == 1, layout["gaps"]
+    assert sorted(place for place in layout["places"] if place) == ["Austin, TX", "San Jose, CA"] and layout["clipped"] == 0
+    expect(owner_page.locator(".outreach-row-priority")).to_have_text(["P1", "P1", "P1"])
