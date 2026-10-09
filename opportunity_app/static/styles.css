@@ -756,7 +756,10 @@ input.settings-switch:disabled { opacity: .6; cursor: progress; }
 .apply-turn { display: grid; justify-items: start; gap: var(--space-3); min-width: 0; max-width: 100%; }
 .apply-turn > * { margin: 0; max-width: 100%; }
 .apply-turn [hidden] { display: none; }
-.apply-turn-until:empty, .apply-turn-soon:empty { display: none; }
+.apply-turn-until:empty { display: none; }
+/* The warning's live region must stay in the accessibility tree while empty (words put on the page with their region are not read out): clipped
+   out of sight and out of the grid, so it takes no row and no gap. */
+.apply-turn > .apply-turn-soon:empty { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .apply-turn .form-status:empty { min-height: 0; }
 .apply-turn-soon { color: var(--warn-ink); font-weight: 700; }
 .apply-turn-lists { display: grid; gap: var(--space-3); width: 100%; min-width: 0; }

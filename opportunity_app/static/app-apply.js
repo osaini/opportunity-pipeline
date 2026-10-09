@@ -431,7 +431,10 @@
     const line = element("p", "apply-source profile-help");
     const words = [posting.title, posting.company].filter(Boolean).join(" at ");
     line.append("Read from ");
-    if (posting.url) {
+    // On Lever the address is the live application form: with Finish in browser offered for this role it is only named, never linked, so the
+    // form is filled and sent through the app (and its guard against a second application), never in a tab beside it.
+    const formOutside = result.ats === "lever" && !(result.offers && !result.offers.handoff);
+    if (posting.url && !formOutside) {
       const link = externalLink(posting.url, words);
       line.appendChild(link);
     } else {

@@ -267,6 +267,10 @@ def test_a_lever_role_does_not_send_the_student_to_the_posting_while_finish_in_b
     expect(section.locator(".apply-problem", has=owner_page.get_by_text("Current company"))).to_be_visible()
     expect(finish_button(section)).to_be_visible()
     expect(section.get_by_role("link", name="Open the posting on Lever")).to_have_count(0)
+    # The "Read from" line names the posting but does not link to Lever's live application form either.
+    expect(section.locator(".apply-source")).to_contain_text("Read from Harbor Demo Labs - Customer Success Lead")
+    expect(section.locator(".apply-source a")).to_have_count(0)
+    expect(section.locator("a[href*='lever.co']")).to_have_count(0)
 
 
 def test_no_link_to_the_posting_during_the_students_turn_and_no_empty_gap_in_it(canned_agent, owner_page):
@@ -276,8 +280,20 @@ def test_no_link_to_the_posting_during_the_students_turn_and_no_empty_gap_in_it(
     turn = section.locator(".apply-turn")
     expect(turn).to_be_visible(timeout=30_000)
     expect(section.get_by_role("link", name="Open the posting on Lever")).to_have_count(0)
-    # The "about 2 minutes left" line is empty at the start: it takes no row, so no gap, above the résumé line.
-    assert turn.locator(".apply-turn-soon").evaluate("(node) => [node.textContent, getComputedStyle(node).display]") == ["", "none"]
+    # Nor does any visible link in the section lead to Lever's live form while the student's turn is on.
+    expect(section.locator("a[href*='lever.co']")).to_have_count(0)
+    # The "about 2 minutes left" line is empty at the start: it takes no row, so no gap, above the résumé line, but it stays on the page
+    # (a live region put on the page already holding its words is not read out), clipped out of sight and out of the grid.
+    soon = turn.locator(".apply-turn-soon")
+    assert soon.evaluate("(node) => [node.textContent, getComputedStyle(node).display, getComputedStyle(node).position]") == ["", "block", "absolute"]
+    expect(soon).to_have_attribute("role", "status")
+    gap = turn.evaluate("""(node) => {
+        const step = node.querySelector('.apply-run-step').getBoundingClientRect();
+        const resume = node.querySelector('.apply-resume-sent');
+        if (resume.hidden) return -1;
+        return Math.round(resume.getBoundingClientRect().top - step.bottom);
+    }""")
+    assert gap in (-1, 12), f"one grid gap between the step and the résumé line, not two (got {gap})"
     turn.get_by_role("button", name="Stop").click()
     expect(section.locator(".apply-result .apply-result-title")).to_be_visible(timeout=30_000)
 
@@ -295,10 +311,14 @@ def test_the_finish_box_alone_has_no_divider_above_it_but_acmes_keeps_the_one_be
 
 
 def test_with_the_lever_switch_off_the_sentence_is_said_once_and_the_button_has_no_window_words(canned_agent, owner_page, base_url):
-    handoff(canned_agent, wait=1.0, outcome="submitted")
+    # A stopped run leaves Finish in browser in the result panel; turning the switch off then must not say the reason twice.
+    handoff(canned_agent, wait=60.0)
     section = open_lever(owner_page)
     finish_button(section).click()
-    expect(section.locator(".apply-result .apply-result-title")).to_be_visible(timeout=40_000)
+    turn = section.locator(".apply-turn")
+    expect(turn).to_be_visible(timeout=30_000)
+    turn.get_by_role("button", name="Stop").click()
+    expect(section.locator(".apply-result .apply-result-title")).to_be_visible(timeout=30_000)
     owner_page.locator("#detail-close").click()
     switch(base_url, "apply_agent_lever", "off")
     owner_page.reload()
@@ -309,6 +329,9 @@ def test_with_the_lever_switch_off_the_sentence_is_said_once_and_the_button_has_
     expect(section.get_by_text("Turn it on in Profile")).to_have_count(1)
     expect(section.get_by_text("attach it in the window")).to_have_count(0)
     expect(section.locator("[data-apply-resume-start]:visible")).to_have_count(0)
-    for button in section.get_by_role("button", name="Finish in browser").all():
-        expect(button).to_have_attribute("aria-disabled", "true")
-        expect(button).to_have_attribute("aria-describedby", section.locator(".apply-summary").get_attribute("id"))
+    buttons = section.get_by_role("button", name="Finish in browser")
+    assert buttons.count() == 1, "the stopped run leaves exactly one Finish in browser button, so the loop below checks something"
+    button = buttons.first
+    expect(button).to_have_attribute("aria-disabled", "true")
+    expect(button).to_have_attribute("aria-describedby", section.locator(".apply-summary").get_attribute("id"))
+    assert section.locator(".apply-handoff-start .apply-limit").first.text_content().strip() == "", "the reason under the button is empty: the sentence above says it"
