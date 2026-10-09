@@ -26,7 +26,7 @@
   // From app-outreach-send.js.
   const {
     CALL_PREP_ACTIVE, CALL_PREP_WRITING, CONTACT_CONFIDENCE_LABELS, DRAFT_PROVIDER_LABELS, DRAFT_STATUS_LABELS, approveAndScheduleButton,
-    approveAndSendFollowUpButton, automaticSendWords, canApproveAndSchedule, canApproveAndSendFollowUp, OUTREACH_STATUS_LABELS,
+    approveFollowUpButtons, automaticSendWords, canApproveAndSchedule, OUTREACH_STATUS_LABELS,
     composeControl, formHost, formSendControls, outreachChoice, outreachContactFormSection, outreachDraftNeedsReview, outreachField,
     outreachReachable, pauseWords, refocusOutreach, refuseUnsavedHandOff, reloadOutreachAt, scheduleText, scheduleWords, sentFolderCheck,
   } = App;
@@ -136,6 +136,13 @@
       return { label: "Keep the conversation going", hint: `Log each reply so the history stays complete.${revisit}`, tab: "history" };
     }
     if (item.follow_up_due) {
+      const queued = item.scheduled?.follow_up;
+      if (queued?.state === "scheduled") {
+        const suffix = ". Cancel it or send it now below.";
+        return { label: "Follow-up scheduled", hint: `${scheduleWords(queued.label)}${suffix}`, schedule: { label: queued.label, suffix }, tab: null, tone: "is-region" };
+      }
+      if (queued?.state === "sending" || queued?.state === "transmitting") return { label: "Sending the follow-up", hint: "It is going out now.", tab: null, tone: "is-region" };
+      if (queued?.state === "failed") return { label: "Scheduled follow-up stopped", hint: `${queued.error}.`, tab: "follow-up", tone: "is-warning" };
       return item.follow_up_status === "approved"
         ? { label: "Send the follow-up", hint: "It is approved; open it in your email and send it.", tab: null, tone: "is-warning" }
         : { label: "Follow up now", hint: "The follow-up date has passed. Draft and approve a short follow-up.", tab: "follow-up", tone: "is-warning" };
@@ -1456,8 +1463,7 @@
       followBody.addEventListener("input", refreshFollowChecks);
       refreshFollowChecks();
       followUpGroup.appendChild(followChecks);
-      const extra = canApproveAndSendFollowUp(context, item) ? [approveAndSendFollowUpButton(context.gmail, item, followSubject, followBody)] : [];
-      draftAssistant(followUpGroup, item, "follow_up", followSubject, followBody, { extra });
+      draftAssistant(followUpGroup, item, "follow_up", followSubject, followBody, { extra: approveFollowUpButtons(context, item, followSubject, followBody) });
     }
 
     const notesGroup = element("fieldset", "outreach-group");
