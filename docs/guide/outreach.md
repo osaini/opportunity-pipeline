@@ -14,10 +14,11 @@ the app cannot answer truthfully, or a picture CAPTCHA, leaves it for you). For 
 form left for you, **Finish in browser** on the company's card opens it in a window,
 filled in as far as the app can: you fill in the boxes it outlines in orange, solve
 any CAPTCHA, and press the form's own send button within 4 minutes. The app never
-presses it there. It records what the page says once you press: sent, or "may have
-been sent" when something left the page without a confirmation. If you close the
-window first, nothing is sent, unless the page itself may have sent the form, which
-is also recorded as "may have been sent" so you check before sending again. A form
+presses it there, and nothing that could carry the form leaves the window until it
+has seen your press, so if you close the window without pressing send, nothing was
+sent. Once you press, it records what the page says: sent, or "may have been sent"
+when the form left without a confirmation. If pressing send does nothing, the app
+did not recognise the form's send button; the window's note says so. A form
 box that requires a street, city, state, ZIP or country is answered only from the
 **Mailing address** you confirmed on the Profile page (About you), never any other
 address. When a form requires your street address, the rest of your confirmed
