@@ -9,8 +9,8 @@
 
   // From app-ui.js.
   const {
-    WEEKDAY_DAY_FORMAT, announce, autoSaveSelect, chip, element, externalLink, formatDate, formatDateTime, optionElement,
-    plural, safeExternalUrl, showError,
+    CLOCK_FORMAT, WEEKDAY_DAY_FORMAT, announce, autoSaveSelect, chip, element, externalLink, formatDate, formatDateTime,
+    humanizeKey, optionElement, plural, safeExternalUrl, showError,
   } = App;
 
   // From app-http.js.
@@ -114,36 +114,188 @@
     }
   }
 
-  async function loadOutreachTimeline(targetId, host) {
+  // The dot each history event gets: what happened, at a glance. Unlisted events are plain.
+  const OUTREACH_EVENT_TONES = {
+    "is-good": ["gmail_sent", "form_submitted", "thank_you_sent", "draft_approved", "follow_up_approved", "possible_reply_confirmed", "research_confirmed"],
+    "is-reply": ["reply_logged", "reply_found"],
+    "is-soon": [
+      "send_scheduled", "gmail_scheduled", "send_moved", "thank_you_scheduled", "follow_up_held", "thank_you_held", "possible_reply",
+      "auto_reply", "form_unconfirmed", "location_ambiguous", "location_import_claim",
+    ],
+    "is-warning": [
+      "bounced", "partly_bounced", "approval_withdrawn", "auto_draft_failed", "auto_follow_up_draft_failed", "scheduled_send_failed",
+      "tech_brief_failed", "thank_you_failed", "form_not_sent",
+    ],
+  };
+  const OUTREACH_EVENT_TONE = new Map(Object.entries(OUTREACH_EVENT_TONES).flatMap(([tone, types]) => types.map((type) => [type, tone])));
+  // Their detail is the app's own bookkeeping (a provider, a message id), or would repeat the label.
+  const OUTREACH_QUIET_DETAILS = new Set(["draft_generated", "gmail_draft_created", "gmail_sent", "call_prep_generated", "thank_you_sent", "thank_you_draft_created"]);
+
+  function jsonObject(text) {
+    if (!String(text || "").startsWith("{")) return null;
+    try {
+      const value = JSON.parse(text);
+      return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  // A web address shown as its host and path, linked; the full address is the link.
+  function shortLink(address) {
+    const href = safeExternalUrl(address);
+    if (!href) return document.createTextNode(address);
+    const url = new URL(href);
+    const shown = `${url.hostname.replace(/^www\./, "")}${url.pathname.replace(/\/$/, "")}`;
+    return externalLink(href, shown, { className: "outreach-event-link" });
+  }
+
+  // Text with every web address in it made a short link. Trailing punctuation stays text.
+  function linkedText(className, text) {
+    const node = element("p", className);
+    let last = 0;
+    for (const match of text.matchAll(/https?:\/\/[^\s<>()"]+/g)) {
+      const address = match[0].replace(/[.,;:!?'’]+$/, "");
+      node.append(text.slice(last, match.index), shortLink(address));
+      last = match.index + address.length;
+    }
+    node.append(text.slice(last));
+    return node;
+  }
+
+  function outreachEventTitle(event) {
+    const title = element("span", "outreach-event-title");
+    if (event.event_type !== "status") {
+      title.textContent = OUTREACH_EVENT_LABELS[event.event_type] || humanizeKey(event.event_type);
+      return title;
+    }
+    title.classList.add("is-status");
+    title.append(
+      element("span", "outreach-status-from", OUTREACH_STATUS_LABELS[event.from_status] || event.from_status || "Start"),
+      " → ",
+      element("span", "outreach-status-to", OUTREACH_STATUS_LABELS[event.to_status] || event.to_status),
+    );
+    return title;
+  }
+
+  // "info@x (confirmed, site generic), cc y", as contacts.apply_candidate writes it, in the pane's own words.
+  function contactAppliedDetail(text) {
+    const match = /^(\S+@\S+) \((\w+), ([a-z ]+)\)(?:, cc (.+))?$/.exec(text);
+    if (!match) return null;
+    const [, address, confidence, method, cc] = match;
+    const node = element("p", "outreach-event-detail");
+    node.appendChild(element("span", "outreach-event-address", address));
+    const how = CANDIDATE_METHOD_LABELS[method.replace(/ /g, "_")] || method;
+    const sure = { confirmed: "confirmed", unverified: "unverified", unknown: "not confirmed" }[confidence] || confidence;
+    node.append(` · ${how} · ${sure}`);
+    if (cc) node.append(` · cc ${cc}`);
+    return node;
+  }
+
+  // What a contact-form attempt recorded (forms.py keeps it as JSON): what their page said, and where.
+  function formAttemptDetail(form) {
+    const said = [
+      form.confirmation ? `Their page said: “${form.confirmation}”` : "",
+      form.note || "",
+      form.in_browser ? "Finished in a browser window" : "",
+    ].filter(Boolean);
+    const page = safeExternalUrl(form.page_url) ? shortLink(form.page_url) : null;
+    if (!said.length && !page) return null;
+    const node = element("p", "outreach-event-detail", said.join(" · "));
+    if (page) node.append(said.length ? " · " : "", page);
+    return node;
+  }
+
+  // Their words, quoted, folded to their first lines (styles.css). The button shows only when the fold hides something,
+  // which is known once the tab is drawn at its width, and again whenever that width changes.
+  function replyQuote(text) {
+    const wrap = element("div", "outreach-event-reply");
+    const quote = element("blockquote", "outreach-event-quote is-folded", text.trim());
+    const more = element("button", "text-button outreach-event-more", "Show the whole reply");
+    more.type = "button";
+    more.hidden = true;
+    more.setAttribute("aria-expanded", "false");
+    more.addEventListener("click", () => {
+      const folded = quote.classList.toggle("is-folded");
+      more.textContent = folded ? "Show the whole reply" : "Show less";
+      more.setAttribute("aria-expanded", String(!folded));
+    });
+    new ResizeObserver(() => {
+      if (quote.classList.contains("is-folded")) more.hidden = quote.scrollHeight <= quote.clientHeight + 1;
+    }).observe(quote);
+    wrap.append(quote, more);
+    return wrap;
+  }
+
+  function outreachEventDetail(event) {
+    const text = event.detail || "";
+    if (!text || OUTREACH_QUIET_DETAILS.has(event.event_type)) return null;
+    if (event.event_type === "call_prep_replaced") {
+      // Whole notes: folded away, but there to copy back.
+      const earlier = element("details", "outreach-claims");
+      earlier.appendChild(element("summary", "", "The notes it replaced"));
+      earlier.appendChild(element("pre", "outreach-event-detail outreach-prep-earlier", text));
+      return earlier;
+    }
+    if (event.event_type === "reply_logged") return replyQuote(text);
+    const data = jsonObject(text);
+    if (["bounced", "partly_bounced"].includes(event.event_type)) {
+      const bounce = data || {};
+      const who = (bounce.addresses || []).join(", ");
+      const how = bounce.source === "gmail" ? "Gmail's delivery notice" : "You marked it";
+      return element("p", "outreach-event-detail", [who, bounce.reason, how].filter(Boolean).join(" · "));
+    }
+    if (event.event_type.startsWith("form_") && data) return formAttemptDetail(data);
+    // Any other JSON is the app's own record; the label already says what happened.
+    if (data) return null;
+    if (event.event_type === "contact_applied") return contactAppliedDetail(text) || linkedText("outreach-event-detail", text);
+    return linkedText("outreach-event-detail", text);
+  }
+
+  function historyDayLabel(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "Date not recorded";
+    const day = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const daysAgo = Math.round((today - day) / 86_400_000);
+    if (daysAgo === 0) return "Today";
+    if (daysAgo === 1) return "Yesterday";
+    return date.getFullYear() === today.getFullYear() ? WEEKDAY_DAY_FORMAT.format(date) : formatDate(value);
+  }
+
+  // Newest first, one group per day, each event a dot on a line with its time and what it recorded.
+  async function loadOutreachTimeline(targetId, host, count = null) {
     host.replaceChildren(element("p", "detail-loading", "Loading history…"));
     try {
       const payload = await api(`/api/v1/outreach/${encodeURIComponent(targetId)}`);
-      const list = element("ol", "outreach-timeline");
+      const timeline = element("div", "outreach-timeline");
+      let day = null;
       payload.events.forEach((event) => {
-        const text = event.event_type === "status"
-          ? `${OUTREACH_STATUS_LABELS[event.from_status] || event.from_status} → ${OUTREACH_STATUS_LABELS[event.to_status] || event.to_status}`
-          : OUTREACH_EVENT_LABELS[event.event_type] || event.event_type.replace(/_/g, " ");
-        const row = element("li");
-        row.appendChild(element("span", "", text));
-        row.appendChild(element("small", "", formatDate(event.created_at)));
-        if (event.event_type === "call_prep_replaced" && event.detail) {
-          // Whole notes: folded away, but there to copy back.
-          const earlier = element("details", "outreach-claims");
-          earlier.appendChild(element("summary", "", "The notes it replaced"));
-          earlier.appendChild(element("pre", "outreach-event-detail outreach-prep-earlier", event.detail));
-          row.appendChild(earlier);
-        } else if (["bounced", "partly_bounced"].includes(event.event_type) && event.detail) {
-          let bounce = {};
-          try { bounce = JSON.parse(event.detail); } catch (_error) { bounce = {}; }
-          const who = (bounce.addresses || []).join(", ");
-          const how = bounce.source === "gmail" ? "Gmail's delivery notice" : "You marked it";
-          row.appendChild(element("p", "outreach-event-detail", [who, bounce.reason, how].filter(Boolean).join(" · ")));
-        } else if (event.detail && !["draft_generated", "gmail_draft_created", "gmail_sent", "call_prep_generated", "thank_you_sent", "thank_you_draft_created"].includes(event.event_type)) {
-          row.appendChild(element("p", "outreach-event-detail", event.detail));
+        const when = new Date(event.created_at);
+        const label = historyDayLabel(event.created_at);
+        if (!day || day.dataset.day !== label) {
+          const group = element("section", "outreach-history-day");
+          group.appendChild(element("h5", "outreach-history-date", label));
+          day = element("ol", "outreach-history-events");
+          day.dataset.day = label;
+          group.appendChild(day);
+          timeline.appendChild(group);
         }
-        list.appendChild(row);
+        const row = element("li", `outreach-event ${event.event_type === "status" ? "is-status" : OUTREACH_EVENT_TONE.get(event.event_type) || ""}`.trim());
+        if (!Number.isNaN(when.getTime())) {
+          const time = element("time", "outreach-event-time", CLOCK_FORMAT.format(when));
+          time.dateTime = event.created_at;
+          row.appendChild(time);
+        }
+        row.appendChild(outreachEventTitle(event));
+        const detail = outreachEventDetail(event);
+        if (detail) row.appendChild(detail);
+        day.appendChild(row);
       });
-      host.replaceChildren(list);
+      if (!payload.events.length) timeline.appendChild(element("p", "outreach-note", "Nothing recorded yet."));
+      if (count) count.textContent = payload.events.length ? `${plural(payload.events.length, "event", "events")}, newest first` : "";
+      host.replaceChildren(timeline);
     } catch (error) {
       host.replaceChildren(element("p", "form-error", error.message));
     }
