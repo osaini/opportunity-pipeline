@@ -306,6 +306,8 @@
       const payload = await api("/api/v1/outreach");
       if (!isCurrent()) return;
       const tab = OUTREACH_TABS.find((entry) => entry.id === state.subtabs.outreach) || OUTREACH_TABS[0];
+      const railPicked = state.outreachRailPicked;
+      state.outreachRailPicked = false;
       const running = payload.discovery.active?.state === "running";
       // A search or tag narrows every tab, so each count reads "6 of 20" and
       // matches the list it opens.
@@ -350,6 +352,9 @@
           .filter((item) => (tab.test(item) && matches(item)) || kept(item))
           .sort(compare);
         const leaving = items.filter((item) => kept(item) && !(tab.test(item) && matches(item))).length;
+        // Picked in the rail, a tab with a pane tab of its own opens each of its companies there (Follow-ups due on
+        // Follow-up). Only on that pick: a reload after an action keeps whichever pane tab the student moved to.
+        if (railPicked && tab.paneTab) items.filter(tab.test).forEach((item) => { state.outreachTabs[item.id] = tab.paneTab; });
         els.results.appendChild(outreachListToolbar(payload.tags || [], leaving));
         if (running) {
           const banner = element("div", "outreach-banner");

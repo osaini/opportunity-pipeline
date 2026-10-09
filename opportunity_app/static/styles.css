@@ -1346,7 +1346,7 @@ details.apply-plan-group .reason-list .profile-help { margin: 2px 0 0; }
 
 .outreach-pane .outreach-form { margin: 0; padding: var(--space-5) var(--space-6) 0; gap: 0; }
 .outreach-panel { display: grid; gap: 16px; align-content: start; }
-.outreach-panel.is-draft { grid-template-columns: minmax(0, 1fr) 250px; align-items: start; }
+.outreach-panel.is-draft, .outreach-panel.is-follow-up { grid-template-columns: minmax(0, 1fr) 250px; align-items: start; }
 .outreach-draft-main { display: grid; gap: 16px; min-width: 0; }
 .outreach-to { margin: 0; color: var(--ink-soft); font-size: 13px; overflow-wrap: anywhere; }
 .outreach-to strong { color: var(--ink); }
@@ -1373,7 +1373,7 @@ details.apply-plan-group .reason-list .profile-help { margin: 2px 0 0; }
 @media (max-width: 1180px) {
   .outreach-split { grid-template-columns: minmax(0, 1fr); }
   .outreach-list { position: static; max-height: 40vh; }
-  .outreach-panel.is-draft { grid-template-columns: minmax(0, 1fr); }
+  .outreach-panel.is-draft, .outreach-panel.is-follow-up { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 720px) {
   .outreach-pane-head { padding: var(--space-5) var(--space-4) var(--space-4); }
@@ -1397,7 +1397,7 @@ details.apply-plan-group .reason-list .profile-help { margin: 2px 0 0; }
 /* A narrow pane: one-column draft editor, and a step bar of dots (six labelled
    steps need ~535px; the next-step bar already names the current one). */
 @container outreach-pane (max-width: 620px) {
-  .outreach-panel.is-draft { grid-template-columns: minmax(0, 1fr); }
+  .outreach-panel.is-draft, .outreach-panel.is-follow-up { grid-template-columns: minmax(0, 1fr); }
   .outreach-step-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
   .outreach-head-side { justify-content: flex-start; }
   .outreach-pane .application-heading { flex-direction: column; gap: 12px; }

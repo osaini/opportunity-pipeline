@@ -656,6 +656,100 @@
     return button;
   }
 
+  // A follow-up waiting for review that one press can approve and send now from
+  // Gmail. Not while an email from them may be a reply: follow-ups wait for that.
+  function canApproveAndSendFollowUp(context, item) {
+    return outreachDraftNeedsReview(item, "follow_up")
+      && Boolean(context.gmail?.connected && item.contact_email && item.follow_up_subject && item.follow_up_body)
+      && !item.contact_bounced && !item.cc_bounced && !item.possible_reply_count
+      && !["scheduled", "sending", "transmitting"].includes(item.scheduled?.follow_up?.state);
+  }
+
+  // Approve follow-up, then Send follow-up, after one confirmed press. Each step
+  // is the same request its own button makes, so every check still applies.
+  // Edits still in the box are saved first, as Approve does, so what goes out is
+  // the words on screen. A send that stops leaves the follow-up approved, and
+  // Send follow-up in the bar above can try again.
+  function approveAndSendFollowUpButton(gmail, item, subjectControl, bodyControl) {
+    const recipients = item.contact_cc ? `${item.contact_email} (Cc ${item.contact_cc})` : item.contact_email;
+    const attachment = gmail.attachment ? ` with ${gmail.attachment}` : "";
+    const label = `Approve and send${attachment}`;
+    const button = element("button", "primary-button outreach-approve-send", label);
+    button.type = "button";
+    button.dataset.followUpApproveSend = "";
+    if (gmail.attachment_problem) {
+      button.disabled = true;
+      button.title = gmail.attachment_problem;
+    }
+    const id = encodeURIComponent(item.id);
+    const unsaved = () => subjectControl.value !== subjectControl.dataset.initial || bodyControl.value !== bodyControl.dataset.initial;
+    const reset = armConfirm(button, {
+      idleLabel: () => label,
+      armedLabel: () => `Approve and send to ${recipients}?`,
+      prompt: () => `Press again to approve the follow-up and send it to ${recipients} from ${gmail.account || "Gmail"}.`,
+      onConfirm: async () => {
+        button.disabled = true;
+        button.textContent = "Sending…";
+        let approved = false;
+        try {
+          let print = item.follow_up_fingerprint;
+          const editing = unsaved();
+          if (editing) {
+            const saved = await api(`/api/v1/outreach/${id}`, {
+              method: "PATCH",
+              body: JSON.stringify({ follow_up_subject: subjectControl.value, follow_up_body: bodyControl.value }),
+            });
+            print = saved.follow_up_fingerprint;
+          }
+          const approve = (acknowledge) => api(`/api/v1/outreach/${id}/approve`, {
+            method: "POST",
+            body: JSON.stringify({ kind: "follow_up", fingerprint: print, acknowledge_warnings: acknowledge }),
+          });
+          let result;
+          try {
+            result = await approve(false);
+          } catch (error) {
+            if (error.status !== 422 || !String(error.message).startsWith("Review these warnings")) throw error;
+            if (!window.confirm(`${error.message}\n\nApprove anyway and send it?`)) {
+              reset();
+              button.disabled = false;
+              announce(editing ? "Your edits are saved. The follow-up is not approved or sent." : "The follow-up is not approved or sent.");
+              return;
+            }
+            result = await approve(true);
+          }
+          approved = true;
+          const sent = await api(`/api/v1/outreach/${id}/gmail-send`, {
+            method: "POST",
+            body: JSON.stringify({ kind: "follow_up", fingerprint: result.follow_up_fingerprint }),
+          });
+          state.outreachOpen = item.id;
+          watchForBounces();
+          announce(sent.marked === false
+            ? `Approved and sent the follow-up to ${sent.to}, but ${item.company} could not be marked followed up. Press "I sent the follow-up" to catch it up.`
+            : `Approved and sent the follow-up to ${sent.to}. ${item.company} is marked followed up.`);
+          await loadOutreach();
+        } catch (error) {
+          reset();
+          button.disabled = false;
+          if (approved) {
+            // Reload so the card shows the approved follow-up; the message says where it stopped.
+            await reloadOutreachAt(item.id).catch(() => {});
+            showError(`Approved the ${item.company} follow-up, but it is not sent: ${error.message}`);
+            return;
+          }
+          if (error.status === 409) {
+            state.outreachFlash = { id: item.id, kind: "follow_up", message: error.message };
+            await reloadOutreachAt(item.id, '[data-draft-kind="follow_up"] [data-draft-approve]');
+            return;
+          }
+          showError(error.message);
+        }
+      },
+    });
+    return button;
+  }
+
   function cancelScheduleButton(item, kind, text = "Cancel") {
     const button = element("button", "secondary-button", text);
     button.type = "button";
@@ -829,7 +923,7 @@
   Object.assign(App, {
     CALL_PREP_ACTIVE, CALL_PREP_WRITING, CANDIDATE_METHOD_LABELS, CANDIDATE_VERIFICATION_LABELS,
     CONTACT_CONFIDENCE_LABELS, DRAFT_PROVIDER_LABELS, DRAFT_STATUS_LABELS, OUTREACH_EVENT_LABELS, OUTREACH_STATUS_LABELS,
-    approveAndScheduleButton, automaticSendWords, canApproveAndSchedule, checkForBounces, composeControl, formHost, formSendControls, installOutreachSend, outreachChoice,
+    approveAndScheduleButton, approveAndSendFollowUpButton, automaticSendWords, canApproveAndSchedule, canApproveAndSendFollowUp, checkForBounces, composeControl, formHost, formSendControls, installOutreachSend, outreachChoice,
     outreachContactFormSection, outreachDraftNeedsReview, outreachField, outreachReachable, outreachSendStatus, pauseWords, refocusOutreach,
     refuseUnsavedHandOff, reloadOutreachAt, repaintPauseWords, scheduleText, scheduleWords, sentFolderCheck,
   });
