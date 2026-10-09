@@ -16,7 +16,11 @@ and printed on startup.
 PIPELINE_SANDBOX_FAKE_APPLY=1 also turns Apply for me on for the seeded student, with a fake Greenhouse
 listing and a fake agent: Acme Robotics (saved) becomes a Greenhouse role, so the "what's missing" view has
 something to show. It seeds one fictional Lever role too (Harbor Demo Labs, saved), served by a fake page client, with Apply for
-me on Lever switched on, so the Lever "what's missing" view has something to show; there is no window action for it yet. A rehearsal or an option lookup returns a canned result after a few seconds, with a canned
+me on Lever switched on, so the Lever "what's missing" view has something to show. Lever's Finish in browser returns a canned handoff with no window here, like Greenhouse's.
+It is the only action a Lever role has: no rehearsal, no Look up options, no Submit. "Let the app attach my résumé on Lever" starts off, as
+it does for every student: turn it on in Profile, under Automation, in the Applications list to see the start say that the app attaches the résumé and the run record
+it, and see "Your application was not sent. Lever received your résumé." when you press Stop in the student's turn. A rehearsal or an option lookup on
+the Greenhouse role returns a canned result after a few seconds, with a canned
 picture. Finish in browser returns a canned handoff the same way, with no window: the fictional student's turn lasts
 ``apply_fake_ats.CANNED["handoff"]["wait"]`` seconds (1.5 by default), then the canned form answers by
 ``CANNED["handoff"]["outcome"]`` (submitted, unconfirmed, security_code, refused, failed_4xx or hang_after_hand_over).

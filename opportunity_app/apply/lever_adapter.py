@@ -131,6 +131,16 @@ LEVER_MANAGED = r"""() => {
     .map((el) => [el.name || "", el.value || ""]);
 }"""
 
+# Every named control of the form that holds a text value, as [name, value]; the parser's own fields are picked out of them in Python. Used only to tell which fields
+# the page's reader changed, so nothing is handed to the page: the script is constant and chooses nothing.
+LEVER_VALUES = r"""() => {
+  const form = document.querySelector("form#application-form");
+  if (!form) return [];
+  return Array.from(form.querySelectorAll("input[name], select[name], textarea[name]"))
+    .filter((el) => !["submit", "button", "image", "reset", "file", "checkbox", "radio"].includes((el.type || "").toLowerCase()))
+    .map((el) => [el.name, String(el.value || "")]);
+}"""
+
 # Which of the four indicators the page shows for a file it was given. At most one is shown at a time.
 LEVER_PARSE_STATE = r"""() => {
   const shown = (selector) => {
@@ -177,6 +187,10 @@ class LeverAdapter(AdapterBase):
     form_page_kind = "application_form"   # what ``detect_page`` answers for a form the app fills
     # The student's Submit, for the press listener: a trusted click on the page's own button (the hidden one is only ever clicked by the page's script, which is not trusted).
     press_selector = ", ".join(f"#{name}" for name in DENYLIST)
+    # The résumé box is the one file box Lever's page reads as a file is attached, and it sends nothing for a file over 100 MB (the page says so). The cover
+    # letter box of a card is not read, so a file the student chooses there opens no read.
+    file_selector = 'input[name="resume"]'
+    file_limit_bytes = 100 * 1024 * 1024
     uses_engine = False
     closed_on_404 = True
     waits_for_challenge = True
@@ -393,6 +407,14 @@ class LeverAdapter(AdapterBase):
         for name in frame.evaluate(LEVER_NAMES):
             if (name in PARSER_FIELDS or name.startswith(PARSER_PREFIX)) and name not in found:
                 found.append(name)
+        return found
+
+    def parser_values(self, frame: Any) -> dict[str, str]:
+        """What each field of ``guessed_fields`` holds now, with ``selectedLocation`` beside ``location`` (the page rewrites it on every read)."""
+        found: dict[str, str] = {}
+        for name, value in frame.evaluate(LEVER_VALUES):
+            if name in PARSER_FIELDS or name.startswith(PARSER_PREFIX) or name == "selectedLocation":
+                found[name] = value
         return found
 
     def hidden_mismatch(self, frame: Any) -> list[str]:

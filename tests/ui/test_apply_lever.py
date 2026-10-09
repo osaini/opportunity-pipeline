@@ -1,13 +1,17 @@
 """Apply for me's "what's missing" view on a saved Lever role (docs/phase5-lever-handoff-spec.md, milestone LV2), and its settings.
 
 The server runs in this process with the fictional Lever page (tests/fixtures/apply/lever/) served by a fake page client, so nothing here
-reaches Lever and no browser is opened by the app. There is no window action for Lever yet: the view says so, and has no button for one.
+reaches Lever and no browser is opened by the app. While Lever's window is not connected (``adapter_built`` False, which a fixture here sets for the
+whole test, as it was before milestone LV4) the view says there is no window action, and has no button for one; the view with the window is
+tests/ui/test_apply_lever_handoff.py.
 """
 
 from __future__ import annotations
 
+import dataclasses
+
 import httpx
-from opportunity_app.apply import preflight as apply_preflight
+from opportunity_app.apply import ats as apply_ats, preflight as apply_preflight
 from axe_core_python.sync_playwright import Axe
 from playwright.sync_api import expect
 
@@ -20,6 +24,13 @@ from ui_helpers import AXE_OPTIONS, db, open_saved_role
 BEARER = {"Authorization": f"Bearer {OWNER_TOKEN}"}
 
 
+@pytest.fixture
+def window_not_built(monkeypatch):
+    """Lever's Finish in browser does not count as built, in this process: the view is the read-only one."""
+    unbuilt = tuple(dataclasses.replace(spec, adapter_built=False) if spec.key == apply_ats.LEVER.key else spec for spec in apply_ats.REGISTRY)
+    monkeypatch.setattr(apply_ats, "REGISTRY", unbuilt)
+
+
 def tracker_rows(live_server):
     with db(live_server) as conn:
         return (
@@ -30,7 +41,7 @@ def tracker_rows(live_server):
         )
 
 
-def test_a_saved_lever_role_shows_what_is_missing_and_offers_no_window_action(lever_ready, owner_page, live_server):
+def test_a_saved_lever_role_shows_what_is_missing_and_offers_no_window_action(window_not_built, lever_ready, owner_page, live_server):
     before = tracker_rows(live_server)
     open_saved_role(owner_page, LEVER_COMPANY)
     section = owner_page.locator(".apply-for-me")
@@ -94,7 +105,8 @@ def test_a_required_lever_location_is_saved_for_lever_and_never_looked_up(requir
     expect(section).to_be_visible()
     location = section.locator('[data-apply-key="location"]')
     expect(location).to_contain_text("Choose your current location")
-    expect(location.get_by_role("link", name="Open the posting on Lever")).to_have_attribute("href", f"{LEVER_URL}/apply")
+    # Finish in browser is offered here, so the posting is not offered as a second way to fill and send the form outside the app.
+    expect(location.get_by_role("link", name="Open the posting on Lever")).to_have_count(0)
     # Lever's list is only read from its own form, which comes later: the type-it-yourself box has no Look up options beside it.
     expect(location.get_by_role("button", name="Save this option")).to_be_visible()
     expect(location.get_by_role("button", name="Look up options")).to_have_count(0)
@@ -123,7 +135,8 @@ def test_with_the_lever_switch_off_the_role_says_how_to_turn_it_on(lever_ready, 
     wait_for_results(owner_page)
     open_saved_role(owner_page, LEVER_COMPANY)
     section = owner_page.locator(".apply-for-me")
-    expect(section.locator(".apply-summary")).to_have_text("Apply for me works with Lever postings once you turn it on in Apply agent settings")
+    expect(section.locator(".apply-summary")).to_have_text("Apply for me on Lever is off. Turn it on in Profile, under Automation, in the Applications list")
+    expect(section.get_by_text("Turn it on in Profile")).to_have_count(1)
     expect(section.get_by_role("button")).to_have_count(0)
 
 
@@ -143,9 +156,8 @@ def test_the_settings_keep_levers_exact_location_apart_and_say_what_the_two_swit
     expect(block.locator('ul[data-ats="greenhouse"]')).not_to_contain_text("Austin")
     expect(block.locator(".apply-lever-settings")).to_contain_text("Apply for me on Lever is on.")
     expect(block.locator(".apply-lever-settings")).to_contain_text(
-        "Let the app attach my résumé on Lever is off. The app cannot attach it on Lever yet, because Finish in browser is not available for Lever: "
-        "you attach it yourself on Lever's application page. Once it can, Lever reads a résumé as soon as it is attached, "
-        "so with this on it is sent to Lever before you press Submit."
+        "Let the app attach my résumé on Lever is off. Lever reads a résumé as soon as it is attached, so it is sent to Lever before you press Submit. "
+        "With this off, you attach it yourself in the window."
     )
     block.get_by_role("button", name="Remove the saved Lever Location option").click()
     expect(block.locator('ul[data-ats="lever"] li')).to_have_count(0)
@@ -208,7 +220,7 @@ def test_a_saved_option_says_so_when_greenhouse_is_the_only_list(apply_ready, ow
     expect(block.locator(".apply-settings > .form-status")).to_have_text("Removed.")
 
 
-def test_the_resume_line_says_the_switch_does_nothing_yet_whichever_way_it_is_set(lever_ready, owner_page):
+def test_the_resume_line_says_the_switch_does_nothing_yet_whichever_way_it_is_set(window_not_built, lever_ready, owner_page):
     owner_page.click("#profile-nav")
     wait_for_results(owner_page)
     block = owner_page.locator(".automation-apply-agent")
@@ -221,7 +233,20 @@ def test_the_resume_line_says_the_switch_does_nothing_yet_whichever_way_it_is_se
     expect(block).not_to_contain_text("Apply agent settings")
 
 
-def test_the_lever_lines_in_the_settings_follow_their_switches_without_a_reload(lever_ready, owner_page):
+def test_with_the_window_built_the_resume_line_says_the_app_attaches_it_in_the_window_when_the_switch_is_on(lever_ready, owner_page):
+    owner_page.click("#profile-nav")
+    wait_for_results(owner_page)
+    block = owner_page.locator(".automation-apply-agent")
+    owner_page.locator("#automation-mode-apply_lever_resume_upload").check()
+    line = block.locator(".apply-lever-settings li").nth(1)
+    expect(line).to_contain_text("is on.")
+    expect(line).to_contain_text("it is sent to Lever before you press Submit")
+    expect(line).to_contain_text("you attach it yourself in the window")
+    expect(line).not_to_contain_text("cannot attach it on Lever yet")
+    expect(block.locator(".apply-lever-settings li").nth(0)).to_contain_text("Finish in browser opens its form in a window")
+
+
+def test_the_lever_lines_in_the_settings_follow_their_switches_without_a_reload(window_not_built, lever_ready, owner_page):
     owner_page.click("#profile-nav")
     wait_for_results(owner_page)
     block = owner_page.locator(".automation-apply-agent")
@@ -252,7 +277,7 @@ def test_the_lever_list_help_names_only_lists_lever_has(lever_ready, owner_page)
     expect(block.get_by_role("heading", name="Exact options for lists the Greenhouse form owns").locator("xpath=following-sibling::p[1]")).to_contain_text("such as school and location")
 
 
-def test_every_left_for_you_row_says_where_to_do_it_and_links_to_the_posting(required_location, owner_page):
+def test_every_left_for_you_row_says_where_to_do_it_and_links_to_the_posting(window_not_built, required_location, owner_page):
     open_saved_role(owner_page, "Orbital Ledger")
     section = owner_page.locator(".apply-for-me")
     expect(section).to_be_visible()
@@ -271,7 +296,7 @@ def test_every_left_for_you_row_says_where_to_do_it_and_links_to_the_posting(req
     )
 
 
-def test_the_not_offered_line_and_the_resume_note_have_room_around_them(lever_ready, owner_page):
+def test_the_not_offered_line_and_the_resume_note_have_room_around_them(window_not_built, lever_ready, owner_page):
     open_saved_role(owner_page, LEVER_COMPANY)
     section = owner_page.locator(".apply-for-me")
     expect(section.locator("[data-apply-not-offered]")).to_be_visible()
@@ -280,3 +305,32 @@ def test_the_not_offered_line_and_the_resume_note_have_room_around_them(lever_re
     assert margin(".apply-ats-note", "marginBottom") >= 8, "the note does not sit on the first card's border"
     note, cards = section.locator(".apply-ats-note").bounding_box(), section.locator(".apply-problems").first.bounding_box()
     assert cards["y"] - (note["y"] + note["height"]) >= 8
+
+
+def test_the_settings_follow_the_lever_switch_without_a_reload(lever_ready, owner_page):
+    owner_page.click("#profile-nav")
+    wait_for_results(owner_page)
+    block = owner_page.locator(".automation-apply-agent")
+    lever_lists = block.get_by_role("heading", name="Exact options for lists the Lever form owns")
+    expect(lever_lists).to_be_visible()
+    owner_page.locator("#automation-mode-apply_agent_lever").uncheck()
+    expect(lever_lists).to_have_count(0)
+    expect(block.locator('form[data-ats="lever"]')).to_have_count(0)
+    owner_page.locator("#automation-mode-apply_agent_lever").check()
+    expect(lever_lists).to_be_visible()
+    expect(block.locator('form[data-ats="lever"]')).to_be_visible()
+
+
+def test_the_resume_line_in_the_settings_is_worded_for_the_state_of_the_lever_switch(lever_ready, owner_page):
+    owner_page.click("#profile-nav")
+    wait_for_results(owner_page)
+    block = owner_page.locator(".automation-apply-agent")
+    line = block.locator(".apply-lever-settings li").nth(1)
+    expect(line).to_contain_text("you attach it yourself in the window")
+    owner_page.locator("#automation-mode-apply_agent_lever").uncheck()
+    # With the Lever switch off there is no window: the line says when the choice starts to matter instead of sending the student to one.
+    expect(block.locator(".apply-lever-settings li").nth(0)).to_contain_text("Apply for me on Lever is off.")
+    expect(line).to_contain_text("It takes effect once Apply for me on Lever is on")
+    expect(line).not_to_contain_text("With this off, you attach it yourself in the window.")
+    owner_page.locator("#automation-mode-apply_agent_lever").check()
+    expect(line).to_contain_text("With this off, you attach it yourself in the window.")

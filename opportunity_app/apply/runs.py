@@ -60,6 +60,7 @@ from ..core.profile_store import read_stored_profile
 from ..core.settings_store import get_setting, put_setting, setting_updated_at
 from ..core.timestamps import parse_app_instant, utc_now
 from ..core.user_time import UserTimezone, user_timezone
+from .agent_types import resume_may_be_with_ats, resume_with_ats, with_resume_note
 from .ats import CODE_MODE, claim_refusal, name_of
 from .greenhouse import ADAPTER_VERSION, ATS_GREENHOUSE, is_greenhouse_sender
 from .claims import HELD_HEARTBEAT, RUNNING, claim_held, forget, peek_unconfirmed, take_unconfirmed
@@ -1008,12 +1009,15 @@ def create_run(
     application_id: str | None = None,
     claim_token: str = "",
     run_id: str | None = None,
+    evidence: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> str:
     """The row of a run that has started (lookups and rehearsals have no application: they are keyed by opportunity).
 
     ``run_id`` is given when the claim was made first and carries it (claim(run_id=...)): the runner mints the id, takes
     the claim, and only then makes the row, so a refused start leaves neither. It must be ``run-`` and 32 hex characters.
+    ``evidence`` is what is known before the agent has said anything (a Lever run the app will attach the résumé for says so, so a crash before
+    the window is ready cannot lose it).
     """
     if kind not in RUN_KINDS:
         raise ValueError(f"Unsupported run kind: {kind}")
@@ -1032,6 +1036,8 @@ def create_run(
             (run_id, user_id, opportunity_id, application_id, claim_token, kind, started_by, ats, adapter_version, company, board_token,
              page_url, stamp, iso_utc(parse_app_instant(stamp) + timedelta(seconds=deadline_seconds)), stamp),
         )
+        if evidence:
+            conn.execute("UPDATE apply_runs SET evidence_json=? WHERE id=?", (_dumps(evidence), run_id))
     return run_id
 
 
@@ -1049,6 +1055,20 @@ def link_run(conn: sqlite3.Connection, *, user_id: str, run_id: str, token: str)
             "UPDATE application_submit_claims SET run_id=? WHERE token=? AND user_id=?", (run_id, token, user_id),
         ).rowcount
     return bool(run and claim)
+
+
+def add_run_evidence(conn: sqlite3.Connection, run_id: str, extra: dict[str, Any]) -> bool:
+    """Put these keys into the evidence of a run that is still running, keeping what is there. True when the run was found running.
+
+    For something the window learned after it was ready and that must survive the app stopping before the run has a result: a file the student
+    attached in the window (the ATS holds it from then on, and recovery must not say "Nothing was sent").
+    """
+    with conn:
+        row = conn.execute("SELECT evidence_json FROM apply_runs WHERE id=? AND status='running'", (run_id,)).fetchone()
+        if row is None:
+            return False
+        evidence = {**json_as(row["evidence_json"], {}), **extra}
+        return bool(conn.execute("UPDATE apply_runs SET evidence_json=? WHERE id=? AND status='running'", (_dumps(evidence), run_id)).rowcount)
 
 
 def heartbeat_run(conn: sqlite3.Connection, run_id: str, *, now: datetime | None = None) -> bool:
@@ -1316,6 +1336,12 @@ def recover_stale(conn: sqlite3.Connection, now: datetime | None = None, *, user
             decided = None
         stopped = row["state"] == "claimed" and decided is None
         note = STOPPED_BEFORE.format(ats=name_of(row["ats"])) if stopped else (decided or _STOPPED_DURING)
+        if stopped:
+            # Lever holds the file once it is attached: "Nothing was sent" is not the whole truth, and a run that died before its window was
+            # ready may have attached it without anyone recording that it did.
+            seen = _run_resume_state(conn, row["run_id"])
+            if seen:
+                note = with_resume_note(note, name_of(row["ats"]), sure=seen == "sent")
         with conn:
             lock_user(conn, row["user_id"])
             fresh = conn.execute("SELECT detail_json FROM application_submit_claims WHERE token=?", (row["token"],)).fetchone()
@@ -1361,6 +1387,10 @@ def recover_stale(conn: sqlite3.Connection, now: datetime | None = None, *, user
         if any(item["state"] in ("claimed", "clicking") and claim_held(item, now=moment) for item in claims):
             continue  # its attempt is still being worked: only the run's own heartbeat went quiet
         outcome, body = _stopped_run(run["kind"], claims)
+        if outcome == "failed":
+            seen = _evidence_resume_state(json_as(run["evidence_json"], {}))
+            if seen:
+                body = with_resume_note(body, name_of(run["ats"]), sure=seen == "sent")
         with conn:
             done = _finish_run_tx(conn, run["id"], outcome=outcome, clean=False, plan_hash=None, stamp=stamp_now(now),
                                   reasons=["The app stopped during this run"])
@@ -1371,6 +1401,21 @@ def recover_stale(conn: sqlite3.Connection, now: datetime | None = None, *, user
                 title="The app stopped during an Apply for me run", body=body,
             )
     return counts
+
+
+def _evidence_resume_state(evidence: Any) -> str:
+    """"sent" when the evidence says the ATS holds the student's résumé, "maybe" when the app was to attach it and nothing says it did, else ""."""
+    if resume_with_ats(evidence):
+        return "sent"
+    return "maybe" if resume_may_be_with_ats(evidence) else ""
+
+
+def _run_resume_state(conn: sqlite3.Connection, run_id: str | None) -> str:
+    """``_evidence_resume_state`` of a run's stored evidence ("" for no run)."""
+    if not run_id:
+        return ""
+    found = conn.execute("SELECT evidence_json FROM apply_runs WHERE id=?", (run_id,)).fetchone()
+    return "" if found is None else _evidence_resume_state(json_as(found["evidence_json"], {}))
 
 
 def _stopped_run(kind: str, claims: list[Any]) -> tuple[str, str]:

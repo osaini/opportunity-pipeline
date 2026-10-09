@@ -18,7 +18,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Apply for me | 0 | 4 | 10 | 14 |
+| Apply for me | 0 | 4 | 11 | 15 |
 | Mail, Gmail and inboxes | 0 | 4 | 8 | 12 |
 | Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
@@ -26,7 +26,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Scoring, scheduling and configuration | 1 | 2 | 8 | 11 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **29** | **37** | **67** |
+| **Total** | **1** | **29** | **38** | **68** |
 
 ## Start here: the high-severity entries
 
@@ -205,6 +205,13 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** The exemption says a card question's words are its own and the template's size limits them. That limit covers one template; a page can carry any number of them. Only the page cap of `LeverPageClient` (4 MB) bounds the total, so the text a plan reads is linear in the page and never multiplied by controls the way a shared label is. No test times a page of many large templates, and a page just under the cap is not counted against the budget at all.
 - **Suggested fix:** Count a card question's label and options in `_text_spent()` against a budget of its own, sized from the largest real template (a university dropdown of about 3,300 options), and read the form as unreadable above it. Time a page of many templates first.
 - **Regression suite:** tests/test_lever_form.py (many large card templates under the page cap are read in under three seconds, or the form is left to the student)
+
+### A field the student types in the same moments as the page reads their file is named as filled by Lever
+- **Severity:** low (found 2026-10-08, build of Lever LV4)
+- **Where:** `opportunity_app/apply/agent.py` `_watch_student_read()`
+- **What happens:** After the student attaches a file in the window, the agent names the fields Lever's reader changed by comparing what they held at the last look (every 250 ms) with what they hold once the page has applied its answer. A parser field the student types into between those two looks, and that the reader leaves alone because the student made it theirs, is named too: "Lever filled Current company ... Check it". It says check, and nothing is changed, but the sentence is not true of that field.
+- **Suggested fix:** Have the press listener's world also report a trusted `input` on the form's named controls (their names, never their values) and leave those out of the comparison.
+- **Regression suite:** tests/test_apply_lever_handoff_browser.py (the student types into the company box while the page reads their file; only the fields the reader changed are named)
 
 ### A process only the kill's own listing found is killed but never checked, so the close can be confirmed while it runs
 - **Severity:** low, latent (found 2026-10-08, diagnosing the KillOrderingTests flake)

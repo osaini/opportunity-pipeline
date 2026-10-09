@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -25,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import helpers_apply
 from apply_fake_ats import (
-    API_HOST, JOB_URL, LOOKUP_OPTIONS, FakeGreenhouse, Reply, choose, fixture_json, fixture_text, press_submit, type_security_code,
+    API_HOST, JOB_URL, LOOKUP_OPTIONS, FakeGreenhouse, FakeLever, Reply, choose, fixture_json, fixture_text, press_submit, type_security_code,
 )
 
 from opportunity_app.apply import policy as apply_policy
@@ -33,6 +34,7 @@ from opportunity_app.apply.agent import ApplyAgent, GreenhouseAdapter
 from opportunity_app.apply.agent_types import ApplyTimeouts, FilePayload
 from opportunity_app.apply.checks import Endpoint
 from opportunity_app.apply.greenhouse import ADAPTER_VERSION
+from opportunity_app.apply.lever_adapter import LeverAdapter
 from opportunity_app.apply.sensitive import STORABLE
 
 COMPANY = helpers_apply.COMPANY
@@ -670,3 +672,151 @@ class FakeLink:
 
     def parent_gone(self) -> bool:
         return self.gone
+
+
+# --- Finish in browser on Lever: the fictional board, the student, and the agent that records what the board saw ---------------------------------------
+
+LEVER_STUDENT_FILE = b"%PDF-1.4 a fictional resume the student picks in the window"
+LEVER_STUDENT_SHA = hashlib.sha256(LEVER_STUDENT_FILE).hexdigest()
+LEVER_REQUIRED_VALUES = {"name": "Sam Rivera", "email": "sam.rivera@example.test", "phone": "555-0100", "org": "Fictional Employer"}
+
+
+class TimedLever(FakeLever):
+    """FakeLever that notes when (``time.monotonic()``, which the parent and a child on one machine share) each application POST reached it."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.post_times: list[float] = []
+
+    def answer(self, method: str, url: str, body: bytes = b"", **kwargs: Any) -> Any:
+        reply = super().answer(method, url, body, **kwargs)
+        if len(self.apply_posts()) > len(self.post_times):
+            self.post_times.append(time.monotonic())
+        return reply
+
+
+def lever_student_completes(page: Any) -> None:
+    """Fill what the app left empty and the form requires, the way the person would (a field the app filled is left alone)."""
+    for name, value in LEVER_REQUIRED_VALUES.items():
+        box = page.locator(f'form#application-form input[name="{name}"]')
+        if box.count() and not box.first.input_value():
+            box.first.fill(value)
+
+
+def lever_press_submit(page: Any) -> None:
+    page.click("#btn-submit")
+
+
+def lever_attach_a_file(page: Any) -> None:
+    """The student chooses a file in the form's file box: a path, so the browser's own (trusted) events say so, as a picked file's do."""
+    path = Path(tempfile.gettempdir()) / f"lever-e2e-student-resume-{os.getpid()}.pdf"
+    path.write_bytes(LEVER_STUDENT_FILE)
+    page.set_input_files('input[name="resume"]', str(path))
+
+
+def lever_complete_and_submit(page: Any, step: str) -> None:
+    if step == "handoff" and _once(page, "submit"):
+        lever_student_completes(page)
+        lever_press_submit(page)
+
+
+def lever_attach_complete_and_submit(page: Any, step: str) -> None:
+    """Attach a file; once the page has finished reading it (the 'working' sign is gone), complete the form and press Submit."""
+    if step != "handoff":
+        return
+    if _once(page, "attach"):
+        lever_attach_a_file(page)
+        return
+    working = page.locator(".resume-upload-working")
+    if working.count() and working.first.evaluate("(e) => getComputedStyle(e).display") == "block":
+        return
+    if _once(page, "submit"):
+        lever_student_completes(page)
+        lever_press_submit(page)
+
+
+def lever_attach_and_wait(page: Any, step: str) -> None:
+    if step == "handoff" and _once(page, "attach"):
+        lever_attach_a_file(page)
+
+
+LEVER_STUDENTS = {
+    "complete_and_submit": lever_complete_and_submit, "attach_complete_and_submit": lever_attach_complete_and_submit, "attach_and_wait": lever_attach_and_wait,
+    "do_nothing": do_nothing, "close_window": close_window,
+}
+
+
+class LeverRecordingAgent(ApplyAgent):
+    """An ``ApplyAgent`` for Lever that serves the fictional board and writes what the board saw when it closes (a child process cannot hand back an object)."""
+
+    def __init__(self, *, fake: TimedLever, record_path: str = "", **kwargs: Any) -> None:
+        super().__init__(route_hook=fake.route, headless=True, **kwargs)
+        self.fake = fake
+        self.record_path = record_path
+        self.pressed: dict[str, int] = {}
+        self.clicked: list[str] = []
+
+    def _close_browser(self) -> bool:
+        try:
+            self.pressed = FakeLever.clicks(self._page)
+        except Exception:  # noqa: BLE001 - the page is gone
+            pass
+        # A request the fake never answers (a résumé reader that does not reply) is failed as the window goes, so Playwright does not log a route left open.
+        self.fake.drop_unanswered()
+        return super()._close_browser()
+
+    def _click(self, locator: Any, purpose: str, key: str = "") -> None:
+        self.clicked.append(purpose)
+        return super()._click(locator, purpose, key)
+
+    def record(self) -> dict[str, Any]:
+        return {
+            "post_times": list(self.fake.post_times),
+            "requests": [{"method": seen.method, "host": seen.host, "path": seen.path, "status": seen.status} for seen in self.fake.requests],
+            "websockets": list(self.fake.websockets),
+            "non_get": [{"method": seen.method, "host": seen.host, "path": seen.path} for seen in self.fake.non_get_requests(noise=False)],
+            "parse_posts": [{"status": seen.status, "sha256": seen.part("resume").sha256 if seen.part("resume") else ""} for seen in self.fake.parse_posts()],
+            "apply_posts": len(self.fake.apply_posts()),
+            "pressed": dict(self.pressed),
+            # (the page's own count is lost when it moves on to the confirmation page; the agent's own record of what it clicked is not)
+            "agent_clicks": list(self.clicked),
+        }
+
+    def __exit__(self, *exc: Any) -> None:
+        if self.record_path:
+            try:
+                Path(self.record_path).write_text(json.dumps(self.record()), encoding="utf-8")
+            except Exception:  # noqa: BLE001 - a record that cannot be written changes nothing
+                pass
+        super().__exit__(*exc)
+
+
+class LeverBrowserAgentFactory:
+    """The agent factory of the Lever end-to-end tests. Picklable, so ``isolation="process"`` spawns a real child that opens a real Chromium.
+
+    ``scenario`` is what the board's apply POST answers (``apply_fake_ats.LEVER_SCENARIOS``), ``parse_mode`` what its résumé reader does, and ``student`` names one
+    of ``LEVER_STUDENTS``.
+    """
+
+    def __init__(self, scenario: str = "to_thanks", record_path: str = "", student: str = "", parse_mode: str = "success", isolation: str = "process",
+                 page: str = "demo_eeo_survey.html", parse_delay_s: float = 0.15) -> None:
+        self.scenario = scenario
+        self.record_path = record_path
+        self.student = student
+        self.parse_mode = parse_mode
+        self.isolation = isolation
+        self.page = page
+        self.parse_delay_s = parse_delay_s
+
+    def available(self) -> str:
+        return ""
+
+    def __call__(self, *, mode: str, run_id: str, screenshot_dir: Path | None, timeouts: ApplyTimeouts,
+                 on_progress: Callable[[str, str], None], heartbeat: Callable[[], None], ats: str = "lever") -> LeverRecordingAgent:
+        fake = TimedLever(self.scenario, parse_mode=self.parse_mode, page=self.page)
+        fake.parse_delay_s = self.parse_delay_s
+        return LeverRecordingAgent(
+            fake=fake, record_path=self.record_path, mode=mode, adapter=LeverAdapter(), run_id=run_id, screenshot_dir=screenshot_dir,
+            timeouts=HANDOFF_TIMEOUTS if timeouts == ApplyTimeouts() else timeouts, on_progress=on_progress, heartbeat=heartbeat,
+            student_hook=LEVER_STUDENTS.get(self.student),
+        )

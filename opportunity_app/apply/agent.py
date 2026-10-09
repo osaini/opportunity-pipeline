@@ -34,7 +34,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from .. import ROOT
 from ..integrations.web_fetch import Resolver, close_browser, resolve_host
@@ -60,7 +60,9 @@ from .agent_types import (
     LEFT_UNPLANNED,
     MAX_LOOKUP_OPTIONS,
     OP_HANDOFF_READY,
+    RESUME_CHANGED_STEP,
     STOPPED,
+    STUDENT_RESUME_STEP,
     WINDOW_CLOSED,
     ApplyTimeouts,
     FilePayload,
@@ -103,6 +105,8 @@ from .checks import (
 )
 from .ats import REGISTRY, AtsAdapter, AtsSpec, spec_for
 from .greenhouse import ATS_GREENHOUSE, BOARD_HOSTS, SUBMIT_HOST
+from .lever import ATS_LEVER, LEVER_HOSTS
+from .lever_adapter import LeverAdapter
 from .runs import INSTALL_PLAYWRIGHT, PlaywrightProbe
 
 # --- What the agent says (WP2 and WP3 never parse these) ------------------------------------------------------------
@@ -135,10 +139,13 @@ PARSE_TIMEOUT = "{ats} did not finish reading your résumé. Nothing was filled.
 CHALLENGE_UNFINISHED = "{ats} showed a check that was not finished in time, so the app stopped before it filled the form. Nothing was sent."
 CLEARED_GUESS = "{ats} filled this from your résumé and the app did not have a confirmed value, so it cleared it"
 RESUME_SENT = "Your résumé was sent to {ats} when the app attached it."
+STUDENT_READ_FIELD = "{ats} filled this from the résumé you attached. Check it before you press Submit application."
 PAGE_CHANGED = 'The page changed "{question}" itself, which the app never writes. Check it before you press Submit application.'
 # After a file went to the ATS (a page that reads it as it is attached), "Nothing was sent" is no longer true of the file. Each tail below is a sentence's end.
 SENT_TAILS = ("Nothing was sent.", "No application was sent.", "Your application was not sent.")
 NOT_SENT_RESUME = "Your application was not sent. {ats} received your résumé."
+# The reason ``REQUIRED_CHECK_SCRIPT`` gives for a control the page marked ``aria-invalid`` (any other reason is the browser's own validity).
+MARKED_BY_PAGE = "marked invalid by the form"
 # Not in the shared list: what the agent says when a whole step, not one field, went wrong.
 MORE_PAGES = "This form has more than one page, and the app read only the first"
 OPEN_FAILED = "The app could not open the {ats} form"
@@ -183,6 +190,8 @@ MAX_TELEMETRY_RECORDED = 20
 MAX_REQUESTS = 300
 CODE_PATTERN = re.compile(r"[A-Za-z0-9]{8}")
 CODE_SETTLE_S = 0.3      # after typing the code: time for a widget that sends by itself to try, before the student is told what to do
+STUDENT_HASH_WAIT_S = 1.0   # a read that carries bytes waits this long for the hash of the file the student chose (a file from their disk carries none)
+STUDENT_FILE_WINDOW_S = 10.0   # a file the student chose may be read by the page for this long; a choice no read has used by then is forgotten
 PRESS_GRACE_S = 0.15     # a code POST refused for want of a press waits this long for the press to be reported (it is reported first, by a few ms)
 TURN_POLL_MS = 250
 OUTCOME_POLL_MS = 500
@@ -301,10 +310,14 @@ NO_SIDE_CHANNELS = """(() => {
 # Only a board's own page counts, so a frame the page makes up (about:blank, srcdoc) with a form of that name in it does not.
 PRESS_WORLD = "apply-student-press"
 PRESS_BINDING = "applyStudentPress"
+# The longest percent-encoded file name the listener reports (a 255-character name of letters outside ASCII encodes to about 9 times that).
+FILE_NAME_REPORT_CAP = 3000
+_FILE_REPORT = re.compile(r"file:[0-9]{1,9}:[A-Za-z0-9._~!*'()%-]{1,3000}")   # the cap above, written out
 # The page script is a template: ``press_listener`` fills in the run's ATS's board hosts (``RoutePolicy.navigation_hosts``) and the selector of its
 # Submit control (the adapter's ``press_selector``: Greenhouse's form submit, Lever's visible Submit button), so each ATS's student press is seen on its own page.
 PRESS_LISTENER_TEMPLATE = """(() => {
   const hosts = __HOSTS__;
+  const filesRead = __FILE_HOSTS__.indexOf(location.hostname) >= 0;
   const submit = __SUBMIT__;
   if (!submit || hosts.indexOf(location.hostname) < 0) return;
   window.addEventListener('click', (event) => {
@@ -312,16 +325,50 @@ PRESS_LISTENER_TEMPLATE = """(() => {
     const target = event.target;
     if (target && typeof target.closest === 'function' && target.closest(submit)) window.__BINDING__('1');
   }, true);
+  // The student choosing a file in the box the page reads at once (Lever's resume box: the adapter's ``file_selector``), and only one the page will
+  // read: a file over the page's own limit is not sent, so no read follows it. A page that reads a file the moment it is attached sends it then; only
+  // those boards' pages are listened to, so a Greenhouse page's files are never opened here. Only a trusted 'change' counts, so a script that sets
+  // a file box's files and fires its own event does not. Other file boxes of the form (a cover letter) are not reported: the page does not read them.
+  // Each choice gets a number, and is reported at once with it and the file's name (the page's read of the file follows it by moments); the file's SHA-256
+  // follows, with the same number, when it is worked out. The bytes of a file the student picks from their disk do not pass through the request rules (the browser sends
+  // them itself, and the route sees an empty part), so this is the only way to know which file it was, and the number is how a hash finds its choice.
+  const fileBox = __FILE_BOX__;
+  const fileLimit = __FILE_LIMIT__;
+  let chosen = 0;
+  window.addEventListener('change', (event) => {
+    if (!event.isTrusted || !filesRead || !fileBox) return;
+    const box = event.target;
+    if (!(box && box.tagName === 'INPUT' && box.type === 'file' && box.files && box.files.length && typeof box.closest === 'function' && box.closest('form#application-form') && box.matches(fileBox))) return;
+    const file = box.files[0];
+    if (!(fileLimit > 0 && file.size <= fileLimit)) return;
+    const id = ++chosen;
+    // The name is reported as the browser has it, percent-encoded so any name passes (and nothing longer than the cap): the app applies the page's own
+    // rewriting of it (``RoutePolicy.resume_post_name``), so the rule lives in one place and the read may carry that name only. A name that cannot be
+    // encoded (a lone surrogate) or is too long is not reported, so no read follows it.
+    let named;
+    try { named = encodeURIComponent(String(file.name || '')); } catch (error) { return; }
+    if (!named || named.length > __NAME_CAP__) return;
+    window.__BINDING__('file:' + id + ':' + named);
+    try {
+      file.arrayBuffer().then((data) => crypto.subtle.digest('SHA-256', data)).then((hash) => {
+        window.__BINDING__('sha:' + id + ':' + Array.from(new Uint8Array(hash)).map((byte) => byte.toString(16).padStart(2, '0')).join(''));
+      }).catch(() => window.__BINDING__('sha:' + id + ':'));
+    } catch (error) { window.__BINDING__('sha:' + id + ':'); }
+  }, true);
 })();"""
 
 
-def press_listener(hosts: Iterable[str], submit_selector: str) -> str:
+def press_listener(hosts: Iterable[str], submit_selector: str, file_hosts: Iterable[str] = (), file_selector: str = "", file_limit: int = 0) -> str:
     """The press listener's source for one ATS: only its board hosts count, and only a trusted click inside ``submit_selector`` is reported.
 
-    ``json.dumps`` writes both values as JavaScript literals. An empty selector reports nothing (an adapter that names no Submit control).
+    ``file_hosts`` are the hosts whose page reads a file the moment it is attached (Lever's): only there is the student's choice of a file reported,
+    and only in the box ``file_selector`` names (the one the page reads) and for a file of at most ``file_limit`` bytes (the page's own limit; the page
+    sends nothing for a larger one). ``json.dumps`` writes them as JavaScript literals. An empty selector reports nothing (an adapter that names no
+    Submit control, or no file box); a limit of 0 reports no file.
     """
-    return (PRESS_LISTENER_TEMPLATE.replace("__HOSTS__", json.dumps(sorted(hosts))).replace("__SUBMIT__", json.dumps(submit_selector))
-            .replace("__BINDING__", PRESS_BINDING))
+    return (PRESS_LISTENER_TEMPLATE.replace("__HOSTS__", json.dumps(sorted(hosts))).replace("__FILE_HOSTS__", json.dumps(sorted(file_hosts)))
+            .replace("__SUBMIT__", json.dumps(submit_selector)).replace("__FILE_BOX__", json.dumps(file_selector))
+            .replace("__FILE_LIMIT__", json.dumps(int(file_limit))).replace("__NAME_CAP__", str(FILE_NAME_REPORT_CAP)).replace("__BINDING__", PRESS_BINDING))
 
 
 # The only DevTools calls the agent makes, and nothing else (tests/test_apply_agent_static.py reads the syntax tree for it).
@@ -1012,6 +1059,17 @@ class ApplyAgent:
         self._resume_requests: list[Any] = []      # the requests the route let through to the page's file read
         self._resume_status: dict[int, int] = {}   # id(request) -> the status the page got
         self._resume_digest = ""                   # the SHA-256 of the file in the one that passed (never the file)
+        # The student's own: files they chose in the window during their turn, and the reads of them the route let through (spec 6.12 step 7).
+        self._student_reads: list[Any] = []        # the requests (the page's read of each file the student chose)
+        self._open_choices: list[tuple[int, float]] = []   # (number, time.monotonic()) of each file the student chose that no read has used yet, oldest first
+        self._choice_names: dict[int, str] = {}    # the name the page gives each file the student chose that no read has used yet, by the listener's number
+        self._choice_digests: dict[int, str] = {}  # the SHA-256 of each file the student chose, by the listener's number for it ("" when the page could not work it out)
+        self._read_choices: list[int | None] = []  # the choice each of the reads above used up (None when none was open)
+        self._student_changed: list[str] = []      # the keys of the fields the page's reader changed after those reads (names, never values)
+        self._student_noticed = 0                  # how many of the reads above the turn's loop has looked at
+        self._student_baseline: dict[str, str] | None = None   # what the reader's fields held before the read being waited for
+        self._student_waiting = False              # a read has passed and the page has not yet finished applying its answer
+        self._parser_last: dict[str, str] | None = None        # what they held at the last look in which no read was pending
         self._parse_result = ""                    # success, failure, oversize or timeout
         self._resume_stored = False                # the page holds a storage id for the file after a read (it is the page's own, and only read)
         self._guesses_cleared: list[str] = []      # the keys of fields the page's reader filled and the app cleared
@@ -1070,7 +1128,7 @@ class ApplyAgent:
     def _note_response(self, response: Any) -> None:
         """The status the page got for a file read the route let through (the request is the one the route kept, so no other response counts)."""
         try:
-            if any(response.request is sent for sent in self._resume_requests):
+            if any(response.request is sent for sent in (*self._resume_requests, *self._student_reads)):
                 self._resume_status[id(response.request)] = int(response.status)
         except Exception:  # noqa: BLE001 - a response of a page that is going away
             pass
@@ -1087,7 +1145,9 @@ class ApplyAgent:
             cdp.send("Page.enable")
             cdp.send("Runtime.enable")
             cdp.send("Runtime.addBinding", {"name": PRESS_BINDING, "executionContextName": PRESS_WORLD})
-            listener = press_listener(self._policy.navigation_hosts, self.adapter.press_selector)
+            listener = press_listener(self._policy.navigation_hosts, self.adapter.press_selector,
+                                      self._policy.navigation_hosts if self._policy.resume_post_path else (),
+                                      self.adapter.file_selector, self.adapter.file_limit_bytes)
             cdp.send("Page.addScriptToEvaluateOnNewDocument", {"source": listener, "worldName": PRESS_WORLD, "runImmediately": True})
         except Exception:  # noqa: BLE001 - a browser without DevTools sessions: no press can be seen
             return
@@ -1095,9 +1155,51 @@ class ApplyAgent:
         self._press_channel = True
 
     def _on_binding(self, event: Mapping[str, Any]) -> None:
-        """The press listener called its binding. The binding exists only in the listener's world, and the listener calls it with "1" only."""
-        if event.get("name") == PRESS_BINDING and event.get("payload") == "1":
+        """The press listener called its binding. The binding exists only in the listener's world, and the listener calls it with "1" (a trusted press of
+        Submit), "file:<n>" (a trusted choice of a file in the box the page reads, within the page's limit) and "sha:<n>:<hex>" (that file's SHA-256) only."""
+        if event.get("name") != PRESS_BINDING:
+            return
+        if event.get("payload") == "1":
             self._state.note_student_press()
+        elif isinstance(event.get("payload"), str) and _FILE_REPORT.fullmatch(event["payload"]):
+            if self._policy.resume_post_path and self._phase == PHASE_STUDENT and not self._handed_over:
+                # The student chose a file in the page's file box: the page's read of it may pass, once, and only for a moment (``RouteState.student_files_chosen``).
+                _, number, encoded = event["payload"].split(":", 2)
+                try:
+                    named = unquote(encoded, errors="strict")
+                except UnicodeDecodeError:
+                    return
+                rule = self._policy.resume_post_name
+                name = rule(named) if rule else named   # the name the page posts for it (Lever's own rewriting)
+                self._expire_student_choices()
+                self._open_choices.append((int(number), time.monotonic()))
+                self._choice_names[int(number)] = name
+                self._state.student_files_chosen += 1
+                self._publish_open_choice()
+        elif isinstance(event.get("payload"), str) and re.fullmatch(r"sha:[0-9]{1,9}:(?:[0-9a-f]{64})?", event["payload"]):
+            # That file's SHA-256 (or nothing, when the page could not work it out), for the choice with that number.
+            _, number, digest = event["payload"].split(":")
+            if int(number) in self._read_choices or any(int(number) == known for known, _ in self._open_choices):
+                self._choice_digests[int(number)] = digest
+                self._publish_open_choice()
+
+    def _publish_open_choice(self) -> None:
+        """Give the request rules the oldest open choice's name and hash: the read they judge next is the one that choice allows."""
+        number = self._open_choices[0][0] if self._open_choices else None
+        self._state.student_file_name = self._choice_names.get(number, "") if number is not None else ""
+        self._state.student_file_sha256 = self._choice_digests.get(number, "") if number is not None else ""
+
+    def _expire_student_choices(self) -> None:
+        """Forget the choices no read used within ``STUDENT_FILE_WINDOW_S``: the page reads a file at once, so a choice still unused after that is not
+        followed by a read, and its allowance must not wait for a script's."""
+        now = time.monotonic()
+        expired = False
+        while self._open_choices and now - self._open_choices[0][1] > STUDENT_FILE_WINDOW_S:
+            self._choice_names.pop(self._open_choices.pop(0)[0], None)
+            self._state.student_files_chosen -= 1
+            expired = True
+        if expired:
+            self._publish_open_choice()
 
     # --- the request policy -----------------------------------------------------------------------------------
 
@@ -1126,9 +1228,14 @@ class ApplyAgent:
                 method=request.method, url=request.url, resource_type=request.resource_type, is_navigation=navigation,
                 public=True, headers=request.headers, body=body,
             )
+            self._expire_student_choices()
             decision = route_decision(self.mode, self._phase, facts, self._state, self._policy)
             if isinstance(decision, Abort) and decision.rule == "code_post_before_press" and self._press_arrives():
                 decision = route_decision(self.mode, self._phase, facts, self._state, self._policy)   # the press was reported a moment after the request
+            if isinstance(decision, Abort) and decision.rule == "resume_post_unasked" and self._file_choice_arrives():
+                decision = route_decision(self.mode, self._phase, facts, self._state, self._policy)   # the choice was reported a moment after the request
+            if isinstance(decision, Abort) and decision.rule == "resume_post_file" and self._phase == PHASE_STUDENT and self._file_hash_arrives():
+                decision = route_decision(self.mode, self._phase, facts, self._state, self._policy)   # the file's hash was reported a moment after the request
             # Resolved last, and only for a request the policy would let through: the name of a request that is refused anyway
             # (after the first input, anything but Greenhouse's own hosts) is never sent to a resolver, since a hostname can carry a value.
             # A name the browser itself could not look up is not looked up here either: the resolver below runs in this process, outside the
@@ -1148,8 +1255,15 @@ class ApplyAgent:
                 return
             self._state.record(decision)
             if getattr(decision, "resume_post", False):
-                self._resume_requests.append(request)
-                self._resume_digest = str(getattr(decision, "digest", "") or "")
+                if getattr(decision, "student_file", False):
+                    self._student_reads.append(request)
+                    # The read uses up the oldest choice that is still open, as ``RouteState.record`` counts it: that choice's file is the one Lever received.
+                    self._read_choices.append(self._open_choices.pop(0)[0] if self._open_choices else None)
+                    self._choice_names.pop(self._read_choices[-1], None)
+                    self._publish_open_choice()
+                else:
+                    self._resume_requests.append(request)
+                    self._resume_digest = str(getattr(decision, "digest", "") or "")
             if self._phase == PHASE_AFTER_HAND_OVER and method not in SAFE_METHODS and self._observer is not None:
                 self._observer.track(request, passed=True)
             if decision.rule == "lookup" and self._state.typing_key:
@@ -1181,6 +1295,39 @@ class ApplyAgent:
             except Exception:  # noqa: BLE001 - the page is going away: the request is refused
                 break
         return self._state.code_pressed if after is None else self._state.last_press_at > after
+
+    def _file_choice_arrives(self) -> bool:
+        """Wait up to ``PRESS_GRACE_S`` for the student's choice of a file to be reported: it is reported before the page's read of it, but the two
+        reach this process by different routes. True when a choice that no read has used is in."""
+        if not self._policy.resume_post_path or self._phase != PHASE_STUDENT:
+            return False
+        deadline = time.monotonic() + PRESS_GRACE_S
+        while time.monotonic() < deadline:
+            self._expire_student_choices()
+            if self._state.student_files_chosen > self._state.student_file_reads_passed:
+                return True
+            try:
+                self._page.wait_for_timeout(20)
+            except Exception:  # noqa: BLE001 - the page is going away: the request is refused
+                break
+        return self._state.student_files_chosen > self._state.student_file_reads_passed
+
+    def _file_hash_arrives(self) -> bool:
+        """Wait up to ``STUDENT_HASH_WAIT_S`` for the hash of the file the student chose to be reported: it takes a moment to work out, and a read that
+        carries bytes is judged by it. True when the oldest open choice has one."""
+        if not self._policy.resume_post_path or not self._open_choices:
+            return False
+        deadline = time.monotonic() + STUDENT_HASH_WAIT_S
+        while time.monotonic() < deadline:
+            if self._choice_digests.get(self._open_choices[0][0]):
+                return True
+            try:
+                self._page.wait_for_timeout(20)
+            except Exception:  # noqa: BLE001 - the page is going away: the request is refused
+                break
+            if not self._open_choices:
+                break
+        return bool(self._open_choices and self._choice_digests.get(self._open_choices[0][0]))
 
     def _send_after_a_late_press(self, facts: RouteRequest) -> bool:
         """``looks_like_a_send`` for a request whose press has not been reported yet: wait a moment for it, and ask again."""
@@ -2653,7 +2800,7 @@ class ApplyAgent:
     def _left_items(self) -> list[dict[str, str]]:
         """What the student has to do in the window: plan entries left for them, anything else the check found, the CAPTCHA last."""
         items: list[dict[str, str]] = []
-        if self._reads and self._state.resume_posts_passed:
+        if self._reads and self._resume_requests:
             items.append({"key": "resume_sent", "question": "Your résumé", "reason": self._say(RESUME_SENT)})
         for entry in self._plan_entries()[0]:
             if entry["disposition"] != "left_for_you":
@@ -2688,6 +2835,8 @@ class ApplyAgent:
                 self._link.ready({
                     "op": OP_HANDOFF_READY, "plan": entries, "plan_hash": plan_hash, "left": self._left_items(), "screenshot": shot,
                     "captcha_widget": bool(self._evidence_bits.get("captcha_widget")), "page_defaults": list(self._page_defaults),
+                    # Whether the app's own attach sent the file to the ATS: the parent keeps it, in case the run ends with no result.
+                    **({"resume_sent_to_lever": bool(self._resume_requests)} if self._reads else {}),
                     # How long the window stays the student's, as the agent will really keep it: the parent shows the closing time.
                     "handoff_in_s": max(0.0, until - time.monotonic()),
                 })
@@ -2699,6 +2848,7 @@ class ApplyAgent:
         while True:
             if self._handed_over:
                 return self._outcome()
+            self._watch_student_read()
             end = ""
             if self._closing:
                 end = self._why_closing
@@ -2724,6 +2874,42 @@ class ApplyAgent:
             "crashed": HANDOFF_CRASHED, "refused": HANDOFF_UNRECORDED, "elsewhere": HANDOFF_ELSEWHERE, "upload": HANDOFF_UPLOAD, "early": HANDOFF_EARLY,
         }.get(end, HANDOFF_NOT_SUBMITTED)
         return self._finish("needs_you", [sentence])
+
+    def _watch_student_read(self) -> None:
+        """The student's turn, on a page that reads a file as it is attached (Lever): when the student has chosen a file and the page sent it, say so, and when
+        the page has applied its answer, say which of the reader's fields it changed (spec 6.12 step 7).
+
+        The app does not undo anything: putting values back would mean typing in the window while the student works in it. It names the fields, never
+        their values, and the student checks them. The fields are compared with what they held at the last look before the read, so a field the
+        reader left alone is not named; a field the student typed into in the same moments is (the sentence says "check", not "fixed").
+        """
+        if not self._reads or self._frame is None:
+            return
+        try:
+            state = self.adapter.parse_state(self._frame)
+            now = self.adapter.parser_values(self._frame)
+        except Exception:  # noqa: BLE001 - a page in the middle of a change: the next look is soon
+            return
+        if len(self._student_reads) > self._student_noticed:
+            self._student_noticed = len(self._student_reads)
+            self._student_waiting = True
+            self._student_baseline = dict(self._parser_last if self._parser_last is not None else now)
+            self._progress(STUDENT_RESUME_STEP)
+        if self._student_waiting:
+            answered = id(self._student_reads[-1]) in self._resume_status
+            if not answered or state == "working":
+                return
+            self._student_waiting = False
+            before = self._student_baseline or {}
+            changed = sorted({"location" if name == "selectedLocation" else name for name, value in now.items() if before.get(name, value) != value})
+            if changed:
+                self._student_changed.extend(name for name in changed if name not in self._student_changed)
+                questions = [self._question(name) for name in changed]
+                for name, question in zip(changed, questions):
+                    self._add_left(f"read:{name}", question, self._say(STUDENT_READ_FIELD))
+                words = questions[0] if len(questions) == 1 else ", ".join(questions[:-1]) + " and " + questions[-1]
+                self._progress(RESUME_CHANGED_STEP, fields=words, them="it" if len(questions) == 1 else "them")
+        self._parser_last = now
 
     # --- after the press: the outcome, and the security code ----------------------------------------------------------
 
@@ -2825,7 +3011,11 @@ class ApplyAgent:
         """The QUESTION of the first field the form marks as wrong. Never the page's error text: it may quote what the student typed."""
         try:
             seen = self._read_form(frame)
-            for item in seen.get("invalid", []):
+            invalid = list(seen.get("invalid", []))
+            # What the page itself marked (aria-invalid) comes first: after a refusal a page draws its form again, and the browser then finds the
+            # first empty required box "invalid", which the page never said.
+            marked = [item for item in invalid if item.get("reason") == MARKED_BY_PAGE]
+            for item in marked or invalid:
                 key = str(item.get("key") or "")
                 entry = self._entry(key) if key else None
                 question = str(_attr(entry, "question") or "") if entry is not None else str(item.get("question") or "")
@@ -3082,7 +3272,7 @@ class ApplyAgent:
             # Never the file or anything the page read from it. The one request is kept here, not with the submit's (``RunResult.requests``).
             sent = self._resume_requests[0] if self._resume_requests else None
             evidence.update({
-                "resume_sent_to_lever": bool(self._state.resume_posts_passed),
+                "resume_sent_to_lever": bool(self._resume_requests),   # the app's own attach; the student's is below
                 "resume_parse": self._parse_result,
                 "resume_stored": self._resume_stored,
                 "resume_post": (
@@ -3093,6 +3283,14 @@ class ApplyAgent:
                 "guesses_cleared": sorted(self._guesses_cleared),
                 "page_changed": sorted(self._managed_changed),
             })
+            if self._student_reads:
+                # The student attached a file in the window and the page sent it at once: how many, the last one's SHA-256, and the names (never the
+                # values) of the fields the page's reader then changed.
+                evidence["student_attached_resume"] = {
+                    "count": len(self._student_reads),
+                    "sha256": (self._choice_digests.get(self._read_choices[-1], "") if self._read_choices[-1] is not None else "") if self._read_choices else "",
+                    "changed": sorted(set(self._student_changed)),
+                }
         return evidence
 
     def _plan_entries(self) -> tuple[list[dict[str, Any]], str]:
@@ -3161,7 +3359,7 @@ class ApplyAgent:
 
 
 # One adapter class for each ATS in ats.REGISTRY whose driver is built (``AtsSpec.adapter_built``; tests/test_apply_ats_seam.py keeps the two lists the same).
-ADAPTERS: dict[str, Callable[[], AtsAdapter]] = {ATS_GREENHOUSE: GreenhouseAdapter}
+ADAPTERS: dict[str, Callable[[], AtsAdapter]] = {ATS_GREENHOUSE: GreenhouseAdapter, ATS_LEVER: LeverAdapter}
 
 
 class DefaultApplyAgentFactory:

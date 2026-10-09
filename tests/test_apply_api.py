@@ -4,6 +4,7 @@ No browser and no network: the check is served a fictional listing from memory (
 test proves that no socket is opened while it runs, with the sandbox's own wiring too.
 """
 
+import dataclasses
 import gzip
 import http.client
 import importlib.util
@@ -288,7 +289,10 @@ class SettingsRouteTests(ApplyApiCase):
         from opportunity_app.apply import ats as apply_ats
         lever = self.get("/api/v1/apply-agent/settings").json()["lever"]
         self.assertIs(lever["window"], apply_ats.LEVER.adapter_built)
-        self.assertIs(lever["window"], False, "Lever's Finish in browser is built later (LV4)")
+        self.assertIs(lever["window"], True, "Lever's Finish in browser is built")
+        unbuilt = tuple(dataclasses.replace(spec, adapter_built=False) if spec.key == apply_ats.LEVER.key else spec for spec in apply_ats.REGISTRY)
+        with mock.patch.object(apply_ats, "REGISTRY", unbuilt):
+            self.assertIs(self.get("/api/v1/apply-agent/settings").json()["lever"]["window"], False, "the answer follows the registry, not a copy of the spec")
 
     def test_the_settings_show_the_limits_in_force_and_which_are_the_students_own(self):
         settings = self.get("/api/v1/apply-agent/settings").json()
@@ -778,7 +782,8 @@ class RunApiCase(ApplyApiCase):
 
 RUN_KEYS = {"id", "opportunity_id", "kind", "status", "outcome", "clean", "started_at", "finished_at", "heartbeat_at", "deadline_at", "stalled", "summary",
             "measured", "progress", "reasons", "problems", "fields", "options", "lookup", "screenshots", "refused_count", "review", "review_note",
-            "reviewed_at", "can_review", "can_cancel", "phase", "handed_over", "handoff_end", "finish_again", "left_for_you", "handoff_until", "page_defaults", "claim", "can_front"}
+            "reviewed_at", "can_review", "can_cancel", "phase", "handed_over", "handoff_end", "finish_again", "left_for_you", "handoff_until", "page_defaults", "claim", "can_front",
+            "resume_sent_to_lever"}
 
 
 class StartRouteTests(RunApiCase):

@@ -6,9 +6,9 @@ version, the modes it supports, how a saved role is recognised as one of its pos
 lives (``canonical_url``), the client that reads its listing, how that listing becomes the form's fields
 (``parse_schema``), whether a mail sender is its own (``is_confirmation_sender``), and its request policy
 (``route_policy``: which hosts a page may reach, what counts as the submit POST and as the confirmation page; the rules in
-``checks`` read it as an argument). Greenhouse and Lever are registered (docs/phase5-lever-handoff-spec.md, 5.2). Lever is read-only
-so far: its form can be read and planned, and its Finish in browser driver (``lever_adapter.LeverAdapter``) is built but reachable only in
-tests, so no run of it starts in the app (``adapter_built``, which LV4 turns on).
+``checks`` read it as an argument). Greenhouse and Lever are registered (docs/phase5-lever-handoff-spec.md, 5.2). Lever's form can be read and
+planned, and its Finish in browser driver (``lever_adapter.LeverAdapter``) is connected (``adapter_built``): a spec whose driver is not
+connected can be read and planned and no run of it starts.
 
 ``AtsAdapter`` is the set of methods ``ApplyAgent`` calls on a site's form, so the agent is typed to a shape and not to
 Greenhouse. The adapters themselves live beside the agent (``agent.py``), which is a higher layer than this file.
@@ -67,8 +67,10 @@ class AtsSpec:
     # The setting (an automation feature) that must be on before Apply for me reads this ATS's roles, besides apply_agent. "" for none.
     switch: str = ""
     # Whether the app starts a browser run for this ATS's form. False means the form can be read and planned and no window opens, in the app: the driver may
-    # exist (Lever's, in ``lever_adapter``) and be exercised by the tests until the milestone that connects it.
+    # exist and be exercised by the tests before the milestone that connects it (Lever's did, until LV4).
     adapter_built: bool = True
+    # Whether the ATS emails a security code the app may type (Greenhouse does; Lever emails none, spec 6.9 Q5). The statistics count codes only for one that does.
+    has_security_code: bool = True
 
 
 GREENHOUSE = AtsSpec(
@@ -135,7 +137,8 @@ LEVER = AtsSpec(
     posting_difference=lever_posting_difference,
     claim_modes=("handoff",),
     switch="apply_agent_lever",
-    adapter_built=False,
+    adapter_built=True,
+    has_security_code=False,
 )
 
 # In the order identify tries them. The first to recognise a role is the role's ATS.
@@ -185,7 +188,7 @@ def _words(names: list[str]) -> str:
 def mode_refusal(spec: AtsSpec, mode: str) -> tuple[str, str] | None:
     """(code, sentence) when the agent cannot be asked for ``mode`` (lookup, rehearse, submit or handoff) on this ATS, else None.
 
-    Lever supports Finish in browser only (docs/phase5-lever-handoff-spec.md 6.1), and until its driver exists (``adapter_built``) it supports
+    Lever supports Finish in browser only (docs/phase5-lever-handoff-spec.md 6.1). An ATS whose driver is not connected (``adapter_built`` False) supports
     nothing that opens a window: the form is read and planned, and the student is told so.
     """
     if mode not in spec.supported_modes:
@@ -236,9 +239,9 @@ class AtsAdapter(Protocol):
 
     The rest is what ``AdapterBase`` (``agent_types``) answers for an ATS that needs nothing special, and Lever overrides: ``scan`` (the
     read of the form, when ``uses_engine`` is False), ``page_facts`` and ``page_managed`` (what the page carries for itself),
-    ``is_typeahead`` (a list chosen from by typing), ``parse_state``, ``guessed_fields`` and ``cleared`` (a file reader's guesses, and
-    whether one is gone), ``owns`` and ``refuses`` (what the app never writes or presses). ``closed_on_404``, ``waits_for_challenge``,
-    ``required_from_load``, ``page_sentences`` and ``press_selector`` (the form's Submit control, which the press listener watches) are its attributes.
+    ``is_typeahead`` (a list chosen from by typing), ``parse_state``, ``guessed_fields``, ``parser_values`` and ``cleared`` (a file reader's guesses, what
+    they hold, and whether one is gone), ``owns`` and ``refuses`` (what the app never writes or presses). ``closed_on_404``, ``waits_for_challenge``,
+    ``required_from_load``, ``page_sentences``, ``press_selector`` (the form's Submit control, which the press listener watches), ``file_selector`` and ``file_limit_bytes`` (the file box the page reads at once, and the largest file it reads) are its attributes.
     """
 
     ats: str
@@ -278,4 +281,5 @@ class AtsAdapter(Protocol):
     def parse_state(self, frame: Any) -> str: ...
     def guessed_fields(self, frame: Any) -> list[str]: ...
     def cleared(self, frame: Any, key: str) -> bool: ...
+    def parser_values(self, frame: Any) -> dict[str, str]: ...
     def refuses(self, locator: Any) -> bool: ...

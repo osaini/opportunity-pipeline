@@ -207,7 +207,7 @@ class PressListenerTests(unittest.TestCase):
 
     def test_the_agent_builds_the_listener_from_its_policy_s_hosts_and_its_adapter_s_selector(self):
         text = helpers_source.apply_modules()["apply/agent.py"]
-        self.assertIn("press_listener(self._policy.navigation_hosts, self.adapter.press_selector)", text)
+        self.assertIn("press_listener(self._policy.navigation_hosts, self.adapter.press_selector,", text)
 
 
 # --- 10.5: static scans, through tests/helpers_source.py (a directory, never one file) ---------------------------------------------------
@@ -265,10 +265,10 @@ class StaticScanTests(unittest.TestCase):
         self.assertFalse({name for name in imported if "playwright" in name or name in (".agent", ".runner", ".runs")}, imported)
 
 
-# --- Reachable only in tests and the sandbox --------------------------------------------------------------------------------------------
+# --- Reachable from the app by one place -------------------------------------------------------------------------------------------------
 
-class NotReachableInProductionTests(unittest.TestCase):
-    def test_no_module_of_the_app_imports_the_lever_driver(self):
+class ReachableByOnePlaceTests(unittest.TestCase):
+    def test_one_module_of_the_app_imports_the_lever_driver_the_agents_table_of_adapters(self):
         importers = []
         for relative, text in python_modules("*.py").items():
             if relative == ADAPTER_PATH:
@@ -278,17 +278,19 @@ class NotReachableInProductionTests(unittest.TestCase):
                 names = [alias.name for alias in node.names] if isinstance(node, ast.Import) else [node.module or ""] + [alias.name for alias in node.names] if isinstance(node, ast.ImportFrom) else []
                 if any("lever_adapter" in name or name == "LeverAdapter" for name in names):
                     importers.append(relative)
-        self.assertEqual(importers, [], "a module of the app reaches the Lever driver: LV4 adds the one place, and changes this test")
+        self.assertEqual(importers, ["apply/agent.py"], "the driver is reached from the agent's ADAPTERS and nowhere else")
 
-    def test_the_agent_factory_has_no_lever_adapter_and_builds_no_agent_for_it(self):
-        self.assertEqual(set(apply_agent.ADAPTERS), {"greenhouse"})
-        self.assertFalse(apply_ats.LEVER.adapter_built)
-        with self.assertRaisesRegex(RuntimeError, "no driver for Lever"):
-            apply_agent.DefaultApplyAgentFactory()(mode="handoff", run_id="r", screenshot_dir=None, timeouts=agent_types.ApplyTimeouts(),
-                                                    on_progress=lambda *_: None, heartbeat=lambda: None, ats="lever")
+    def test_the_agent_factory_builds_the_lever_adapter_for_a_lever_job_and_the_registry_says_the_driver_is_built(self):
+        self.assertEqual(set(apply_agent.ADAPTERS), {"greenhouse", "lever"})
+        self.assertTrue(apply_ats.LEVER.adapter_built)
+        agent = apply_agent.DefaultApplyAgentFactory()(mode="handoff", run_id="r", screenshot_dir=None, timeouts=agent_types.ApplyTimeouts(),
+                                                       on_progress=lambda *_: None, heartbeat=lambda: None, ats="lever")
+        self.assertIsInstance(agent.adapter, LeverAdapter)
 
-    def test_the_runner_refuses_finish_in_browser_for_lever_before_it_reads_anything(self):
-        self.assertEqual(apply_ats.mode_refusal(apply_ats.LEVER, "handoff"), ("ats_not_built", "Finish in browser for Lever postings is not available yet"))
+    def test_the_runner_takes_finish_in_browser_for_lever_and_refuses_the_other_modes_by_what_lever_supports(self):
+        self.assertIsNone(apply_ats.mode_refusal(apply_ats.LEVER, "handoff"))
+        for mode in ("lookup", "rehearse", "submit"):
+            self.assertEqual(apply_ats.mode_refusal(apply_ats.LEVER, mode)[0], "ats_mode")
 
     def test_the_agent_runs_lever_in_finish_in_browser_only(self):
         for mode in ("lookup", "rehearse", "submit"):
@@ -389,6 +391,171 @@ class ResolvableForARunTests(unittest.TestCase):
     def test_the_browsers_one_resolver_rule_holds_the_names_of_both(self):
         for host in (*self.LEVER_ONLY, *(name for name in self.GREENHOUSE_ONLY if "?" not in name and not name.startswith("s12"))):
             self.assertIn(host, apply_agent.RESOLVABLE_HOSTS)
+
+
+class ParserValuesTests(unittest.TestCase):
+    def test_only_the_readers_fields_and_the_hidden_location_are_kept_and_the_script_takes_nothing_from_the_app(self):
+        frame = mock.Mock()
+        frame.evaluate.return_value = [
+            ["name", "Sam Rivera"], ["org", "A"], ["location", "B"], ["selectedLocation", "{}"], ["urls[GitHub]", "g"], ["residentialLocation[city]", "c"],
+            ["comments", "free text"], ["cards[x][field0]", "answer"],
+        ]
+        found = LeverAdapter().parser_values(frame)
+        self.assertEqual(sorted(found), ["location", "name", "org", "residentialLocation[city]", "selectedLocation", "urls[GitHub]"])
+        frame.evaluate.assert_called_once_with(lever_adapter.LEVER_VALUES)
+
+    def test_a_page_without_the_form_has_no_values(self):
+        frame = mock.Mock()
+        frame.evaluate.return_value = []
+        self.assertEqual(LeverAdapter().parser_values(frame), {})
+
+
+# --- The student's choice of a file, as the press listener reports it ---------------------------------------------------------------------------
+
+class StudentFileSignalTests(unittest.TestCase):
+    SHA = "ab" * 32
+
+    def agent(self, adapter=None, phase=None):
+        agent = ApplyAgent(mode="handoff", adapter=adapter or LeverAdapter())
+        if phase:
+            agent._phase = phase
+        return agent
+
+    @staticmethod
+    def call(agent, payload):
+        agent._on_binding({"name": apply_agent.PRESS_BINDING, "payload": payload})
+
+    def test_a_choice_in_the_students_turn_lets_one_read_pass_and_its_hash_follows_under_its_own_number(self):
+        agent = self.agent(phase=apply_agent.PHASE_STUDENT)
+        self.call(agent, "file:1:file1.pdf")
+        self.assertEqual((agent._state.student_files_chosen, [number for number, _ in agent._open_choices]), (1, [1]))
+        self.call(agent, "file:2:file2.pdf")
+        self.assertEqual((agent._state.student_files_chosen, [number for number, _ in agent._open_choices]), (2, [1, 2]))
+        self.call(agent, f"sha:2:{self.SHA}")   # the second one's hash first: it still finds its own choice
+        self.call(agent, "sha:1:")
+        self.assertEqual(agent._choice_digests, {2: self.SHA, 1: ""})
+
+    def test_the_rules_are_given_the_name_and_hash_of_the_oldest_open_choice_and_nothing_once_it_is_used_or_has_run_out(self):
+        agent = self.agent(phase=apply_agent.PHASE_STUDENT)
+        self.call(agent, "file:1:first.pdf")
+        self.call(agent, "file:2:second.pdf")
+        self.assertEqual((agent._state.student_file_name, agent._state.student_file_sha256), ("first.pdf", ""))
+        self.call(agent, f"sha:2:{self.SHA}")
+        self.assertEqual((agent._state.student_file_name, agent._state.student_file_sha256), ("first.pdf", ""), "the second choice's hash is not the first one's")
+        self.call(agent, f"sha:1:{'cd' * 32}")
+        self.assertEqual((agent._state.student_file_name, agent._state.student_file_sha256), ("first.pdf", "cd" * 32))
+        agent._open_choices.pop(0)
+        agent._choice_names.pop(1)
+        agent._publish_open_choice()
+        self.assertEqual((agent._state.student_file_name, agent._state.student_file_sha256), ("second.pdf", self.SHA))
+        with mock.patch.object(apply_agent, "STUDENT_FILE_WINDOW_S", 0.05):
+            time.sleep(0.15)
+            agent._expire_student_choices()
+        self.assertEqual((agent._state.student_file_name, agent._state.student_file_sha256, agent._choice_names), ("", "", {}))
+
+    def test_a_hash_for_a_choice_nobody_made_is_ignored(self):
+        agent = self.agent(phase=apply_agent.PHASE_STUDENT)
+        self.call(agent, "file:1:file1.pdf")
+        self.call(agent, f"sha:7:{self.SHA}")
+        self.assertEqual(agent._choice_digests, {})
+
+    def test_a_choice_before_the_turn_or_after_the_hand_over_or_on_another_ats_counts_for_nothing(self):
+        for label, agent in (
+            ("the app's fill", self.agent(phase=apply_agent.PHASE_FILL)),
+            ("after the hand-over", self.agent(phase=apply_agent.PHASE_AFTER_HAND_OVER)),
+            ("Greenhouse", self.agent(GreenhouseAdapter(), phase=apply_agent.PHASE_STUDENT)),
+        ):
+            with self.subTest(case=label):
+                self.call(agent, "file:1:file1.pdf")
+                self.call(agent, f"sha:1:{self.SHA}")
+                self.assertEqual((agent._state.student_files_chosen, agent._open_choices, agent._choice_digests), (0, [], {}))
+
+    def test_anything_but_the_listeners_words_is_ignored(self):
+        agent = self.agent(phase=apply_agent.PHASE_STUDENT)
+        for payload in ("", "File", "file", "file:", "file:x", "file:1 ", "file:1", "file:1:", "file:1:a b.pdf", "file:1:a/b.pdf", "file:1:" + "a" * 3001, "file:1:é", "file:1:a%FF.pdf", "file:1234567890", "sha:", "sha:1", "sha:1:xyz", f"sha:1:{self.SHA.upper()}", f"sha:1:{self.SHA}0", 1, None, {"file": 1}):
+            self.call(agent, payload)
+        self.assertEqual((agent._state.student_files_chosen, agent._open_choices, agent._choice_digests), (0, [], {}))
+        agent._on_binding({"name": "somebodyElse", "payload": "file:1"})
+        self.assertEqual(agent._state.student_files_chosen, 0)
+
+    def test_a_choice_no_read_used_runs_out_and_takes_its_allowance_with_it(self):
+        agent = self.agent(phase=apply_agent.PHASE_STUDENT)
+        self.call(agent, "file:1:file1.pdf")
+        self.call(agent, "file:2:file2.pdf")
+        with mock.patch.object(apply_agent, "STUDENT_FILE_WINDOW_S", 0.05):
+            time.sleep(0.15)
+            self.call(agent, "file:3:file3.pdf")   # a new one: the two before it have run out
+            self.assertEqual((agent._state.student_files_chosen, [number for number, _ in agent._open_choices]), (1, [3]))
+            time.sleep(0.15)
+            agent._expire_student_choices()
+        self.assertEqual((agent._state.student_files_chosen, agent._open_choices), (0, []))
+        self.assertFalse(agent._file_choice_arrives(), "an expired choice still let a read through")
+
+    def test_the_listener_counts_only_a_trusted_change_of_the_pages_file_box_in_the_application_form_within_its_limit_and_only_on_a_board_whose_page_reads_a_file_at_once(self):
+        source = apply_agent.press_listener(LEVER_ROUTE_POLICY.navigation_hosts, LeverAdapter.press_selector, LEVER_ROUTE_POLICY.navigation_hosts,
+                                            LeverAdapter.file_selector, LeverAdapter.file_limit_bytes)
+        for host in lever.LEVER_HOSTS:
+            self.assertIn(f'"{host}"', source)
+        self.assertEqual(source.count("isTrusted"), 2, "each of the two kinds of event is checked for the browser's own mark")
+        reads = re.search(r"const filesRead = (\[[^\]]*\])\.indexOf", source)
+        self.assertEqual(sorted(json.loads(reads.group(1))), sorted(lever.LEVER_HOSTS), "only a board whose page reads a file at once has its files looked at")
+        self.assertIn("box.type === 'file'", source)
+        self.assertIn("form#application-form", source)
+        self.assertIn('const fileBox = "input[name=\\"resume\\"]";', source, "only the box the page reads is listened to")
+        self.assertIn("const fileLimit = 104857600;", source, "a file the page refuses as too big is not a choice")
+        self.assertIn("box.matches(fileBox)", source)
+        self.assertIn("'file:' + id", source)
+        self.assertIn("'sha:' + id + ':'", source, "a hash carries the number of its choice")
+        greenhouse = apply_agent.press_listener(GREENHOUSE_ROUTE_POLICY.navigation_hosts, GreenhouseAdapter.press_selector)
+        self.assertEqual(json.loads(re.search(r"const filesRead = (\[[^\]]*\])\.indexOf", greenhouse).group(1)), [], "a Greenhouse page's files are never opened")
+
+    def test_the_agent_names_file_hosts_only_when_its_policy_has_a_resume_post_path_and_the_adapters_box_and_limit(self):
+        text = helpers_source.apply_modules()["apply/agent.py"]
+        self.assertIn("self._policy.navigation_hosts if self._policy.resume_post_path else ()", text)
+        self.assertIn("self.adapter.file_selector, self.adapter.file_limit_bytes", text)
+
+    def test_only_levers_adapter_names_a_file_box_and_it_is_the_resume_box(self):
+        self.assertEqual((agent_types.AdapterBase.file_selector, agent_types.AdapterBase.file_limit_bytes), ("", 0))
+        self.assertEqual((GreenhouseAdapter.file_selector, GreenhouseAdapter.file_limit_bytes), ("", 0))
+        self.assertEqual((LeverAdapter.file_selector, LeverAdapter.file_limit_bytes), ('input[name="resume"]', 100 * 1024 * 1024))
+        self.assertIn('const fileBox = "";', apply_agent.press_listener(["jobs.lever.co"], "#x", ["jobs.lever.co"]))
+        self.assertIn("if (!event.isTrusted || !filesRead || !fileBox) return;", apply_agent.press_listener(["jobs.lever.co"], "#x", ["jobs.lever.co"]))
+
+    def test_an_unasked_read_waits_no_grace_when_it_cannot_be_the_students(self):
+        for agent in (self.agent(phase=apply_agent.PHASE_FILL), self.agent(GreenhouseAdapter(), phase=apply_agent.PHASE_STUDENT)):
+            started = time.monotonic()
+            self.assertFalse(agent._file_choice_arrives())
+            self.assertLess(time.monotonic() - started, apply_agent.PRESS_GRACE_S / 2)
+
+
+# --- The field a refusal names ------------------------------------------------------------------------------------------------------------------
+
+class FirstErrorTests(unittest.TestCase):
+    """After a 4xx the run names the first field the PAGE marks invalid, not the first one the browser finds empty (docs/phase5-lever-handoff-spec.md 6.13)."""
+
+    def named(self, invalid):
+        agent = ApplyAgent(mode="handoff", adapter=LeverAdapter())
+        frame = mock.Mock()
+        frame.evaluate.return_value = {"invalid": invalid}
+        return agent._first_error_question(frame)
+
+    def test_a_field_the_page_marked_wins_over_an_earlier_one_that_is_only_empty(self):
+        found = self.named([
+            {"key": "name", "question": "Full name", "reason": "required and empty"},
+            {"key": "email", "question": "Email", "reason": "marked invalid by the form"},
+        ])
+        self.assertEqual(found, "Email")
+
+    def test_with_nothing_marked_the_first_the_browser_finds_invalid_is_named_as_before(self):
+        self.assertEqual(self.named([{"key": "name", "question": "Full name", "reason": "required and empty"}]), "Full name")
+
+    def test_nothing_invalid_names_nothing(self):
+        self.assertEqual(self.named([]), "")
+
+    def test_the_reason_the_agent_looks_for_is_the_one_the_independent_check_gives(self):
+        from opportunity_app.apply import checks
+
+        self.assertIn(f'"{apply_agent.MARKED_BY_PAGE}"', checks.REQUIRED_CHECK_SCRIPT)
 
 
 # --- The words once the file has gone ---------------------------------------------------------------------------------------------------------

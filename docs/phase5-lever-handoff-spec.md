@@ -1,8 +1,11 @@
 # Phase 5 addendum: "Apply for me" on Lever (Finish in browser only)
 
-- **Status:** draft 1, 2026-10-04; L1 and L2 answered 2026-10-07 (LV0 done, section 4). Nothing here is built. It is
-  the "Later: Lever" row of the Phase 5 milestone table (`phase5-apply-agent-spec.md` section 14, which said "Separate
-  specs"). Building LV1a onward still needs the student's go.
+- **Status:** draft 1, 2026-10-04; L1 and L2 answered 2026-10-07 (LV0 done, section 4). Built: LV1a and LV1b (the ATS seam), LV2 (read-only),
+  LV3 (the driver, `FakeLever`, the load-time recording of Q3 and Q4) and LV4 (Finish in browser works on a saved Lever posting: hand-over on the
+  apply POST, the outcome table, the record, the watch, the student's own attach; "As built (LV4)" after the milestone table says how and what
+  differs). Not built: LV5. Not yet seen on a real posting: Q1 and Q2, and the hCaptcha endpoints used after Submit (Q3). It is the "Later: Lever"
+  row of the Phase 5 milestone table (`phase5-apply-agent-spec.md` section 14, which said "Separate specs"). The rollout checklist's first real
+  Finish in browser still needs the student's go.
 - **Base:** `origin/main` 946c524 plus PR #81 (the `active_at_company` tick and the notice that every model call
   carries). Line numbers below are as of that tree.
 - **Relation to Phase 5:** this file changes only what Lever forces to change. Every Phase 5 rule not named here
@@ -135,7 +138,7 @@ Read on 2026-10-04 from six public boards. Each item is something the design rel
    `location`, `selectedLocation`, the `urls[...]` and `residentialLocation[...]` fields and `resumeStorageId`. A field
    counts as the user's only if it was **changed or pasted into and holds a value**, and only the parser's own field
    list is protected at all: `selectedLocation` is not, so a parse always rewrites it. The request carries two parts,
-   `resume` (under a file name the page sanitizes) and `accountId`. The limit is 100 MB. The form posts the file
+   `resume` (under a file name the page sanitizes: its `sanitizeFilename`, which turns each of `< > : " / \ | ? *` and each space into an underscore, trims dots and underscores from both ends, makes each run of underscores one, and names a file with nothing left `untitled`; it keeps parentheses, apostrophes, commas, `&`, `+`, `#` and letters of any script, read from `/js/parseResume.js` on 2026-10-08) and `accountId`. The limit is 100 MB. The form posts the file
    again at Submit, from the input, under its own name. Whether Lever refuses a Submit with no `resumeStorageId` is
    **[unseen]**.
 9. **Location is a typeahead that forgets.** Typing calls `GET /searchLocations?text=...` (debounced 500 ms, up to
@@ -394,7 +397,7 @@ behavior pinned (section 12, LV1). It does these things and nothing else:
   `resume_post` and `digest`; `Observation` gained `board_host` and `main_host`.
 - The resume POST is `checks.resume_post_decision`, reached from `route_decision` for a handoff POST to `/parseResume` on the posting's own host, in the fill or the student's
   turn. Each condition of section 7 is its own rule: `resume_post_off`, `resume_post_second`, `resume_post_content_type`, `resume_post_parts` (not exactly the two parts, in a
-  clean multipart body), `resume_post_file` (the fill only), `resume_post_account`, and `value_guard` for a planned value in the URL, a header, or anywhere outside the `resume` part.
+  clean multipart body), `resume_post_file` (the fill: not the planned file; the student's turn: bytes that are not the chosen file's), `resume_post_name` (the student's turn only), `resume_post_account`, and `value_guard` for a planned value in the URL, a header, or anywhere outside the `resume` part.
   Anything else to that path or host is refused by the general rules.
 - Two places where the build is narrower than the text above, until the recording of Q3 shows otherwise: Cloudflare's allowed writes are under `/cdn-cgi/challenge-platform/`
   and not all of `/cdn-cgi/` (`LEVER_CLOUDFLARE_PATH_PREFIXES`), and the hCaptcha hosts are the ones the load recording saw (`LEVER_CAPTCHA_ENDPOINTS`, the one tuple a recording extends).
@@ -406,13 +409,13 @@ behavior pinned (section 12, LV1). It does these things and nothing else:
 - The resume POST in the student's turn needs a file the student chose: `RouteState.student_files_chosen` (the driver raises it on a trusted selection in the page's file input,
   as the press listener reports Submit) pays for one read each, counted in `student_file_reads_passed`; a read with none left is refused (`resume_post_unasked`). Without that a page
   script could post any bytes as a "file" before Submit. The part's content type is always read for a planned value, and in the fill so is its file name unless it is exactly
-  `RouteState.resume_file_name`, the name the app attached the file under, or that name as the page rewrites it (each run of characters outside letters, digits, dot, underscore and hyphen made one underscore). The student's own file name is not read.
+  `RouteState.resume_file_name`, the name the app attached the file under, or that name as the page rewrites it (`sanitizeFilename`, 3.8; `lever.posted_file_name`, set as `RoutePolicy.resume_post_name`). In the student's turn the name is not read for a value but must be the chosen file's name as the page rewrites it (`resume_post_name`): the listener reports the browser's own name with the choice (`file:<n>:<name>`, percent-encoded so any name passes, and not reported at all past 3000 encoded characters or when it cannot be encoded), the agent applies the page's rule to it and gives the rules the oldest open choice's name and SHA-256 (`RouteState.student_file_name`, `student_file_sha256`). A file the browser reads from the student's disk reaches the route as an empty part, so an empty part is the file itself and any bytes in the part must hash to the chosen file's (the agent waits up to `STUDENT_HASH_WAIT_S` for the hash), or the read is refused as `resume_post_file`. Without that a script that stops the page's own read of the file and posts its own bytes would use the choice's allowance, and the record would name a file Lever never received. One limit remains: a script that posts an empty part under the right name cannot be told from the real read, and sends nothing.
 - Where the build is wider than the table: the `after hand-over` row lists writes to a CAPTCHA endpoint only, and `route_decision` also allows a write to Cloudflare's challenge path
   there, as in every other phase (the value guard still reads it). The Hosts paragraph names Cloudflare's beacons, so this follows that text; the owner decides whether the row should refuse it.
 - The value guard sees no cookies: the route handler gives `route_decision` Playwright's `request.headers`, which leaves them out (listed in `docs/known-defects.md`).
 
-**As built in LV3, the driver** (`apply/lever_adapter.py`, and the hooks it uses in `apply/agent.py`; reachable only in tests: no module of the app imports it, `ADAPTERS` and the factory
-do not hold it, and `AtsSpec.adapter_built` stays false, so the runner still answers `ats_not_built`; `tests/test_apply_lever_adapter.py` pins all of that and LV4 changes it):
+**As built in LV3, the driver** (`apply/lever_adapter.py`, and the hooks it uses in `apply/agent.py`; reachable only in tests at the time: no module of the app imported it, `ADAPTERS` and the factory
+did not hold it, and `AtsSpec.adapter_built` was false, so the runner answered `ats_not_built`; LV4 connected it, see "As built (LV4)" after the milestone table):
 
 - The hCaptcha hosts are now in the resolver rule. `LEVER_CAPTCHA_ENDPOINTS` holds what the load recording saw (Q3): `js.hcaptcha.com`, `hcaptcha.com`, `api.hcaptcha.com`,
   `api2.hcaptcha.com`, and `newassets.hcaptcha.com` under `/captcha/v1/`; `cdn.lever.co` and the logo bucket are static hosts; `bugs.lever.co` (exactly, never `lever.co` by suffix) and
@@ -454,9 +457,9 @@ do not hold it, and `AtsSpec.adapter_built` stays false, so the runner still ans
 - `option_pick` is a `CLICK_PURPOSES` entry. The denylist (`DENYLIST`: the two Submit controls) is the adapter's, it is the only place in `apply/` that names them, and `refuses` is a second
   lock behind the allowlist. The agent also gained the posting's host from the address the run was asked to open (`RouteState.board_host`, from the first request), the host fields of the
   outcome table's observation (`board_host`, `main_host`) and the observer's record of the apply path.
-- **Not built here.** The student's own attach in the window (10.4 item 11): the press listener names Lever's hosts and Submit button (see (2) below), and nothing raises
-  `RouteState.student_files_chosen`, so a file the student attaches would be refused and end their turn; the file-chosen signal is LV4. The hand-over and the four outcome rows against FakeLever (10.4
-  items 6 and 7) are LV4's; the generic hand-over path in `_route` is unchanged and its inputs for Lever are in place. Scrolling a target that the cookie banner covers and trying again
+- **Not built in LV3 (built in LV4).** The student's own attach in the window (10.4 item 11): the press listener named Lever's hosts and Submit button (see (2) below), and nothing raised
+  `RouteState.student_files_chosen`, so a file the student attached would have been refused and ended their turn; LV4 added the file-chosen signal to the same listener. The hand-over and the four outcome rows against FakeLever (10.4
+  items 6 and 7) were LV4's; the generic hand-over path in `_route` was unchanged and its inputs for Lever were in place. Scrolling a target that the cookie banner covers and trying again
   (6.6) is not built: a covered control is left for the student by the usual failure path. A preflight that checks the shape of Lever's pages (R1) is not built.
 - **After the first review of the driver.** (1) The wait for the read comes right after the file is in the input, before the app looks at the input at all (`_attach_entry`'s `after`): a
   check of the input that then fails (the page shows the name with its spaces squeezed, or not at all) can no longer let the fill go on while the page's reply is still to come. The file
@@ -465,7 +468,7 @@ do not hold it, and `AtsSpec.adapter_built` stays false, so the runner still ans
   endpoints are written only by the methods the recording saw (`Endpoint.methods`: POST to `api`, `api2` and `hcaptcha.com`; the script and frame hosts are only read). Cloudflare's
   allowed path stays `/cdn-cgi/challenge-platform/`, wider than the one beacon path recorded, because no interstitial has been recorded and its own requests are unseen; the file check
   above is what closes that path to the file as itself, and not to a copy a script has re-encoded (known defects). (3) Each run launches its own browser with the resolver rule of its own ATS (`ApplyAgent.run_launch_options`). (4) The independent check reads
-  the page's `eeo[...]` controls under the plan's names (`plan_key`). (5) The file posted under the attached name rewritten by the page (each run of odd characters one underscore) is
+  the page's `eeo[...]` controls under the plan's names (`plan_key`). (5) The file posted under the attached name rewritten by the page (3.8) is
   not read for a planned value. (6) A Cloudflare check served with 403 or 503 (`cf-mitigated: challenge`, or the title "Just a moment...") is waited for like a 200 with no form (6.3);
   the page is a challenge whenever a Lever host shows no form and is not `/thanks`, which is wider than 6.3's title or body test. (7) FakeLever's page makes the writes a live one makes
   as it loads (the three `/checksiteconfig` POSTs and Cloudflare's beacon), and `non_get_requests(noise=False)` leaves out only those.
@@ -1131,6 +1134,40 @@ change to AGENTS.md "Never auto-apply".
 | LV3 | Lever driver | `apply/lever_adapter.py`, the Lever `RoutePolicy`, the résumé flow (L1, L2), EEO and consent rules, `FakeLever`, the load-time recording of Q3 and the reply shape of Q4, both from a browser page load with GETs only, pinned in `endpoints.json`. Reachable only in tests and the sandbox. | 10.7 LV3 row green; the load-time part of Q3 and Q4 recorded. |
 | LV4 | Finish in browser on Lever | Hand-over interception on the apply POST, the outcome table, record, the watch, the `SETUP.md` step (the two switches, L1's wording), `docs/assisted-apply.md` and the Threat model row in `docs/THREAT_MODEL.md` for the résumé POST. | 10.7 LV4 row green; the e2e test green; `portability` workflow dispatched and green (this change touches processes). |
 | LV5 | Look up options for Lever's location (optional) | A browser lookup run for the `location` label, so the student picks from the page's own options. | The label store fills from a real option list in the sandbox. |
+
+**As built (LV4).** `adapter_built` is True for Lever and `agent.ADAPTERS` holds `LeverAdapter`; the check offers Finish in browser as Lever's one action when
+`apply_agent` and `apply_agent_lever` are on, and the start routes refuse any other mode with `ats_mode` (`ats_not_built` stays for an ATS whose driver is
+not connected). The hand-over interception, the outcome table and the record are the shared handoff code, run with Lever's `RoutePolicy`
+(`agent._hand_over_and_continue`, `checks.lever_outcome`, `runner.handoff_settlement`); the watch reads Lever's sender through `AtsSpec`.
+Where the build differs from, or adds to, the text above:
+
+- **The student's own attach (6.12 step 7, 10.4 item 11).** The agent's press listener (an isolated world the page cannot reach) also reports a *trusted*
+  `change` in the résumé box of `form#application-form` (`file`), and only for a file within the page's own limit (100 MB: the page sends nothing for a
+  larger one). A file chosen in another file box of the form (a cover letter card, which Lever's page does not read) is not reported, and nor is one the
+  page will refuse as too big, so neither leaves an allowance behind. A reported choice raises `RouteState.student_files_chosen`, which is what lets one
+  `/parseResume` through in the student's turn (`resume_post_decision`); each choice is good for one read and for `STUDENT_FILE_WINDOW_S` (10 seconds), after
+  which the agent forgets it. The request can be judged before the report arrives, so a refusal for "unasked" waits `PRESS_GRACE_S` for it, as a code POST
+  does for a press. The hash cannot come from the request (the bytes of a file picked from the disk are sent by the browser itself and the route sees an empty `resume`
+  part), so the listener numbers each choice (`file:<n>`) and sends the file's SHA-256 with the same number (`sha:<n>:<hex>`); a read that passes uses up
+  the oldest choice still open, and the record names that choice's hash, never a guess (empty when it has not arrived). After the page applies its answer (the "working" sign gone and the reply seen), the agent compares the reader's fields with what
+  they held at the last look before the read (`parser_values`) and says, by question, which changed: progress steps `resume_attached` (the file went; the
+  parent records `student_attached_resume` at once, so a stop or a restart afterwards reads "Lever received your résumé") and `resume_changed` (the
+  sentence, a student's-turn phase). The same fields join the "left for you" list in the final evidence. A field the student typed in the same quarter
+  second as the read is named too (the sentence says "check"; listed in `docs/known-defects.md`). `resume_sent_to_lever` stays the app's own attach only.
+- **The ready message** carries `resume_sent_to_lever`, so a run that ends with no result after the window is ready still says Lever holds the file.
+- **The second plan** the runner builds once the page is read now carries the student's L1 choice (it did not: a run with the setting on would have left the
+  résumé for the student). Fixed in a commit of its own, with the test that failed first.
+- **The field a refusal names (6.13 row 2)** is the first control the page marked `aria-invalid`; the browser's own `:invalid` on an empty required box
+  is used only when the page marked none (after a refusal Lever draws its form again, empty).
+- **Row 3 of 6.13 after a hand-over.** Once the parent has committed and the POST was continued, "nothing left the window" is never said: the agent turns
+  it into `unconfirmed`, as it does for Greenhouse. The row is reachable only as the pure table (`tests/test_apply_lever_outcome.py`).
+- **The "form tried to send somewhere" notice works on Lever.** The press listener is built per run from the adapter's `press_selector` (`#btn-submit,
+  #hcaptchaSubmitBtn`, built from the denylist), so `RouteState.last_press_at` is set on a Lever run and a refused send after the press tells the student
+  mid-turn (`form_elsewhere`), as on Greenhouse (`PressNoticeTests` in `test_apply_lever_handoff_browser.py`).
+- **Tests.** 10.2 outcome rows (`test_apply_lever_outcome.py`, wired by `test_apply_lever_handoff_browser.py`); 10.4 items 6, 7, 11, 14 and 15 in
+  `test_apply_lever_handoff_browser.py` (items 12, 13 and 16 are in `test_apply_lever_browser.py`; LV4's own item 13 test was dropped when LV3's, on the fixture with the statement box, covered the same rule); the e2e through the real runner and a spawned
+  child in `test_apply_lever_handoff_e2e.py`; the runner's side of the student's attach in `test_apply_lever_student_attach.py`; the sandbox's canned
+  handoff and the screens in `tests/ui/test_apply_lever_handoff.py`.
 
 **Rollout checklist** (after merge, in the student's own app; not a PR condition):
 

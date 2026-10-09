@@ -144,6 +144,10 @@ class LeverAgent(ApplyAgent):
         self._note(f"click:{purpose}", key)
         return super()._click(locator, purpose, key)
 
+    def keys_of_kind(self, prefix):
+        """The kinds of action the app took that begin with ``prefix`` ("click" for every click, whatever its purpose)."""
+        return [kind for kind, *_ in self.acts if kind.split(":")[0] == prefix]
+
     def keys(self, kind=None):
         return [key for what, key, *_ in self.acts if kind is None or what == kind]
 

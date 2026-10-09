@@ -149,6 +149,7 @@ class RoutePolicy:
     bind_submit_host: bool = False                    # the submit POST must go to the posting's own host (``RouteState.board_host``); with none bound, nothing is one
     security_code_posts: bool = True                  # one more POST to the submit path may pass for an emailed code (Greenhouse's); False where the ATS emails none (Lever, Q5)
     no_files_before_press: bool = False               # a write to a CAPTCHA endpoint or the bot check carries no file of any kind in the fill or before the student's first press (Lever's hCaptcha runs on Submit)
+    resume_post_name: Callable[[str], str] | None = None   # the file name its page posts for a file the browser calls this (Lever's own rewriting); None means unchanged
     outcome_table: Callable[..., Any] | None = None   # this ATS's own rows of the outcome table, which ``decide_outcome`` hands over to; None means the shared one
 
     def is_submit_request(self, host: str, path: str, submit_path: str, board_host: str = "") -> bool:
@@ -291,6 +292,11 @@ class RouteState:
     resume_posts_passed: int = 0
     student_files_chosen: int = 0
     student_file_reads_passed: int = 0
+    # The oldest choice no read has used yet, as the listener reported it (the agent keeps them current): the name the page gives that file
+    # (``_posted_name`` of the name on disk) and its hex SHA-256 ("" until the listener has worked it out, or when it could not). The read in the
+    # student's turn may carry that name only, and bytes only if they hash to that file's.
+    student_file_name: str = ""
+    student_file_sha256: str = ""
 
     @property
     def code_typing(self) -> bool:
@@ -685,9 +691,11 @@ def _is_resume_post(mode: str, phase: str, method: str, host: str, path: str, st
     )
 
 
-def _posted_name(attached: str) -> str | None:
-    """The file name as the page posts it: each run of characters outside letters, digits, dot, underscore and hyphen is one underscore. None for no name."""
-    return re.sub(r"[^A-Za-z0-9._-]+", "_", attached) if attached else None
+def _posted_name(attached: str, policy: RoutePolicy) -> str | None:
+    """The file name as the ATS's page posts it (``RoutePolicy.resume_post_name``: Lever's own rewriting). None for no name."""
+    if not attached:
+        return None
+    return policy.resume_post_name(attached) if policy.resume_post_name else attached
 
 
 def resume_post_decision(phase: str, request: RouteRequest, state: RouteState, policy: RoutePolicy) -> Allow | Abort:
@@ -695,7 +703,8 @@ def resume_post_decision(phase: str, request: RouteRequest, state: RouteState, p
 
     The caller has checked the address (``_is_resume_post``) and the value guard on the URL and the headers. Here: during the app's fill the
     student must have allowed it (``resume_upload_allowed``) and no earlier one may have passed (``resume_posts_passed``); the content type is
-    multipart/form-data; the body has exactly two parts, ``resume`` (a file; during the fill, the planned file's bytes by SHA-256) and
+    multipart/form-data; the body has exactly two parts, ``resume`` (a file; during the fill, the planned file's bytes by SHA-256; in the student's turn, the chosen file's name
+    as the page rewrites it, and an empty part or bytes that hash to the chosen file) and
     ``accountId`` equal to the page's own value (``page_account_id``); and nothing outside the ``resume`` part, which holds the student's
     own name and email by design, carries a planned value. Every failure is a refusal; nothing here ever allows by default.
     """
@@ -729,6 +738,14 @@ def resume_post_decision(phase: str, request: RouteRequest, state: RouteState, p
     digest = hashlib.sha256(resume.data).hexdigest()
     if filling and (not state.resume_sha256 or digest != state.resume_sha256.lower()):
         return abort("resume_post_file", "A request that sends a file other than the one the app planned was refused")
+    if not filling:
+        # The student's turn: a choice allows the read of that file and nothing else. A file the browser reads from the student's disk reaches the
+        # route as an empty part (it is not in the request's bytes), so empty is the file itself; any bytes in the part are a script's own unless
+        # they hash to the file the student chose. And the file name is text a script chooses: only the chosen file's name, as the page rewrites it.
+        if resume.data and (not state.student_file_sha256 or digest != state.student_file_sha256.lower()):
+            return abort("resume_post_file", "The page tried to send something other than the file you chose, so the app refused it")
+        if not state.student_file_name or resume.filename != state.student_file_name:
+            return abort("resume_post_name", "The page tried to send your file under a name other than its own, so the app refused it")
     try:
         account_id = account.data.decode("utf-8")
     except UnicodeDecodeError:
@@ -737,9 +754,9 @@ def resume_post_decision(phase: str, request: RouteRequest, state: RouteState, p
         return abort("resume_post_account", "A request that sends an account number other than the page's own was refused")
     rest = bytes(body)[:resume.start] + bytes(body)[resume.end:]
     # The part's bytes are the file (pinned by digest in the fill), but its type and its file name are text a script chooses. The type is always
-    # read. The name is read in the fill unless it is the one the app attached the file under, or that name as the page rewrites it; in the student's turn it is the student's own file's.
+    # read. The name is read in the fill unless it is the one the app attached the file under, or that name as the page rewrites it; in the student's turn it must be the chosen file's name as the page rewrites it, so it is not read for a value.
     kind = next((value for name, value in resume.headers if name == "content-type"), "")
-    if filling and resume.filename not in (state.resume_file_name, _posted_name(state.resume_file_name)):
+    if filling and resume.filename not in (state.resume_file_name, _posted_name(state.resume_file_name, policy)):
         rest += (resume.filename or "").encode("utf-8", errors="replace")
     leaked = leaked_field(RouteRequest(method="POST", url="", headers={"content-type": kind}, body=rest), state.values)
     if leaked:
@@ -1168,6 +1185,7 @@ LEVER_ROUTE_POLICY = RoutePolicy(
     confirmation_reached=_lever_confirmation_reached,
     challenge_path_prefixes=LEVER_CLOUDFLARE_PATH_PREFIXES,
     resume_post_path=lever.PARSE_RESUME_PATH,
+    resume_post_name=lever.posted_file_name,
     submit_content_types=("multipart/form-data",),
     bind_submit_host=True,
     security_code_posts=False,

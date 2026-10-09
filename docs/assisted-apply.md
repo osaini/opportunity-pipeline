@@ -221,12 +221,59 @@ column shows the answer the app would use today, which is what Finish in browser
 since the rehearsal. After Finish in browser the **What the app filled** column shows a value only when it is provably the
 one the app filled; after the student edits a field in the window the app does not claim to know what Greenhouse received.
 
+## Finish in browser on Lever
+
+A saved Lever posting (`jobs.lever.co` or `jobs.eu.lever.co`) gets the same **Apply for me** section as a Greenhouse role, with
+**Finish in browser** as its only action. There is no rehearsal, no **Look up options** and no Submit button for Lever. It needs
+two things on: **Apply for me**, and **Apply for me on Lever** under Profile › Automation. Without the second, the section says how to
+turn it on. Everything in the list above holds on Lever too: the student presses **Submit application**, the app never does, a consent box is
+ticked only from an exact stored statement, nothing that could carry the application leaves the window before the press, the same
+spacing, daily cap and one application per company in 30 days apply, and the tracker moves only when the student clicks **Mark as
+applied?**. What differs:
+
+1. **The résumé goes to Lever when it is attached.** Lever's page reads a résumé the moment it is attached, to fill in the form, and
+   that sends the file to Lever before anyone presses Submit. It happens when the student attaches it in the window too. Whether the
+   app does the attaching is the student's choice, **Let the app attach my résumé on Lever**, off until they turn it on. Before the
+   window opens, the start says which it is: "The app will attach your résumé. Lever reads it as soon as it is attached, so it is sent
+   to Lever before you press Submit." when it is on, and "Your résumé is left for you: attach it in the window. Lever reads it as soon
+   as it is attached, so it is sent to Lever before you press Submit." when it is off. With it on, the one request the app's attach
+   causes (a `POST` to `/parseResume` on the posting's own Lever address, carrying the file the student confirmed) is let through, and
+   no other upload is. The student's turn and the result then say "Your résumé was sent to Lever when it was attached."
+2. **A run that ends before Submit says Lever has the file.** After a résumé is sent, "Nothing was sent" would be only half true: a run the
+   student stops, or closes the window of, reads "Your application was not sent. Lever received your résumé." The application itself is
+   still not sent; the file is. A run that stops before its window is ready, when the app was to attach the file, says "Lever may have
+   received your résumé." because nothing recorded whether the attach happened. If the setting changed in another tab since the page
+   was loaded, pressing Finish in browser shows the new words and starts nothing.
+   A file the student attaches in the window goes to Lever the same way. The app lets that one request through, once for each file
+   the student chose in the form's résumé box, the one Lever's page reads, and only for a moment after the choice (the browser's own
+   event says so; a script that sets a file and fires its own event does not count, and neither does a file chosen in another box, such
+   as a cover letter, or one too big for the page to send), and then names, by question and never by value, the fields Lever filled from it: "Lever filled Current company
+   and Current location from the résumé you attached. Check them before you press Submit application." The app does not put them
+   back, because that would mean typing in the window while the student works in it. The run records how many files and the
+   SHA-256 of the last one Lever received, so a stop or a restart afterwards still says Lever received it.
+3. **Lever's guesses are cleared.** Once the file is attached, Lever fills your name, company, location and links from it, and some of
+   those are wrong. The app overwrites each with a confirmed fact; where it has none, it clears the field and lists it under **Left for
+   you**.
+4. **A CAPTCHA is the student's.** Lever runs an hCaptcha when Submit is pressed, and it may show a picture challenge. The app never
+   touches it, and it never presses Lever's Submit button or the hidden one behind it. The student's press reaches the app first: the
+   form's `POST` to the posting's own address is held until the app has recorded the hand-over, and goes on only then. A second press
+   is stopped. If the window is closed, or Stop is pressed, or the time is up, the run ends with the application not sent.
+   What Lever answers is read from the requests and the address, never from the page's wording: a `POST` answered 2xx or 3xx that
+   ends on the posting's own `/thanks` page with the form gone is a confirmation (the card asks **Mark as applied?**); a 4xx with the
+   form still there is a refusal and names the first field the page marked; anything else (a 5xx, a form drawn again, a page that
+   says thanks without the visit to `/thanks`) is "Your application may have been sent, but Lever did not show its confirmation page".
+5. **The confirmation email.** Lever's confirmation comes from `hire.lever.co`. The watch counts it, like Greenhouse's, only from a
+   sender Gmail vouched for and only for the posting it names, and its notices say "Lever". Lever has no emailed security code, so that
+   step does not apply.
+
 ## Verification gates
 
 The implementation is guarded at the API/DB boundary by
 `tests/test_extension_apply.py` and at the field-mutation boundary by
 `tests/extension/run_tests.mjs`; Finish in browser by `tests/test_apply_handoff.py`,
-`tests/test_apply_agent_browser.py` and `tests/ui/test_apply_handoff.py`. Normal release verification also runs the
+`tests/test_apply_agent_browser.py` and `tests/ui/test_apply_handoff.py`; on Lever, the words by `tests/test_apply_lever_resume_words.py`,
+the window by `tests/test_apply_lever_browser.py` and `tests/test_apply_lever_handoff_browser.py`, the runner, the child and the claim by
+`tests/test_apply_lever_handoff_e2e.py`, and the screens by `tests/ui/test_apply_lever_handoff.py`. Normal release verification also runs the
 Python API suite, Playwright UI suite, API fuzzer, visual checks, and PostgreSQL
 contracts. Never point any test at `data/platform.db`; browser and API tests use
 throwaway seeded databases.

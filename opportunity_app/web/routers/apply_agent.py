@@ -152,6 +152,14 @@ def apply_agent_settings(
         sets.append({"ats": apply_ats.LEVER.key, "name": apply_ats.LEVER.display_name,
                      "fields": list(apply_policy.label_fields_for(apply_ats.LEVER.key)),
                      "labels": apply_runs.list_ats_labels(conn, user_id, apply_ats.LEVER.key)})
+    # Greenhouse always; another ATS once it has handed-over attempts or its switch is on, so a rising rate for it is visible (spec 8).
+    statistics = [apply_watch.ats_statistics(conn, user_id, apply_ats.GREENHOUSE.key)]
+    for spec in apply_ats.REGISTRY:
+        if spec.key == apply_ats.GREENHOUSE.key:
+            continue
+        entry = apply_watch.ats_statistics(conn, user_id, spec.key)
+        if entry["handed_over"] or (spec.key == apply_ats.LEVER.key and lever_on):
+            statistics.append(entry)
     return {
         "mode": automation_core.mode(conn, user_id, "apply_agent"),
         "requirement": apply_runs.setup_requirement(conn, user_id),
@@ -163,11 +171,11 @@ def apply_agent_settings(
         "label_fields": list(apply_policy.ALLOWED_ATS_LABEL_FIELDS),
         # The same for every ATS whose form has lists of its own (Lever's only once its switch is on), each with its own saved options.
         "ats_label_sets": sets,
-        # ``window``: whether Lever has a Finish in browser window yet; the page words what its two switches do for now from it.
+        # ``window``: whether Finish in browser can open a Lever form at all (its driver is built), which the settings page says in plain words.
         "lever": {"mode": "on" if lever_on else "off", "resume_upload": automation_core.mode(conn, user_id, "apply_lever_resume_upload"),
-                  "window": apply_ats.LEVER.adapter_built},
+                  "window": apply_ats.spec_for(apply_ats.LEVER.key).adapter_built},
         "evidence_days": apply_runs.evidence_days(),
-        "ats_statistics": [apply_watch.ats_statistics(conn, user_id)],
+        "ats_statistics": statistics,
     }
 
 

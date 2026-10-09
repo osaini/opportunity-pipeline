@@ -726,6 +726,64 @@ class HonestClockTests(WatchCase):
         self.assertEqual(self.watch(), self.zero(), "the other claim's email is too early")
 
 
+class LeverWatchTests(WatchCase):
+    """Lever's confirmation (docs/phase5-lever-handoff-spec.md 6.15): hire.lever.co is a sender of its own, the watch learns it per ATS, and
+    every sentence names Lever. Greenhouse's rules are unchanged: a Greenhouse sender is no evidence for a Lever application, and the other way round."""
+
+    LEVER_SENDER = "hire.lever.co"
+
+    def lever_claim(self, **kwargs):
+        return self.submitted(mode="handoff", ats="lever", board="harbor-demo", **kwargs)
+
+    def expired(self, **kwargs):
+        return self.lever_claim(handed=self.at(hours=-26), until=self.at(hours=-2), **kwargs)
+
+    def test_a_confirmation_from_lever_that_names_the_posting_confirms_a_lever_claim(self):
+        token = self.lever_claim()
+        self.mail(self.application_of(token), matched_by="job_id", domain=self.LEVER_SENDER, received=self.at(minutes=-30))
+        self.assertEqual(self.watch(), self.zero(email_confirmed=1))
+        self.assertEqual(self.claim_row(token)["verification"], "email_confirmed")
+
+    def test_an_unmatched_email_from_lever_that_names_the_company_is_only_possible_for_a_lever_claim(self):
+        token = self.lever_claim()
+        self.mail("", matched_by="", linked=False, received=self.at(minutes=-20), subject="Thanks for applying to Bluefin Robotics",
+                  domain=self.LEVER_SENDER)
+        self.assertEqual(self.watch(), self.zero(possible_email=1))
+        self.assertEqual(self.claim_row(token)["verification"], "awaiting_email", "it never confirms")
+
+    def test_a_greenhouse_sender_is_no_evidence_for_a_lever_claim_and_lever_is_none_for_a_greenhouse_one(self):
+        lever = self.lever_claim()
+        self.mail("", matched_by="", linked=False, received=self.at(minutes=-20), subject="Thanks for applying to Bluefin Robotics", domain="greenhouse-mail.io")
+        self.assertEqual(self.watch(), self.zero(), "a Greenhouse sender names the company, but the application is on Lever")
+        self.assertNotIn("possible_email_at", self.detail(lever))
+        with self.conn:
+            self.conn.execute("DELETE FROM application_submit_claims")
+            self.conn.execute("DELETE FROM application_mail_messages")
+        greenhouse = self.submitted()
+        self.mail("", matched_by="", linked=False, received=self.at(minutes=-20), subject="Thanks for applying to Bluefin Robotics", domain=self.LEVER_SENDER)
+        self.assertEqual(self.watch(), self.zero(), "and the other way round")
+        self.assertNotIn("possible_email_at", self.detail(greenhouse))
+
+    def test_a_released_lever_attempt_is_flipped_by_its_email_with_a_notice_that_says_lever(self):
+        token = self.raw_claim(state="released", mode="handoff", handed_over_at=iso(self.at(minutes=-40)), after_click=1, stage_policy="ask", ats="lever")
+        self.mail(self.application_of(token), received=self.at(minutes=-35), domain=self.LEVER_SENDER)
+        self.assertEqual(self.watch(), self.zero(resolved_by_email=1))
+        self.assertIn("Lever confirmed your application to Bluefin Robotics by email", self.notices())
+        self.assertNotIn("Greenhouse", " ".join(self.notices()))
+
+    def test_an_email_set_aside_unread_from_lever_with_no_match_stalls_the_watch(self):
+        # The reader knew the sender (it parsed; deciding failed). It is an address a confirmation comes from, so it might be the confirmation.
+        token = self.expired()
+        self.mail("", kind="", state="error", subject="", domain=self.LEVER_SENDER, matched_by="none", verified=0, received=self.at(hours=-20), linked=False)
+        self.assertEqual(self.watch(), self.zero(paused=1))
+        self.assertEqual(self.detail(token)["watch_paused"], apply_watch.READER_SET_ASIDE)
+
+    def test_the_card_names_lever_in_its_watching_line(self):
+        token = self.lever_claim()
+        card = apply_watch.card_states(self.conn, USER)[self.application_of(token)]
+        self.assertEqual((card["status"], card["ats"], card["ats_name"]), ("watching", "lever", "Lever"))
+
+
 class FinishInBrowserWatchTests(WatchCase):
     """D12 C on the student's answer: Finish in browser watches only when the watch is available; one-click always does."""
 
@@ -865,6 +923,17 @@ class StatisticsTests(WatchCase):
             "Of your last 3 submissions whose email watch finished, 1 got no confirmation email and 2 asked for a security code.",
         ])
 
+    def test_lever_emails_no_code_so_its_lines_never_count_security_codes(self):
+        self.submitted(verification="email_confirmed", ats="lever", handed=self.at(hours=-9))
+        self.submitted(verification="no_email_24h", ats="lever", handed=self.at(hours=-8))
+        lines = apply_watch.ats_statistics(self.conn, USER, "lever")["lines"]
+        self.assertEqual(lines, [
+            "Lever: 2 applications handed over, 2 submitted.",
+            "Confirmation emails: 1 arrived, 1 didn't come within 24 hours, 0 still being looked for.",
+            "Of your last 2 submissions whose email watch finished, 1 got no confirmation email.",
+        ])
+        self.assertNotIn("code", " ".join(lines).lower())
+
     def test_the_lines_read_right_with_one(self):
         self.submitted(verification="email_confirmed")
         lines = apply_watch.ats_statistics(self.conn, USER)["lines"]
@@ -897,7 +966,7 @@ class CardRouteCase(api_tests.ApplyApiCase):
         return self.browser.request(method, path, json=body, headers=self.csrf)
 
     def claim(self, *, state="unconfirmed", mode="handoff", policy="ask", verification="", stage="applying", job="job-a", after_click=1,
-              handed=None, instance=SERVER_INSTANCE):
+              handed=None, instance=SERVER_INSTANCE, ats="greenhouse"):
         """A claim on the seeded Acme application (created here), written directly."""
         self.serial += 1
         now = utc_now()
@@ -910,8 +979,8 @@ class CardRouteCase(api_tests.ApplyApiCase):
             self.conn.execute(
                 "INSERT INTO application_submit_claims(token, application_id, user_id, opportunity_id, instance, mode, state, after_click, ats, board_token, "
                 "job_ref, company_key, stage_policy, plan_hash, handed_over_at, heartbeat_at, verification, submitted_at, created_at, updated_at) "
-                "VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'greenhouse', 'acme', ?, 'acme robotics', ?, '', ?, ?, ?, ?, ?, ?)",
-                (f"tok-{self.serial}", f"app-{job}", api_tests.USER, job, instance, mode, state, after_click, f"acme/{self.serial}", policy,
+                "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'acme', ?, 'acme robotics', ?, '', ?, ?, ?, ?, ?, ?)",
+                (f"tok-{self.serial}", f"app-{job}", api_tests.USER, job, instance, mode, state, after_click, ats, f"acme/{self.serial}", policy,
                  handed, handed, verification, handed if state == "submitted" else None, now, now),
             )
         return f"tok-{self.serial}"
@@ -1007,6 +1076,21 @@ class CardRouteTests(CardRouteCase):
         stats = self.get("/api/v1/apply-agent/settings").json()["ats_statistics"]
         self.assertEqual([item["ats"] for item in stats], ["greenhouse"])
         self.assertEqual(stats[0]["lines"], ["No applications submitted with Apply for me on Greenhouse yet."])
+
+    def test_the_settings_count_lever_attempts_once_there_are_any(self):
+        self.claim(state="submitted", verification="awaiting_email", ats="lever")
+        stats = {item["ats"]: item for item in self.get("/api/v1/apply-agent/settings").json()["ats_statistics"]}
+        self.assertEqual(sorted(stats), ["greenhouse", "lever"], "a Lever attempt was never counted")
+        self.assertEqual((stats["lever"]["handed_over"], stats["lever"]["submitted"], stats["lever"]["watching"]), (1, 1, 1))
+        self.assertEqual(stats["greenhouse"]["handed_over"], 0, "the Lever attempt was counted as Greenhouse's")
+
+    def test_the_settings_show_lever_statistics_when_its_switch_is_on_even_with_no_attempt(self):
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, 'apply_agent_lever', 'on', ?)", (api_tests.USER, "2026-09-29T12:00:00+00:00"),
+            )
+        stats = {item["ats"]: item for item in self.get("/api/v1/apply-agent/settings").json()["ats_statistics"]}
+        self.assertEqual(stats["lever"]["lines"], ["No applications submitted with Apply for me on Lever yet."])
 
 
 if __name__ == "__main__":

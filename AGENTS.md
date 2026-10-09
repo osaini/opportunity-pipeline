@@ -153,7 +153,7 @@ keyboard and focus, responsive matrix, and the feature journeys. They need the s
 it works in any shell and sidesteps execution policy.
 
 Two more checks run only in CI unless you set them up: the Python browser tests
-(`xvfb-run python -m unittest tests.test_outreach_forms tests.test_apply_fixtures tests.test_apply_agent_browser tests.test_apply_handoff_e2e tests.test_apply_fake_lever tests.test_apply_lever_browser`, which skip
+(`xvfb-run python -m unittest tests.test_outreach_forms tests.test_apply_fixtures tests.test_apply_agent_browser tests.test_apply_handoff_e2e tests.test_apply_fake_lever tests.test_apply_lever_browser tests.test_apply_lever_handoff_browser tests.test_apply_lever_handoff_e2e`, which skip
 silently under plain `unittest` without Playwright) and the extension's real-Chromium suite
 (`npm ci`, then `npm run test:extension:browser`). `npm run check` (or
 `node scripts/check-js-syntax.mjs`) parses every browser, extension, Node-test and script file.
@@ -172,7 +172,7 @@ When you are asked "is this covered?", answer with the row, not the test count.
 | --- | --- | --- |
 | `tests/` (unittest, `pytest-unit.ini`) | Routes, DB, auth, business logic, and the source-text guards below. Authenticates with a bearer token, so it never exercises the CSRF path, which only applies to cookie-authenticated browser requests. | Anything in the browser scripts (`app*.js`) or `styles.css` beyond what a guard reads as text. |
 | `tests/ui/` (Playwright) | Real rendering, real event handlers, real cookies, console and network | Server internals; anything behind a feature flag or credential it does not have |
-| `browser-python` (`tests.test_outreach_forms`, `tests.test_apply_fixtures`, `tests.test_apply_agent_browser`, `tests.test_apply_handoff_e2e`, `tests.test_apply_fake_lever`, `tests.test_apply_lever_browser`) | The contact-form submitter, the Apply for me fixtures and fake Greenhouse, the apply agent and Finish in browser end to end (the real runner, a spawned child and the real driver), the fake Lever board and the Lever driver against it (résumé flow, location, request guard, hCaptcha; the driver is reachable only here until LV4), in a real Chromium | Anything not reachable from those fixtures; it skips silently where Playwright is missing (CI sets `PIPELINE_REQUIRE_BROWSER_TESTS=1` so it cannot) |
+| `browser-python` (`tests.test_outreach_forms`, `tests.test_apply_fixtures`, `tests.test_apply_agent_browser`, `tests.test_apply_handoff_e2e`, `tests.test_apply_fake_lever`, `tests.test_apply_lever_browser`, `tests.test_apply_lever_handoff_browser`, `tests.test_apply_lever_handoff_e2e`) | The contact-form submitter, the Apply for me fixtures and fake Greenhouse, the apply agent and Finish in browser end to end (the real runner, a spawned child and the real driver), the fake Lever board and the Lever driver against it (résumé flow, location, request guard, hCaptcha, the hand-over on the apply POST, the outcome table, the student's own attach, and the same end to end through the real runner and a spawned child), in a real Chromium | Anything not reachable from those fixtures; it skips silently where Playwright is missing (CI sets `PIPELINE_REQUIRE_BROWSER_TESTS=1` so it cannot) |
 | `scripts/run_api_fuzz.py` | Every operation in the schema, with generated input | Anything requiring a valid multi-step sequence; connector routes, admin routes, the outreach draft, call-prep, find-contacts and contact-form submit routes, and Apply for me check, answers and sensitive-answers are excluded (the list is in the script). Routes that need the student's browser session (`require_browser_session`: Apply for me's Finish in browser start, front, values, screenshots, review, cancel, claim resolve and mark-applied, and the sensitive-answer routes) answer 403 to the fuzzer's bearer token, which is not a server error, so no generated input reaches their bodies, validation or `preview_values`: `tests/test_apply_handoff.py` and `tests/test_apply_api.py` are the only cover for those |
 | `node tests/extension/run_tests.mjs` | The extension's engine, side panel and answer matching against hand-rolled DOM stubs | A real browser, real permission prompts, real pages |
 | `npm run test:extension:browser` | The MV3 extension in a persistent Chromium against a loopback ATS fixture | Real employer sites; the harness pre-grants the one optional permission headless Chromium cannot prompt for |
@@ -193,7 +193,7 @@ to `main`, except `portability`:
 | --- | --- | --- |
 | `test` | `compileall`; the unit suite in parallel; `tests.test_scheduled_tasks` and `tests.test_postgres` serially (postgres skips here); `check-js-syntax.mjs`; the extension unit tests; `pip-audit` | every run |
 | `ui` | `tests/ui` in Chromium, the `visual` marker deselected (baselines are per platform), traces kept on failure | every run |
-| `browser-python` | the six Playwright-driven unittest modules of section 3 under `xvfb-run` (the two Lever ones, `tests.test_apply_fake_lever` and `tests.test_apply_lever_browser`, add about 5.5 minutes run serially and headless on a 16-core machine), browser tests required, 40 minute limit | every run |
+| `browser-python` | the eight Playwright-driven unittest modules of section 3 under `xvfb-run` (the first two Lever ones, `tests.test_apply_fake_lever` and `tests.test_apply_lever_browser`, add about 5.5 minutes run serially and headless on a 16-core machine; the two Finish in browser ones, `tests.test_apply_lever_handoff_browser` and `tests.test_apply_lever_handoff_e2e`, were not timed on their own), browser tests required, 40 minute limit | every run |
 | `extension-browser` | `npm ci`, then `npm run test:extension:browser` | every run |
 | `api-fuzz` | `run_api_fuzz.py --max-examples 20` with the two virtualenvs | every run |
 | `postgres` | `tests.test_postgres` against a `postgres:17` service | every run |
@@ -272,7 +272,8 @@ its page shows what is missing. A rehearsal or an option lookup there returns a 
 seconds, with no browser. Nothing reaches Greenhouse. **Finish in browser** returns a canned handoff there (no window): the Your turn panel, the
 student's own press, and the result, with the knobs in `apply_fake_ats.CANNED`. The flag also seeds Harbor Demo Labs, a saved
 fictional Lever role served by `FakeLeverPageClient`, with Apply for me on Lever switched on: its page shows the read-only check
-and no window action.
+and **Finish in browser** as its only action, a canned handoff like Greenhouse's (the fake agent opens no window, whatever the driver does;
+"Let the app attach my résumé on Lever" starts off, and turning it on shows the start and the run say the résumé goes to Lever).
 
 It seeds a throwaway database from the same fixture the unittest suite uses,
 prints fixed tokens, and serves `http://127.0.0.1:8799`. Sign in by pasting

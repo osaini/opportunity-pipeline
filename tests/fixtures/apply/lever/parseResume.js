@@ -3,7 +3,7 @@
    script and not shaped around any adapter:
 
    - The résumé file input posts the file to POST /parseResume on the page's own origin as soon as it changes. The request
-     has two parts, `resume` (under a file name the page sanitizes) and `accountId` (the page's own hidden field). A file
+     has two parts, `resume` (under a file name the page sanitizes: Lever's own rule, `lever.posted_file_name`) and `accountId` (the page's own hidden field). A file
      over the limit is not sent and the oversize message shows.
    - On success the reply fills org, phone, name, email, location, the urls[...] fields and the residentialLocation[...]
      fields it has a value for, and the hidden resumeStorageId.
@@ -80,8 +80,9 @@
     if (storage && profile.resumeStorageId) storage.value = profile.resumeStorageId;
   }
 
+  // Lever's own sanitizeFilename (read from /js/parseResume.js on 2026-10-08): it keeps parentheses, apostrophes, commas and letters of any script.
   function safeName(name) {
-    return String(name || "resume").replace(/[^A-Za-z0-9._-]+/g, "_");
+    return String(name).replace(/[<>:"/\\|?*\s]/g, "_").replace(/^\.+|\.+$/g, "").replace(/^_+|_+$/g, "").replace(/_+/g, "_").replace(/^$/, "untitled");
   }
 
   input.addEventListener("change", function () {

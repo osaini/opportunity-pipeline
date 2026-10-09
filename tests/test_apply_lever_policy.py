@@ -78,7 +78,8 @@ def apply_request(*, host=HOST, path=APPLY_PATH, headers=None, body=None):
 
 def state(**fields):
     base = dict(submit_path=APPLY_PATH, board_host=HOST, values=dict(VALUES), page_account_id=ACCOUNT, resume_upload_allowed=True, resume_sha256=RESUME_SHA,
-                resume_file_name=RESUME_NAME, student_files_chosen=9)
+                resume_file_name=RESUME_NAME, student_files_chosen=9,
+                student_file_name=RESUME_NAME, student_file_sha256=RESUME_SHA)
     base.update(fields)
     return RouteState(**base)
 
@@ -416,7 +417,9 @@ class BeforeHandOverCellTests(Cases):
 
     def test_the_resume_post_is_allowed_in_the_students_turn_for_any_file_the_student_chose_without_the_setting(self):
         st = state(resume_upload_allowed=False, resume_sha256="", resume_posts_passed=3, student_files_chosen=1)
-        self.assertAllowed(decide(STUDENT, resume_request(body=resume_body(b"%PDF a different file the student chose")), st), "resume_upload", resume_post=True)
+        other = b"%PDF a different file the student chose"
+        st.student_file_sha256 = hashlib.sha256(other).hexdigest()
+        self.assertAllowed(decide(STUDENT, resume_request(body=resume_body(other)), st), "resume_upload", resume_post=True)
 
     def test_every_other_write_is_refused_on_any_host_and_every_other_upload_too(self):
         cases = [
@@ -694,10 +697,34 @@ class ResumePostConditionTests(Cases):
     def test_the_planned_digest_is_compared_in_any_case(self):
         self.assertAllowed(decide(FILL, resume_request(), state(resume_sha256=RESUME_SHA.upper())), "resume_upload")
 
-    def test_the_resume_part_is_any_file_in_the_students_turn(self):
-        for data in (b"%PDF something else", b"", b"x" * 5000):
+    def test_the_resume_part_in_the_students_turn_is_empty_as_a_file_from_their_disk_is_or_hashes_to_the_file_they_chose(self):
+        # The browser reads a file from the student's disk itself, so the route sees an empty part: that is the file. Bytes are the student's only if they hash to it.
+        for data in (b"", RESUME):
             with self.subTest(size=len(data)):
                 self.assertAllowed(decide(STUDENT, resume_request(body=resume_body(data))), "resume_upload")
+        chosen = b"%PDF a file the student chose"
+        st = state(student_file_sha256=hashlib.sha256(chosen).hexdigest().upper())
+        self.assertAllowed(decide(STUDENT, resume_request(body=resume_body(chosen)), st), "resume_upload", digest=hashlib.sha256(chosen).hexdigest())
+
+    def test_bytes_that_are_not_the_file_the_student_chose_are_refused_in_the_students_turn(self):
+        """A script that takes the read a choice allows and posts its own bytes: the page's own read may never happen, so nothing else would notice."""
+        for data in (b"%PDF something else", b"x" * 5000, RESUME + b" ", b"answers: sam.rivera@example.test"):
+            with self.subTest(size=len(data)):
+                decision = decide(STUDENT, resume_request(body=resume_body(data)))
+                self.assertAborted(decision, "resume_post_file")
+                self.assertNotIn("sam.rivera", repr(decision.record("POST")))
+        # No hash yet (the listener had not worked it out, or could not): bytes cannot be shown to be the file's.
+        self.assertAborted(decide(STUDENT, resume_request(body=resume_body(RESUME)), state(student_file_sha256="")), "resume_post_file")
+        # An empty part with no hash needed still passes.
+        self.assertAllowed(decide(STUDENT, resume_request(body=resume_body(b"")), state(student_file_sha256="")), "resume_upload")
+
+    def test_the_file_name_in_the_students_turn_is_the_chosen_files_as_the_page_rewrites_it_and_no_other(self):
+        for name in ("answers sam.rivera@example.test.pdf", "Samantha_Rivera_Resume.PDF", "Samantha_Rivera_Resume.pdf ", "other.pdf", "", "x.pdf\n"):
+            with self.subTest(filename=name):
+                self.assertAborted(decide(STUDENT, resume_request(body=resume_body(RESUME, filename=name))), "resume_post_name")
+        # No name known: nothing to compare it with, so no name passes.
+        self.assertAborted(decide(STUDENT, resume_request(), state(student_file_name="")), "resume_post_name")
+        self.assertAllowed(decide(STUDENT, resume_request(body=resume_body(RESUME, filename="cv.pdf")), state(student_file_name="cv.pdf")), "resume_upload")
 
     def test_the_students_turn_needs_a_file_the_student_chose_for_each_read(self):
         for chosen in (0, -1):
@@ -787,8 +814,8 @@ class ResumePostConditionTests(Cases):
         self.assertAborted(decide(FILL, resume_request(), state(resume_file_name="")), "value_guard")
         self.assertAborted(decide(FILL, resume_request(body=resume_body(filename="Samantha_Rivera_Resume (2).pdf"))), "value_guard")
 
-    def test_the_fill_lets_the_attached_name_pass_as_the_page_posts_it_with_each_run_of_odd_characters_made_one_underscore(self):
-        # The page sanitizes the name it posts (the stand-in turns each run of characters outside letters, digits, dot, underscore and hyphen into one underscore).
+    def test_the_fill_lets_the_attached_name_pass_as_the_page_posts_it_with_each_space_made_an_underscore(self):
+        # The page sanitizes the name it posts by Lever's own rule (``lever.posted_file_name``; tests/test_apply_lever_file_name.py holds the rule itself).
         # A name that holds a planned value is still the planned file, and only the attached name and that one rewriting of it are let through.
         attached = "Resume 555-0100.pdf"
         st = state(values={**VALUES, "phone": "555-0100"}, resume_file_name=attached)
@@ -805,7 +832,8 @@ class ResumePostConditionTests(Cases):
 
     def test_the_students_turn_reads_the_content_type_of_the_resume_part_and_not_the_name_of_the_students_own_file(self):
         self.assertAborted(decide(STUDENT, resume_request(body=resume_body(content_type="application/x-sam.rivera@example.test"))), "value_guard")
-        self.assertAllowed(decide(STUDENT, resume_request(body=resume_body(filename="Samantha Rivera - Springfield, Example State.pdf"))), "resume_upload")
+        own = "Samantha_Rivera_-_Springfield_Example_State.pdf"   # a name that holds planned values is still the student's own file's
+        self.assertAllowed(decide(STUDENT, resume_request(body=resume_body(filename=own)), state(student_file_name=own)), "resume_upload")
 
     def test_only_the_resume_part_is_exempt_the_rest_of_the_body_is_checked(self):
         # An account number that is the page's own but is also a planned value: the page's value is not the student's, so this is a planted fixture.

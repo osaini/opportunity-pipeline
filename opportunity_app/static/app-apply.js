@@ -37,7 +37,20 @@
   const WINDOW_NOTE = "A Chromium window is open. You can watch, but please don't type in it.";
   // Finish in browser (apply/runner.py, docs/assisted-apply.md): the app fills the form in a window and the student presses Submit.
   const handoffHelp = (name) => `Opens a Chromium window and fills the form. You complete what is left and press Submit application yourself. Your application is not sent until you do. To find options for typeahead fields, the app sends what is typed there to ${name}'s lookup service.`;
+  // Lever reads a résumé as soon as it is attached, so it is sent to Lever before the student presses Submit (spec L1). Finish in browser says what
+  // happens to the file before the window opens: the app attaches it only when the student turned on Let the app attach my résumé on Lever (Profile, Automation, Applications), else it is theirs to attach.
+  const LEVER_RESUME_BY_APP = "The app will attach your résumé. Lever reads it as soon as it is attached, so it is sent to Lever before you press Submit.";
+  const LEVER_RESUME_BY_YOU = "Your résumé is left for you: attach it in the window. Lever reads it as soon as it is attached, so it is sent to Lever before you press Submit.";
+  let applySummaryCount = 0;
+  // Fired on the document by syncAutomationControls (app-automation.js) with the settings, whenever the switches are read or saved.
+  const AUTOMATION_SYNCED = "opportunity:automation-synced";
+  const RESUME_SENT_LINE = "Your résumé was sent to Lever when it was attached.";
+  // A form with a Finish in browser window and no rehearsal (Lever): the section reads the form and starts nothing by itself.
+  const HANDOFF_ONLY_NOTE = "Opening this only reads the form: it changes nothing in your tracker, and nothing is filled or sent. Finish in browser fills the form in a window, and you press Submit application yourself.";
   const STOP_HELP = "Closes the window. Nothing is sent.";
+  // Once the file is with Lever, "nothing is sent" would not be the whole truth: the application is not sent, and Lever already has the résumé.
+  const STOP_HELP_RESUME_SENT = "Closes the window. Your application is not sent.";
+  const LEVER_RESUME_CHANGED = "The setting for attaching your résumé changed since this page was loaded. Read the line above the button, then press Finish in browser again.";
   const FRONT_HELP = "If it doesn't appear, click Chromium in your taskbar.";
   const TURN_ERROR_HELP = "If the form shows an error, fix that field in the window and press Submit application again. Press Stop only if you want to give up; the app will tell you whether anything was sent.";
   const LEAVING_SOON_MS = 2 * 60 * 1000;
@@ -418,7 +431,10 @@
     const line = element("p", "apply-source profile-help");
     const words = [posting.title, posting.company].filter(Boolean).join(" at ");
     line.append("Read from ");
-    if (posting.url) {
+    // On Lever the address is the live application form: with Finish in browser offered for this role it is only named, never linked, so the
+    // form is filled and sent through the app (and its guard against a second application), never in a tab beside it.
+    const formOutside = result.ats === "lever" && !(result.offers && !result.offers.handoff);
+    if (posting.url && !formOutside) {
       const link = externalLink(posting.url, words);
       line.appendChild(link);
     } else {
@@ -503,7 +519,7 @@
   const runIsOver = (view) => view.status === "finished" || Boolean(view.stalled);
 
   // The run phases in which a Finish in browser run is the student's (or past their Submit), not the app's filling.
-  const TURN_PHASES = ["your_turn", "form_elsewhere", "submitting", "security_code", "code_typed", "code_yours", "challenge"];
+  const TURN_PHASES = ["your_turn", "form_elsewhere", "resume_changed", "submitting", "security_code", "code_typed", "code_yours", "challenge"];
 
   // The result panels whose Answer column is on screen. Signing out takes the column away: it holds the student's answers.
   const valuePanels = new Set();
@@ -780,6 +796,7 @@
     const until = element("p", "profile-help apply-turn-until");
     const soon = element("p", "apply-limit apply-turn-soon");
     soon.setAttribute("role", "status");
+    const resume = element("p", "profile-help apply-resume-sent");
     const lists = element("div", "apply-turn-lists");
     const actions = element("div", "apply-turn-actions");
     const stop = element("button", "secondary-button", "Stop");
@@ -801,7 +818,7 @@
     const frontBox = element("div", "apply-turn-action");
     frontBox.append(front, frontHelp);
     actions.append(stopBox, frontBox);
-    node.append(step, until, soon, lists, actions, errorHelp, status);
+    node.append(step, until, soon, resume, lists, actions, errorHelp, status);
     // Each text is set only when it changes, so a screen reader is not told the same thing again at every poll.
     const setText = (target, text) => { if (target.textContent !== text) target.textContent = text; };
     let listed = "";
@@ -821,12 +838,16 @@
     guarded(stop, "Stop", "Stopping…", onStop);
     function update(fresh) {
       setText(step, fresh.summary);
-      // "form_elsewhere" is the same turn: the form tried to send somewhere the app stopped, and the student goes on or stops.
-      const turn = fresh.phase === "your_turn" || fresh.phase === "form_elsewhere";
+      // "form_elsewhere" is the same turn: the form tried to send somewhere the app stopped, and the student goes on or stops. So is "resume_changed":
+      // the page filled fields from the file the student attached, and the student checks them.
+      const turn = fresh.phase === "your_turn" || fresh.phase === "form_elsewhere" || fresh.phase === "resume_changed";
       const closes = turn && fresh.handoff_until ? clockTime(fresh.handoff_until) : "";
       setText(until, closes ? `The window closes at ${closes} if you haven't pressed Submit application.` : "");
       const left = turn && fresh.handoff_until ? new Date(fresh.handoff_until).getTime() - Date.now() : 0;
       setText(soon, left > 0 && left < LEAVING_SOON_MS ? "About 2 minutes left in the window" : "");
+      setText(resume, fresh.resume_sent_to_lever ? RESUME_SENT_LINE : "");
+      resume.hidden = !fresh.resume_sent_to_lever;
+      setText(stopHelp, fresh.resume_sent_to_lever ? STOP_HELP_RESUME_SENT : STOP_HELP);
       const signature = JSON.stringify([fresh.left_for_you, (fresh.fields || []).filter(isTickedStatement).map((field) => [field.key, field.links])]);
       if (signature !== listed) {
         listed = signature;
@@ -1093,6 +1114,10 @@
     if (when) node.appendChild(element("p", "profile-help apply-result-when", `${handoff ? "Finished" : "Rehearsed"} ${when}.`));
     const claim = handoff ? applyClaimBlock(view, settle) : null;
     if (claim) node.appendChild(claim);
+    // Lever has the file once it is attached, whatever came after; a result that already says it (not sent, but Lever received it) is not told twice.
+    if (handoff && view.resume_sent_to_lever && !view.summary.includes("received your résumé")) {
+      node.appendChild(element("p", "profile-help apply-resume-sent", RESUME_SENT_LINE));
+    }
     if (view.measured) node.appendChild(element("p", "apply-measured", view.measured));
     if (view.outcome === "rehearsed") {
       node.appendChild(element("p", `apply-clean ${view.clean ? "is-clean" : "is-gaps"}`, view.clean ? "Clean rehearsal" : "Not clean: the gaps below"));
@@ -1178,6 +1203,7 @@
     section.appendChild(element("p", "eyebrow", "Apply for me"));
     const summary = element("p", "apply-summary", `Checking the ${atsName(null)} form…`);
     summary.setAttribute("role", "status");
+    summary.id = `apply-summary-${applySummaryCount += 1}`;
     // The rehearsal (a run in a window, never sent) sits above the questions and keeps its state while they are rebuilt.
     const rehearse = element("div", "apply-rehearse");
     rehearse.hidden = true;
@@ -1225,15 +1251,24 @@
         let waiting = false;
         if (starter.kind === "handoff") {
           const ticks = handoffTicks();
+          starter.paintResume();
           starter.paintTicks(ticks);
           waiting = ticks.some((tick) => !ticked.has(tick.code));
         }
         const off = Boolean(blocked) || starter.busy || waiting;
         if (off) starter.button.setAttribute("aria-disabled", "true");
         else starter.button.removeAttribute("aria-disabled");
-        const note = blocked || (starter.busy ? "" : (other || (waiting ? "Tick the boxes above to go on." : "")));
+        // A button that is off because the check never read the form (the ATS's switch is off) for the very sentence the status line above already
+        // says does not say it again: it points at that line instead, so a screen reader still hears why.
+        const repeated = Boolean(blocked) && checked?.status === "unavailable" && blocked === checked.message;
+        const note = repeated ? "" : (blocked || (starter.busy ? "" : (other || (waiting ? "Tick the boxes above to go on." : ""))));
         starter.reason.textContent = note;
-        if (note) starter.button.setAttribute("aria-describedby", starter.reason.id);
+        // What the button reads out: the résumé sentence above it (Lever), then why it is off.
+        const described = [];
+        if (starter.resumeNote && !starter.resumeNote.hidden) described.push(starter.resumeNote.id);
+        if (repeated) described.push(summary.id);
+        else if (note) described.push(starter.reason.id);
+        if (described.length) starter.button.setAttribute("aria-describedby", described.join(" "));
         else starter.button.removeAttribute("aria-describedby");
       });
     }
@@ -1278,6 +1313,10 @@
 
     // Finish in browser: the app fills the form in a window and the student presses Submit there. Anything the app wants the
     // student to agree to first (a recent application to the company, a role Greenhouse took down) is a box to tick, never a default.
+    // Whether the plan has the app put the résumé in the form: the check's own résumé row says so, which is not the same as the switch being on
+    // (with no confirmed résumé the row is a question for the student, and the app attaches nothing).
+    const appAttachesResume = (result) => (result?.fields || []).some((field) => field.key === "resume" && ["fill", "deferred"].includes(field.disposition));
+
     function handoffControls(label, { help = true } = {}) {
       const box = element("div", "apply-start-box apply-handoff-start");
       const group = element("fieldset", "apply-ticks");
@@ -1302,11 +1341,22 @@
       reason.id = `apply-rehearse-reason-${starterCount += 1}`;
       const status = element("p", "form-status");
       status.setAttribute("role", "status");
-      box.append(group, button);
+      // What happens to the résumé, said above the button it goes with (Lever only: the check says which of the two it is).
+      const resumeNote = element("p", "profile-help apply-resume-start");
+      resumeNote.dataset.applyResumeStart = "";
+      resumeNote.id = `apply-resume-start-${starterCount += 1}`;
+      box.append(group, resumeNote, button);
       if (help) box.appendChild(element("p", "profile-help", handoffHelp(atsName(checked))));
       box.append(reason, status);
       const starter = {
-        kind: "handoff", button, reason, busy: false, fresh: true,
+        kind: "handoff", button, reason, resumeNote, busy: false, fresh: true,
+        paintResume() {
+          // Nothing to say about the file while the check has no form to read (the Lever switch is off, the posting is gone): there is no window to attach it in.
+          const words = checked?.ats === "lever" && ["ready", "needs_you"].includes(checked.status)
+            ? (appAttachesResume(checked) ? LEVER_RESUME_BY_APP : LEVER_RESUME_BY_YOU) : "";
+          resumeNote.textContent = words;
+          resumeNote.hidden = !words;
+        },
         paintTicks(ticks) {
           group.hidden = !ticks.length;
           const shown = [...rows.querySelectorAll("input")].map((input) => input.value).join("|");
@@ -1338,6 +1388,19 @@
         status.textContent = "Starting…";
         const epoch = state.sessionEpoch;
         try {
+          // The sentence above the button was true when the check was read. The setting may have changed since (in another tab), so a Lever start
+          // reads the check again and, when what the app would do with the résumé is no longer what the page said, shows the new words and starts nothing.
+          if (checked?.ats === "lever") {
+            const latest = await api(`/api/v1/apply-agent/opportunities/${encodeURIComponent(item.id)}/check`);
+            if (state.sessionEpoch !== epoch || stale()) return;
+            if (appAttachesResume(latest) !== appAttachesResume(checked)) {
+              paint(latest);
+              starter.busy = false;
+              syncStarters();
+              status.textContent = LEVER_RESUME_CHANGED;
+              return;
+            }
+          }
           const acknowledged = handoffTicks().map((tick) => tick.code).filter((code) => ticked.has(code));
           const view = await api(`${APPLY_API}/opportunities/${encodeURIComponent(item.id)}/handoffs`, {
             method: "POST",
@@ -1364,7 +1427,8 @@
       return box;
     }
 
-    // The actions the server says this posting's ATS has. Greenhouse has both; Lever has none yet, and the block then says so in plain words.
+    // The actions the server says this posting's ATS has. Greenhouse has both; Lever has Finish in browser only (and none until its switches and
+    // window are on, when the block says so in plain words).
     function startBlock() {
       const block = element("div", "apply-start-block");
       const offers = checked?.offers;
@@ -1605,10 +1669,11 @@
           row.appendChild(element("p", "profile-help", problem.message));
           // A kind of question the student could let the app answer says where, so it is not mistaken for a never.
           if (problem.action?.allowable) row.appendChild(element("p", "profile-help", "You can let the app answer this kind of question, once you add the answer yourself, in Apply for me settings under Automation."));
-          // A Lever question the app leaves to the student, or a location to choose, points at the posting where Lever's own form is.
-          // The sensitive questions it leaves for the student are done on Lever's page too, while Finish in browser is not there for Lever.
-          const doneOnLever = ["window", "label_needed"].includes(problem.kind) || (problem.action?.type === "manual" && result.offers && !result.offers.handoff);
-          if (result.ats === "lever" && doneOnLever && result.posting?.url) {
+          // A Lever question the app leaves to the student, or a location to choose, points at the posting where Lever's own form is, but only
+          // while Finish in browser is not there for this role: with it offered, the form is filled and sent through the app (and its guard against
+          // a second application), never in a second tab beside it.
+          const doneOnLever = ["window", "label_needed"].includes(problem.kind) || problem.action?.type === "manual";
+          if (result.ats === "lever" && doneOnLever && result.offers && !result.offers.handoff && result.posting?.url) {
             const link = element("p", "profile-help");
             link.appendChild(externalLink(result.posting.url, "Open the posting on Lever"));
             row.appendChild(link);
@@ -1663,7 +1728,8 @@
         details.appendChild(list);
         body.appendChild(details);
       }
-      body.appendChild(element("p", "apply-note", result.offers && !result.offers.rehearse ? READ_ONLY_NOTE : APPLY_NOTE));
+      const readOnly = result.offers && !result.offers.rehearse;
+      body.appendChild(element("p", "apply-note", readOnly ? (result.offers.handoff ? HANDOFF_ONLY_NOTE : READ_ONLY_NOTE) : APPLY_NOTE));
     }
 
     async function load(saved = "") {
@@ -1979,7 +2045,11 @@
       return statuses.get(ats);
     }
 
+    // The Lever switch the block was painted for: the lists and statistics it shows depend on it, so a change repaints the block (see below).
+    let paintedLever = null;
+
     function paint(settings) {
+      paintedLever = settings.lever?.mode ?? null;
       host.replaceChildren();
       if (settings.requirement) host.appendChild(element("p", "profile-help", `To turn it on: ${settings.requirement}.`));
       const limits = element("ul", "reason-list apply-limits");
@@ -1992,8 +2062,9 @@
         limits,
         element("p", "profile-help", `Screenshots of a filled form would be kept for ${settings.evidence_days} days, then deleted. Their fingerprints stay.`),
       );
+      // One list for each ATS the answer counts (each line names its ATS), under one heading.
+      if ((settings.ats_statistics || []).length) host.appendChild(element("h5", "", "How Apply for me has gone"));
       (settings.ats_statistics || []).forEach((entry) => {
-        host.appendChild(element("h5", "", "How Apply for me has gone"));
         const stats = element("ul", "reason-list apply-stats");
         entry.lines.forEach((line) => stats.appendChild(element("li", "", line)));
         host.appendChild(stats);
@@ -2094,14 +2165,17 @@
         return item;
       };
       // While Lever has no window (state.window false) the app attaches nothing on Lever, so the line says so, whichever way the switch is set.
-      const resumeWords = state.window
+      // With the Lever switch off there is no window either, so the line says when the choice starts to matter instead of sending the student to one.
+      const resumeWords = state.window && state.mode !== "on"
+        ? ". It takes effect once Apply for me on Lever is on. Lever reads a résumé as soon as it is attached, so with this on it is sent to Lever before you press Submit; with this off, you attach it yourself in the window."
+        : state.window
         ? ". Lever reads a résumé as soon as it is attached, so it is sent to Lever before you press Submit. With this off, you attach it yourself in the window."
         : ". The app cannot attach it on Lever yet, because Finish in browser is not available for Lever: you attach it yourself on Lever's application page. "
           + "Once it can, Lever reads a résumé as soon as it is attached, so with this on it is sent to Lever before you press Submit.";
       host.appendChild(element("h5", "", "Lever"));
       const about = element("ul", "reason-list apply-lever-settings");
       about.append(
-        line("Apply for me on Lever is ", word("apply_agent_lever", state.mode), ". With it on, a saved Lever role shows what the app would fill and what is missing. Filling a Lever form in a window is not available yet."),
+        line("Apply for me on Lever is ", word("apply_agent_lever", state.mode), `. With it on, a saved Lever role shows what the app would fill and what is missing${state.window ? ", and Finish in browser opens its form in a window for you to finish" : ". Filling a Lever form in a window is not available yet"}.`),
         line("Let the app attach my résumé on Lever is ", word("apply_lever_resume_upload", state.resume_upload), resumeWords),
       );
       host.append(about, element("p", "profile-help", "Both are switches under Applications, above. Each is off until you turn it on."));
@@ -2114,6 +2188,18 @@
         host.replaceChildren(element("p", "form-error", `Apply for me settings could not be loaded: ${error.message}`));
       }
     }
+
+    // The switches are in the list above and change while this block is on the page: when the Lever one does, what depends on it (Lever's saved
+    // options, its statistics, the wording of the résumé line) is read again. The listener goes when the block leaves the page.
+    function onSynced(event) {
+      if (!wrap.isConnected) {
+        document.removeEventListener(AUTOMATION_SYNCED, onSynced);
+        return;
+      }
+      const mode = (event.detail?.features || []).find((feature) => feature.key === "apply_agent_lever")?.mode;
+      if (paintedLever !== null && mode && mode !== paintedLever) load();
+    }
+    document.addEventListener(AUTOMATION_SYNCED, onSynced);
 
     host.appendChild(element("p", "empty-inline", "Loading…"));
     load();

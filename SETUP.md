@@ -718,19 +718,33 @@ fields too.
 
 7. **Lever (optional; ask, never turn on for them).** A saved Lever posting
    (`jobs.lever.co`, or `jobs.eu.lever.co`) gets the same "what's missing" view as a
-   Greenhouse role, read from the posting's own application page. Filling a Lever
-   form in a window is not available yet, so there is no rehearsal and no Finish in
-   browser for it, and the view says so. Two switches in Profile › Automation, both
-   off until the student turns them on, and the app never turns either on itself:
+   Greenhouse role, read from the posting's own application page. Its only action is
+   **Finish in browser** (no rehearsal, no Look up options): the app fills the form in
+   a window and the student presses Submit application, as on Greenhouse. Two switches
+   in Profile › Automation, both off until the student turns them on, and the app never
+   turns either on itself:
 
    - **Apply for me on Lever** lets Apply for me read a saved Lever role. It needs
      **Apply for me** on first.
    - **Let the app attach my résumé on Lever** is their answer to one question only
      they can answer: Lever reads a résumé the moment it is attached, which sends the
      file to Lever before they press Submit (the same happens when they attach it
-     themselves in the window). Say that plainly and ask. Off, the app attaches
-     nothing and the résumé stays on their "left for you" list. It needs the first
-     switch on.
+     themselves in the window). Say that plainly and ask. On, the start of every
+     Finish in browser says "The app will attach your résumé. Lever reads it as soon as it
+     is attached, so it is sent to Lever before you press Submit." and the run records it.
+     Off, the app attaches nothing and the start says the résumé is left for them to attach in
+     the window; it stays on their "left for you" list only if the form requires it. A run that ends before Submit
+     then reads "Your application was not sent. Lever received your résumé." once a résumé
+     has gone. It needs the first switch on.
+
+   Say two more things when you set this up. If the student attaches a résumé in the
+   window themselves, Lever reads it at once too: the window then names the fields Lever
+   filled from it (never their values), and the student checks them before pressing
+   Submit. And Lever shows an hCaptcha when Submit is pressed; it is the student's,
+   and the app never touches it. The first Finish in browser at a posting they really
+   want is the first time anyone sees what Lever answers after Submit, so sit with them
+   for it, with the confirmation email, and write down what you saw (the spec's open
+   questions Q1 and Q2).
 
    Lever's lists have one that matters here: **Location**. The student types the
    exact name as Lever's list spells it under Profile › Automation › Apply for me

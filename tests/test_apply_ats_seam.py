@@ -40,6 +40,7 @@ from opportunity_app.apply import (
     preflight as apply_preflight, runner as apply_runner, runs as apply_runs,
 )
 from opportunity_app.apply.agent_types import AgentJob, ApplyTimeouts, RunResult
+from opportunity_app.apply.lever_adapter import LeverAdapter
 from opportunity_app.apply.policy import SchemaField
 from opportunity_app.apply.runs import ClaimRefused
 from opportunity_app.apply.schema_client import GreenhouseSchemaClient
@@ -280,7 +281,8 @@ class AdapterProtocolTests(unittest.TestCase):
             "form_frame", "detect_page", "loader_paths", "uploads_on_attach", "reads_on_attach", "posting_ids", "lookup_token", "confirmation_ids",
             "security_code_prompt", "security_code_inputs", "captcha_widget",
             "control", "control_kind", "is_react_select", "field_container", "choices", "fill_location", "read_options",
-            "scan", "page_facts", "page_managed", "owns", "plan_key", "hidden_mismatch", "is_typeahead", "parse_state", "guessed_fields", "cleared", "refuses",
+            "scan", "page_facts", "page_managed", "owns", "plan_key", "hidden_mismatch", "is_typeahead", "parse_state", "guessed_fields", "parser_values", "cleared",
+            "refuses",
         })
 
     def test_the_agent_calls_nothing_on_its_adapter_that_the_protocol_does_not_name(self):
@@ -315,7 +317,7 @@ def build(factory, **more):
 class FactoryTests(unittest.TestCase):
     def test_every_registered_ats_whose_driver_is_built_has_an_adapter_and_the_reverse(self):
         self.assertEqual(set(apply_agent.ADAPTERS), {spec.key for spec in apply_ats.REGISTRY if spec.adapter_built})
-        self.assertFalse(apply_ats.LEVER.adapter_built, "Lever is read-only until its driver lands (LV3)")
+        self.assertTrue(apply_ats.LEVER.adapter_built, "Lever's driver is connected (LV4)")
 
     def test_greenhouse_gets_the_greenhouse_adapter_with_or_without_the_argument(self):
         factory = apply_agent.DefaultApplyAgentFactory()
@@ -326,9 +328,13 @@ class FactoryTests(unittest.TestCase):
         with self.assertRaises(apply_ats.UnknownAts):
             build(apply_agent.DefaultApplyAgentFactory(), ats="ashby")
 
+    def test_lever_gets_the_lever_adapter(self):
+        self.assertIs(type(build(apply_agent.DefaultApplyAgentFactory(), ats="lever").adapter), LeverAdapter)
+
     def test_an_ats_that_is_registered_but_has_no_driver_builds_no_agent_and_says_so(self):
-        with self.assertRaisesRegex(RuntimeError, "no driver for Lever"):
-            build(apply_agent.DefaultApplyAgentFactory(), ats="lever")
+        lonely = dataclasses.replace(apply_ats.LEVER, key="lonely", display_name="Lonely", adapter_built=False)
+        with mock.patch.object(apply_ats, "REGISTRY", (*apply_ats.REGISTRY, lonely)), self.assertRaisesRegex(RuntimeError, "no driver for Lonely"):
+            build(apply_agent.DefaultApplyAgentFactory(), ats="lonely")
 
     def test_the_adapter_is_chosen_through_the_registry(self):
         gone = dataclasses.replace(GREENHOUSE, key="elsewhere")
@@ -919,13 +925,14 @@ WORDS = dict(question="Why us?", n=7, host="apply.example-robotics.test")
 class SentenceParityTests(unittest.TestCase):
     """Every sentence that said "Greenhouse" now names the ATS it is told, and for Greenhouse says exactly what it said (frozen_pre_sentences)."""
 
-    def test_the_progress_steps_are_the_old_ones_and_only_five_name_the_ats(self):
-        self.assertEqual(set(agent_types.PROGRESS_STEPS), set(old_words.PROGRESS_STEPS))
+    def test_the_progress_steps_are_the_old_ones_and_the_two_lever_added_and_only_these_name_the_ats(self):
+        # Two steps are new, and a Greenhouse run never reports them: the student attached a file in a window whose page reads it at once, and the fields it filled.
+        self.assertEqual(set(agent_types.PROGRESS_STEPS), set(old_words.PROGRESS_STEPS) | {"resume_attached", "resume_changed"})
         for step, old_text in old_words.PROGRESS_STEPS.items():
             with self.subTest(step=step):
                 self.assertEqual(agent_types.progress_text(step, "Greenhouse", **WORDS), old_text.format(**WORDS))
         naming = {step for step, text in agent_types.PROGRESS_STEPS.items() if "{ats}" in text}
-        self.assertEqual(naming, {"open", "submitting", "security_code", "code_yours", "challenge"})
+        self.assertEqual(naming, {"open", "submitting", "security_code", "code_yours", "challenge", "resume_attached", "resume_changed"})
         self.assertEqual(agent_types.progress_text("open", "Second"), "Opening the Second form")
 
     def test_the_window_note_and_the_outcome_notes(self):

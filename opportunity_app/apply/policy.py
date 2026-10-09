@@ -763,7 +763,7 @@ def _plan_lever_file(item: SchemaField, entry: PlanField, ctx: _Context) -> Plan
         if ctx.sources.resume_upload:
             return None
         entry.problem_kind = "window"
-        entry.problem = f"Attach your résumé {ctx.there}"  # why the app doesn't is said once, in the note above the list (preflight.LEVER_RESUME_YOURS)
+        entry.problem = f"Attach your résumé {ctx.there}"  # why the app doesn't is said once: above Finish in browser's button, or in preflight.LEVER_RESUME_YOURS while Lever has no window
         return entry
     entry.problem_kind = "window"
     entry.problem = f'The app attaches no file for "{item.label}" on Lever. Attach it {ctx.there} if you want to'

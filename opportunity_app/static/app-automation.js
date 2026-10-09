@@ -203,6 +203,8 @@
       document.querySelectorAll(`[data-automation-word="${CSS.escape(feature.key)}"]`).forEach((word) => { word.textContent = feature.mode === "on" ? "on" : "off"; });
     });
     if (settings) paintAutomationPause(settings.paused);
+    // What is built from the switches somewhere else (Apply for me settings) follows them too.
+    if (settings) document.dispatchEvent(new CustomEvent("opportunity:automation-synced", { detail: settings }));
   }
 
   async function saveAutomationMode(key, value) {
