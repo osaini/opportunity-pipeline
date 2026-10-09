@@ -1891,11 +1891,15 @@ class FinishInBrowserTests(unittest.TestCase):
                 beacon: navigator.sendBeacon("/beacon", "Sam Rivera"),
                 keepalive: new Request("/keepalive", {method: "POST", body: "x", keepalive: true}).keepalive,
                 peer: typeof RTCPeerConnection,
+                // Every other way out no route sees: a peer connection or data channel (to a peer or a TURN server),
+                // QUIC, a WebSocket stream, a fetch kept past the page, and workers.
+                gone: ["webkitRTCPeerConnection", "RTCDataChannel", "WebTransport", "WebSocketStream", "fetchLater", "Worker", "SharedWorker"]
+                  .filter((name) => typeof window[name] !== "undefined"),
               };
             }"""))
 
         result, site, pressed = self.submit(page, student)
-        self.assertEqual(seen, [{"ran": [], "beacon": False, "keepalive": False, "peer": "undefined"}])
+        self.assertEqual(seen, [{"ran": [], "beacon": False, "keepalive": False, "peer": "undefined", "gone": []}])
         self.assertNothingSent(result, site, pressed)
 
     # --- not handed over -----------------------------------------------------------------------------------------
