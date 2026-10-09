@@ -16,8 +16,7 @@ and printed on startup.
 PIPELINE_SANDBOX_FAKE_APPLY=1 also turns Apply for me on for the seeded student, with a fake Greenhouse
 listing and a fake agent: Acme Robotics (saved) becomes a Greenhouse role, so the "what's missing" view has
 something to show. It seeds one fictional Lever role too (Harbor Demo Labs, saved), served by a fake page client, with Apply for
-me on Lever switched on, so the Lever "what's missing" view has something to show. The fake agent stands in for Lever's driver, so
-Lever's Finish in browser is offered here (and only here, in this process) and returns a canned handoff with no window, like Greenhouse's.
+me on Lever switched on, so the Lever "what's missing" view has something to show. Lever's Finish in browser returns a canned handoff with no window here, like Greenhouse's.
 It is the only action a Lever role has: no rehearsal, no Look up options, no Submit. "Let the app attach my résumé on Lever" starts off, as
 it does for every student: turn it on in the Apply for me settings to see the start say that the app attaches the résumé and the run record
 it, and see "Your application was not sent. Lever received your résumé." when you press Stop in the student's turn. A rehearsal or an option lookup on

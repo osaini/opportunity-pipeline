@@ -696,7 +696,7 @@ class CannedAgent:
             HANDOFF_NOT_SUBMITTED, HANDOFF_UNRECORDED, LEFT_FIELD, PROGRESS_STEPS, RunResult, progress_text,
         )
         from opportunity_app.apply.ats import name_of
-        from opportunity_app.apply.checks import UNCONFIRMED_NOTE as UNCONFIRMED_TEMPLATE
+        from opportunity_app.apply.checks import MARKED_WRONG_NOTE, REFUSED_NOTE, UNCONFIRMED_NOTE as UNCONFIRMED_TEMPLATE
 
         ats_name = name_of(self.ats)
         UNCONFIRMED_NOTE = UNCONFIRMED_TEMPLATE.format(ats=ats_name)
@@ -800,7 +800,9 @@ class CannedAgent:
                              after_click=True, evidence=evidence)
         if kind == "failed_4xx":
             evidence.update(submit_status=422)
-            refused = "Lever refused the form (HTTP 422): \"Current company\" is marked invalid" if self.ats == "lever" else 'Greenhouse marked "Why do you want to work here?" as wrong'
+            # Lever's sentence is the real driver's (REFUSED_NOTE, then MARKED_WRONG_NOTE for the field the page marked), so the sandbox shows what the student sees.
+            refused = (REFUSED_NOTE.format(ats=ats_name, status=422) + MARKED_WRONG_NOTE.format(ats=ats_name, question="Current company")
+                       if self.ats == "lever" else 'Greenhouse marked "Why do you want to work here?" as wrong')
             return RunResult("failed", [refused], plan=entries, plan_hash=plan_hash,
                              screenshots=shots, handed_over=True, after_click=True, evidence=evidence)
         code = {"prompted": False, "typed": False, "fallback": False, "posted": False, "rounds": 0, "auto_submit_blocked": False, "reason": ""}

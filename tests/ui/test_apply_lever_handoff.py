@@ -211,7 +211,7 @@ def test_a_refused_lever_form_names_lever_and_the_resume_went_with_it(canned_age
     section = open_lever(owner_page)
     finish_button(section).click()
     result = section.locator(".apply-result")
-    expect(result.locator(".apply-result-title")).to_contain_text("Lever refused the form (HTTP 422)", timeout=40_000)
+    expect(result.locator(".apply-result-title")).to_contain_text('Lever refused the form (HTTP 422). Lever marked "Current company" as wrong', timeout=40_000)
     expect(result.locator(".apply-resume-sent")).to_have_text(SENT)
     expect(result).not_to_contain_text("Greenhouse")
 
