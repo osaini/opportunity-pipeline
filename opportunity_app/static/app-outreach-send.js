@@ -335,7 +335,9 @@
     if (result.outcome === "submitted") {
       if (result.marked === false) return `Sent through ${item.company}'s contact form, but it could not be marked sent. Press "It arrived" to catch it up.`;
       const said = result.confirmation ? ` Their page said: "${result.confirmation}"` : "";
-      return `Sent through ${item.company}'s contact form.${said} ${item.company} is marked sent; replies are read from Gmail.`;
+      // Finish in browser: a box of the app's the student changed before pressing send is named.
+      const changed = result.note ? ` ${result.note}.` : "";
+      return `Sent through ${item.company}'s contact form.${said}${changed} ${item.company} is marked sent; replies are read from Gmail.`;
     }
     if (result.outcome === "unconfirmed") {
       return `The form was sent, but ${item.company}'s page did not say it arrived. Look for a confirmation email from them; if it came, press "It arrived".`;
@@ -347,16 +349,21 @@
     const label = inBrowser ? "Finish in browser" : retry ? "Checked — send the form again" : "Send through contact form";
     const button = element("button", inBrowser ? "secondary-button outreach-compose" : "primary-button outreach-compose outreach-send", label);
     button.type = "button";
-    if (inBrowser) button.title = "Opens a browser window on this computer with the form filled in. Solve the CAPTCHA there; the app sends the form once it is solved.";
+    // Finish in browser: the student finishes the form in the window and presses its send button; the app never does.
+    const yourTurn = "Fill in the boxes outlined in orange, solve any CAPTCHA, then press the form's own send button. Nothing is sent until you press it.";
+    if (inBrowser) button.title = `Opens a browser window on this computer with the form filled in as far as the app can. ${yourTurn}`;
     const reset = armConfirm(button, {
       idleLabel: () => label,
-      armedLabel: () => `Send through ${formHost(item)}'s form?`,
-      prompt: () => `Press again to send the approved email through ${item.company}'s contact form as you, from ${item.contact_form.page_url}.`,
+      armedLabel: () => inBrowser ? `Open ${formHost(item)}'s form?` : `Send through ${formHost(item)}'s form?`,
+      prompt: () => inBrowser
+        ? `Press again to open ${item.company}'s contact form from ${item.contact_form.page_url} in a browser window, filled in with the approved email. You press its send button there.`
+        : `Press again to send the approved email through ${item.company}'s contact form as you, from ${item.contact_form.page_url}.`,
       beforeClick: () => refuseUnsavedHandOff(button, "initial"),
       onConfirm: async () => {
         button.disabled = true;
         button.textContent = inBrowser ? "Waiting for you in the browser…" : "Sending…";
-        if (inBrowser) announce("A browser window is opening with the form filled in. Solve the CAPTCHA there; the app sends the form once it is solved.");
+        // 10 minutes is PERSON_WAIT_SECONDS in outreach/forms.py.
+        if (inBrowser) announce(`A browser window is opening with the form filled in as far as the app can. ${yourTurn} The window waits 10 minutes.`);
         try {
           const result = await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/form-submit`, {
             method: "POST",
@@ -392,7 +399,7 @@
       section.appendChild(where);
       if (form.captcha) {
         section.appendChild(element("p", "outreach-note",
-          `It has a ${form.captcha === "recaptcha" ? "reCAPTCHA" : form.captcha === "hcaptcha" ? "hCaptcha" : "Cloudflare Turnstile"}. A checkbox is ticked for you; a picture challenge waits for you under Finish in browser.`));
+          `It has a ${form.captcha === "recaptcha" ? "reCAPTCHA" : form.captcha === "hcaptcha" ? "hCaptcha" : "Cloudflare Turnstile"}. A checkbox is ticked for you; a picture challenge is yours to solve under Finish in browser.`));
       }
       if (form.state === "submitted") section.appendChild(element("p", "outreach-note", `Your first email went through this form${form.attempted_at ? ` on ${formatCalendarDate(form.attempted_at.slice(0, 10))}` : ""}.`));
       else if (form.note && FORM_STATE_NOTES[form.state]) section.appendChild(element("p", "outreach-note outreach-guess", `${FORM_STATE_NOTES[form.state]} ${form.note}`));

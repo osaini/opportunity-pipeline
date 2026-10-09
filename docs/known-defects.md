@@ -20,7 +20,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Browser extension | 0 | 1 | 0 | 1 |
 | Apply for me | 0 | 4 | 11 | 15 |
 | Mail, Gmail and inboxes | 0 | 4 | 8 | 12 |
-| Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
+| Outreach drafting, research, forms and CLI | 0 | 6 | 4 | 10 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
 | Web API, auth and storage | 0 | 4 | 1 | 5 |
 | Scoring, scheduling and configuration | 1 | 2 | 8 | 11 |
@@ -321,6 +321,13 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** the `company` role matches any text box whose label, name or id says company, organization, business, employer, school, university or institution, and a required one is typed with `identity["school"]`. A required "Company website", "Company address" or "Company size" box therefore gets the school's name, which answers none of those questions, and the form goes out with it when the page accepts any text. A `type="url"` box is read as a link first, so only text boxes are affected. (A box whose label is only address words, such as "Address" or "City", and whose name or id says company, school, business or the like is no longer affected: `_role` makes it unanswerable. A label that itself says company still is.)
 - **Suggested fix:** Give the `company` role only to a label that asks for the name ("Company", "Company name", "Organization", "School"). A label that also says address, website, phone, email, size or industry is unanswerable, so the form waits for the student.
 - **Regression suite:** tests/ unittest (`test_outreach_forms`: required "Company website", "Company address" and "Company size" text boxes are named as unanswerable and nothing is typed in them)
+
+### Finish in browser can call a contact form unsent when the student sent it from outside the form and it posted to another site
+- **Severity:** low, latent send safety (found while making the window the student's to finish, 2026-10-08); no site the app has met triggers it
+- **Where:** `opportunity_app/outreach/forms.py`: `HAND_OVER_SCRIPT` (what counts as the student's press) and the end of `FormSubmitter._hand_to_student`
+- **What happens:** the app knows the student pressed send from a `<form>`'s submit event, a trusted click on a button inside the form's container, or Enter in one of its one-line boxes. A send started any other way (a send button or link outside a form built without a `<form>` element, or a page script that sends on a timer) is not seen as a press. If that send posts to a site other than the page's or the form frame's, and the student then closes the window or lets it time out, the result is "Nothing was sent" and the card offers Finish in browser again, so the same message could go twice. A send that posts to the form's own site is recorded as unconfirmed, and once the app has seen a press, anything that leaves the page after it means the form is never called unsent.
+- **Suggested fix:** When the window ends without a press, treat any non-GET request from the form's frame since the hand-over, to any site, as a possible send. First measure how often analytics beacons would then turn a window the student abandoned into "unconfirmed".
+- **Regression suite:** tests/ unittest under Chromium (`test_outreach_forms.FinishInBrowserTests`: a page whose send button sits outside the form's container and posts to another site, then the window is closed)
 
 ### One address block can read as two, so a contact form that wants the student's address waits for them
 - **Severity:** low, the send stops when it could have gone (found in review of the mailing-address change)

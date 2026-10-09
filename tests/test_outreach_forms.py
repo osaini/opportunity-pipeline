@@ -166,6 +166,15 @@ class FillPlanTests(unittest.TestCase):
         self.assertEqual(len(plan["problems"]), 2)
         self.assertIn("Annual budget", plan["problems"][0])
 
+    def test_each_box_a_problem_leaves_empty_is_named_for_finish_in_browser(self):
+        plan = self.plan(self.fields(
+            field(5, label="Annual budget", name="budget", required=True),
+            field(6, "checkbox", label="I am a current customer", name="customer", required=True),
+        ), body="x" * 2500)
+        self.assertEqual(plan["left"], [{"index": 4, "label": "How can we help?"}, {"index": 5, "label": "Annual budget"},
+                                        {"index": 6, "label": "I am a current customer"}])
+        self.assertEqual(self.plan(self.fields())["left"], [])
+
     def test_a_draft_longer_than_the_box_is_not_cut(self):
         plan = self.plan(self.fields(), body="x" * 2500)
         self.assertEqual(plan["problems"], ["The message box takes 2000 characters and the draft is 2500. Shorten the draft"])
@@ -221,6 +230,11 @@ class FakeSubmitter:
     def submit(self, page_url, *, should_continue=None, **kwargs):
         self.calls.append({"page_url": page_url, "should_continue": should_continue, **kwargs})
         outcome = self.outcomes.pop(0)
+        if outcome == "student_press":
+            # Finish in browser: the student presses the form's own button, and the app is told as they do.
+            kwargs["on_press"]()
+            self.at_click()
+            outcome = "submitted"
         if outcome == "pause_at_button":
             # As FormSubmitter does: asked just before the button, and stopped there.
             self.before_button()
@@ -544,6 +558,22 @@ class FormSendTests(unittest.TestCase):
         self.assertEqual(self.send(target).json()["outcome"], "submitted")
         self.assertIsNone(self.submitter.calls[0]["should_continue"], "only the automatic path asks about the pause")
 
+    def test_finish_in_browser_holds_the_claim_as_on_its_way_from_the_students_press(self):
+        self.submitter.outcomes = ["needs_you", "student_press"]
+        states = []
+
+        def at_press():
+            with closing(connect_product(self.platform_path)) as conn:
+                states.append(conn.execute("SELECT state FROM outreach_send_claims").fetchone()["state"])
+
+        self.submitter.at_click = at_press
+        target = self.approved()
+        self.send(target)
+        self.assertIsNone(self.submitter.calls[0].get("on_press"), "the app's own press needs no word of the student's")
+        self.assertEqual(self.send(target, in_browser=True).json()["outcome"], "submitted")
+        self.assertEqual(states, [automation.FORM_HANDED_OVER], "from their press on, a restart reads the form as possibly sent")
+        self.assertIsNone(self.submitter.calls[1]["should_continue"], "a pause never stops the student's own press")
+
     def test_a_company_with_only_a_form_gets_an_automatic_draft(self):
         target = self.target(email_body="", email_subject="", location="Austin, TX")
         with closing(connect_product(self.platform_path)) as conn:
@@ -809,6 +839,129 @@ class BrowserSubmitTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "needs_you")
         self.assertIn("Finish in browser", result["note"])
         self.assertEqual([post for post in site.posts if post[0] == "/send"], [])
+
+
+@requires_chromium
+class FinishInBrowserTests(unittest.TestCase):
+    """Finish in browser: the app fills what it truthfully can, and the student finishes the form and presses its send button.
+
+    Each test acts as the student through ``student_hook``, which runs once the window is theirs.
+    """
+
+    def submit(self, page, student, *, wait=20, pages=None):
+        # The CAPTCHA box, if the app ticked it, would solve itself: the student's own solving is then the only way past it.
+        site = Site({"/contact": page, "/recaptcha/api2/anchor": ANCHOR_SOLVES, **(pages or {})})
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        pressed = []
+        with FormSubmitter(route_hook=site.route, screenshot_dir=Path(tempdir.name), person_wait=wait,
+                           student_hook=lambda window: student(window, site)) as submitter:
+            result = submitter.submit(
+                "https://bovi.test/contact", identity=IDENTITY, subject="Robotics internship question",
+                body=LETTER, name="bovi", on_press=lambda: pressed.append(1),
+            )
+        return result, site, pressed
+
+    def test_the_student_answers_what_the_app_cannot_and_presses_send(self):
+        seen = {}
+
+        def student(window, site):
+            box = window.locator("[name=budget]")
+            seen.update(posts=list(site.posts), outline=box.evaluate("(el) => getComputedStyle(el).outlineStyle"),
+                        note=window.locator("[data-pipeline-note]").count(), name=window.locator("[name=name]").input_value())
+            box.fill("Under $10k")
+            window.get_by_role("button", name="Send message").click()
+
+        result, site, pressed = self.submit(BUDGET_FORM, student)
+        self.assertEqual(result["outcome"], "submitted", result)
+        self.assertEqual(seen, {"posts": [], "outline": "solid", "note": 1, "name": "Sam Rivera"},
+                         "filled as far as the app could, the box it left outlined, a note on the page, and nothing sent yet")
+        posted = parse_qs(site.posts[0][1])
+        self.assertEqual((posted["budget"], posted["name"]), (["Under $10k"], ["Sam Rivera"]))
+        self.assertIn("Your message has been sent", result["confirmation"])
+        self.assertEqual((result["by_you"], result["changed"]), (["Annual budget"], []))
+        self.assertEqual(pressed, [1])
+
+    def test_the_app_never_presses_send_and_a_window_left_alone_sends_nothing(self):
+        result, site, pressed = self.submit(PLAIN_FORM, lambda window, site: None, wait=2)
+        self.assertEqual(result["outcome"], "needs_you", result)
+        self.assertIn("Nothing was sent", result["note"])
+        self.assertEqual((site.posts, pressed), ([], []), "every box was filled, and still only the student presses send")
+
+    def test_closing_the_window_sends_nothing(self):
+        result, site, pressed = self.submit(BUDGET_FORM, lambda window, site: window.close())
+        self.assertEqual(result["outcome"], "needs_you", result)
+        self.assertIn("closed", result["note"])
+        self.assertIn("Annual budget", result["note"], "and it still says what was left for them")
+        self.assertEqual((site.posts, pressed), ([], []))
+
+    def test_a_press_the_browser_stops_is_not_the_send(self):
+        def student(window, site):
+            send = window.get_by_role("button", name="Send message")
+            send.click()  # the budget box is still empty, so the browser's own check stops the form
+            window.locator("[name=budget]").fill("Under $10k")
+            send.click()
+
+        result, site, pressed = self.submit(BUDGET_FORM, student)
+        self.assertEqual(result["outcome"], "submitted", result)
+        self.assertEqual((len(site.posts), pressed), (1, [1]))
+
+    def test_a_message_the_student_changed_is_named(self):
+        def student(window, site):
+            window.locator("[name=budget]").fill("Under $10k")
+            window.locator("[name=message]").fill("Hi Bovi team, a shorter note.")
+            window.get_by_role("button", name="Send message").click()
+
+        result, site, _pressed = self.submit(BUDGET_FORM, student)
+        self.assertEqual(result["outcome"], "submitted", result)
+        self.assertEqual(result["changed"], ["Message"])
+        self.assertIn("\"Message\"", result["note"])
+        self.assertEqual(parse_qs(site.posts[0][1])["message"], ["Hi Bovi team, a shorter note."])
+
+    def test_a_script_built_form_is_sent_by_the_students_click(self):
+        result, site, pressed = self.submit(SCRIPT_FORM, lambda window, site: window.get_by_role("button", name="Send").click())
+        self.assertEqual(result["outcome"], "submitted", result)
+        self.assertEqual(json.loads(site.posts[0][1])["name"], "Sam Rivera")
+        self.assertEqual(pressed, [1])
+
+    def test_a_press_the_page_never_answers_then_a_closed_window_is_unconfirmed(self):
+        def student(window, site):
+            window.get_by_role("button", name="Send message").click()  # the page posts, then shows the same form again
+            window.close()
+
+        result, site, pressed = self.submit(SILENT_FORM, student)
+        self.assertEqual(result["outcome"], "unconfirmed", result)
+        self.assertIn("did not say the form arrived", result["note"])
+        self.assertEqual((len(site.posts), pressed), (1, [1]))
+
+    def test_a_page_that_posts_while_the_student_types_is_not_called_unsent(self):
+        # Lead-capture scripts post each keystroke before anyone presses send; what they took may count as a message.
+        eager = BUDGET_FORM.replace("</form>", "</form><script>document.querySelector('[name=budget]').addEventListener("
+                                    "'input', (e) => fetch('/partial', {method: 'POST', body: e.target.value}));</script>")
+
+        def student(window, site):
+            window.locator("[name=budget]").fill("Under $10k")
+            window.wait_for_timeout(300)
+            window.close()
+
+        result, site, pressed = self.submit(eager, student, pages={"/partial": "ok"})
+        self.assertEqual(result["outcome"], "unconfirmed", result)
+        self.assertIn("did not see you send it", result["note"])
+        self.assertEqual(([path for path, _ in site.posts], pressed), (["/partial"], []))
+
+    def test_a_captcha_is_left_for_the_student(self):
+        seen = []
+
+        def student(window, site):
+            token = window.locator("[name=g-recaptcha-response]")
+            seen.append(token.input_value())
+            token.evaluate("(el) => { el.value = 'token-'.padEnd(60, 'x'); }")  # the student solves it
+            window.get_by_role("button", name="Send message").click()
+
+        result, site, _pressed = self.submit(CAPTCHA_FORM, student)
+        self.assertEqual(result["outcome"], "submitted", result)
+        self.assertEqual(seen, [""], "the app does not tick it: a token would expire while they type")
+        self.assertTrue(parse_qs(site.posts[-1][1])["g-recaptcha-response"][0].startswith("token-"))
 
 
 class _StubLocator:

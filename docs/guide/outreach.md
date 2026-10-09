@@ -10,7 +10,13 @@ press Send, or, with Gmail connected, goes out when you press **Send** in the ap
 and then confirm the recipient. Three opt-in automations send that approved text
 later without another click from you: scheduled sends, the resend after a bounce,
 and contact-form submission (your approved first email, once per company; a field
-the app cannot answer truthfully, or a picture CAPTCHA, leaves it for you). A form
+the app cannot answer truthfully, or a picture CAPTCHA, leaves it for you). For a
+form left for you, **Finish in browser** on the company's card opens it in a window,
+filled in as far as the app can: you fill in the boxes it outlines in orange, solve
+any CAPTCHA, and press the form's own send button. The app never presses it there.
+It records what the page says once you press (sent, or sent without a
+confirmation), and nothing is sent if you close the window first or leave it for 10
+minutes. A form
 box that requires a street, city, state, ZIP or country is answered only from the
 **Mailing address** you confirmed on the Profile page (About you), never any other
 address. When a form requires your street address, the rest of your confirmed
