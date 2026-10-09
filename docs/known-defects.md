@@ -26,7 +26,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Scoring, scheduling and configuration | 1 | 2 | 8 | 11 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **29** | **38** | **68** |
+| **Total** | **1** | **29** | **39** | **69** |
 
 ## Start here: the high-severity entries
 
