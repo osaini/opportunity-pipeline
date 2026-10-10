@@ -19,7 +19,8 @@ def iter_env_pairs(path: Path) -> list[tuple[str, str]]:
     the value. An empty key is kept: dropping it is the caller's call.
     """
     try:
-        text = path.read_text(encoding="utf-8")
+        # utf-8-sig: Windows PowerShell 5.1's Set-Content -Encoding utf8 starts the file with a byte-order mark.
+        text = path.read_text(encoding="utf-8-sig")
     except OSError:
         return []
     pairs: list[tuple[str, str]] = []
