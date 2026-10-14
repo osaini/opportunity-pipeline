@@ -242,6 +242,9 @@ def _display_name(name: str, company: str = "") -> str:
     return ""
 
 
+_TRAILING_BRACKETS = re.compile(r"\s*(?:\([^()]*\)|\[[^\[\]]*\])\s*$")
+
+
 def recipient_name(from_name: str, to_email: str, target: dict[str, Any]) -> str:
     """The name of the person who wrote, from their From header, or the contact's name when it was the contact.
 
@@ -249,11 +252,14 @@ def recipient_name(from_name: str, to_email: str, target: dict[str, Any]) -> str
     out and the student's shared-inbox greeting is used. "Lee, Dana" is Dana
     Lee, while "Dana Lee, PhD" and "Dana Lee, Founder" are Dana Lee, never
     "PhD Dana Lee" or "Founder Dana Lee"; a From name whose order is not plain
-    names nobody (_display_name).
+    names nobody (_display_name). What a From name adds in brackets at its end
+    ("Dana Lee (Acme Robotics)", "Dana Lee (she/her)") is not part of the name.
     """
     name = " ".join(str(from_name or "").replace('"', " ").split())
     if "@" in name:
         name = ""
+    # What follows a name in brackets is about them, not their name: "Sam Park (Acme Robotics)", "Sam Park (she/her)".
+    name = _TRAILING_BRACKETS.sub("", name).strip()
     if "," in name:
         name = _display_name(name, str(target.get("company") or ""))
     company = spoken_company(str(target.get("company") or ""))
