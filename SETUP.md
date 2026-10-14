@@ -121,7 +121,8 @@ into `config/profile.json`. The field names are the keys in
 | Fields that interest them | `interest_keywords` | e.g. `["batteries", "catalysis", "process control"]` |
 | Titles to push down | `deprioritize_title_keywords` | disciplines they don't want, e.g. `["sales", "software"]` |
 | Authorized to work in the US? US citizen? Need sponsorship? | `work_authorized_us`, `us_citizen`, `requires_sponsorship` | `true` / `false` / `null`. Never infer these. |
-| Home during breaks and summers | `break_location` | "City, ST", or the name of one of their `regions`. Used only for the outreach "(live in …)" note (see below) |
+| Home during breaks and summers | `break_location` | "City, ST", or the name of one of their `regions`. Used for the outreach "(live in …)" note (see below) and the in-person line of a reply |
+| When they're home, as a reply would say it | `break_times` | Their own words, such as `"over winter break"` or `"over winter break and in the summers"`. A reply to a company near home says they're there then and would like to meet in person; left empty, it says "during breaks and summers". Ask; never guess their break dates |
 | Pay expectations | `compensation_preferences` | `null`, or an object: `paid_only` (`true`, `false` or `null`), `minimum_hourly` (dollars an hour as a number, or `null`) and `currency` (text; pay is compared only when it is blank or `USD`). A string here is refused by the Profile page and ignored by the score. |
 | How they open an email | `greeting_word`, `unnamed_greeting` | Their word before a name (`"Hi"`, `"Hello"`, `"Dear"`), and how they greet a shared inbox with no name: `"{company} team"`, `"there"`, or `"{company} hiring team"`. Drafts and contact changes use these; left out, they are `"Hi"` and `"{company} team"`. Editable later on the Profile page. |
 
@@ -310,7 +311,9 @@ themselves (rule 3). The details:
   `model_reasoning_effort` are carried over by the app; `PIPELINE_CODEX_MODEL` and
   `PIPELINE_CODEX_REASONING_EFFORT` override them.
   **Who writes thank-yous after a decline** (`PIPELINE_OUTREACH_THANK_YOU_PROVIDER`)
-  is there too; left on "Same as first-email drafts", the draft writer writes them.
+  and **Who writes replies** (`PIPELINE_OUTREACH_REPLY_PROVIDER`, the student's
+  answers to companies that write back) are there too; left on "Same as first-email
+  drafts", the draft writer writes them.
 - **Jev** (`TYPESAFE_API_KEY`): optional and waitlisted; skip it freely. If they
   set it, tell them Jev inbox suggestions are a separate switch under Outreach →
   Outreach settings, off until they turn it on, because it sends reply and email

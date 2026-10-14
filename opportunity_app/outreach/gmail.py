@@ -10,12 +10,14 @@ the separate read-only monitoring connection (the "google" provider). Its read s
 is what every read of the student's outreach mailbox uses: bounce notices (outreach/delivery.py),
 replies (outreach/inbox.py), job-application mail (applications/inbox.py), sends made in Gmail
 itself (outreach/gmail_sends.py), the thread check before a thank-you (outreach/thank_you.py), and
-the read-only agent mailbox reader (scripts/pipeline_mailbox.py). Its gmail.modify scope is only for
+the read-only agent mailbox reader (scripts/pipeline_mailbox.py), and the thread check before the student's answer to
+a reply goes (outreach/reply_drafts.py). Its gmail.modify scope is only for
 adding the student's label to outreach threads, sent mail and replies (outreach/labels.py); the
 app never uses it to remove a label, trash, archive or mark mail read.
 
 The authorized REST client, its rate limits and its health are in gmail_connection; the once-only claim ledger is in
-send_claims. This module is the outreach send workflow on top of both: drafts, sends, thank-yous and notices.
+send_claims. This module is the outreach send workflow on top of both: drafts, sends, thank-yous and notices, and the
+pieces the student's answer to a reply is sent with (outreach/reply_drafts.py holds that workflow).
 """
 
 from __future__ import annotations
@@ -853,6 +855,46 @@ def create_thank_you_draft(
                 settle_send_claim(conn, target_id, THANK_YOU_KIND, token, "unconfirmed")
                 raise
     return {**detail, "url": draft_url(account, detail["message_id"])}
+
+
+# --- The student's answer to a reply ------------------------------------------------
+#
+# Written for the student to approve (outreach/reply_drafts.py), and sent only by their own confirmed Send. Like the
+# thank-you it answers in their thread (threadId, with In-Reply-To and References set to their Message-ID) when the
+# reply was read from Gmail, plain text with its HTML twin and no attachment. Each written draft has its own claim kind
+# (REPLY_KIND_PREFIX + draft_id), so each goes out at most once while a company can be answered more than once.
+
+REPLY_KIND_PREFIX = "reply:"
+REPLY_SENT_EVENT = "reply_sent"
+REPLY_GMAIL_DRAFT_EVENT = "reply_gmail_draft_created"
+
+
+def reply_claim_kind(draft_id: str) -> str:
+    return f"{REPLY_KIND_PREFIX}{draft_id}"
+
+
+def reply_fingerprint(to_email: str, cc: str, subject: str, body: str, reply_message_id: str, thread_id: str) -> str:
+    """What an answer is: who it goes to, its words, and the message and thread it answers."""
+    fields = ["reply", str(to_email or "").casefold(), str(cc or "").casefold(), subject or "", body or "",
+              reply_message_id or "", thread_id or ""]
+    return hashlib.sha256(json.dumps(fields, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def reply_mime(account: str, row: dict[str, Any]) -> str:
+    """The answer as Gmail sends it: in their thread by its headers when it has one, plain text and HTML, no attachment."""
+    message = EmailMessage()
+    if account:
+        message["From"] = account
+    message["To"] = formataddr((row["to_name"], row["to_email"])) if row.get("to_name") else row["to_email"]
+    if row.get("cc"):
+        message["Cc"] = row["cc"]
+    message["Subject"] = row["subject"]
+    if row.get("reply_message_id"):
+        message["In-Reply-To"] = row["reply_message_id"]
+        message["References"] = row["reply_message_id"]
+    message.set_content(row["body"])
+    message.add_alternative(html_body(row["body"]), subtype="html")
+    return base64.urlsafe_b64encode(message.as_bytes()).decode()
 
 
 # --- Notices about the connection ---------------------------------------------------

@@ -23,6 +23,7 @@ import httpx
 from opportunity_app.integrations.agent_providers import ProviderReply
 from opportunity_app.integrations.web_fetch import SafeFetcher
 from opportunity_app.outreach.discovery import DiscoveryManager
+from opportunity_app.outreach import reply_writing
 from opportunity_app.outreach.recontact import RecontactManager
 from opportunity_app.web.system_status import SystemStatus
 from opportunity_app.opportunities.boards import BoardTracker
@@ -105,8 +106,10 @@ class FakeDraftProvider:
 
     def create(self, *, instructions, messages, tools, max_output_tokens):
         content = messages[-1]["content"]
-        inputs = json.loads(re.split(r"\n\n(?:Your previous draft|The student reviewed)", content)[0])
+        inputs = json.loads(re.split(r"\n\n(?:Your previous draft|The student reviewed|The student read)", content)[0])
         comments = content.split("The student's comments:\n", 1)[1] if "The student's comments:\n" in content else ""
+        if "their_reply" in inputs:
+            return ProviderReply(text=json.dumps(self._answer(inputs)))
         student = inputs["student"]
         research = inputs["company_research"]
         unverified = inputs["unverified_research"]
@@ -129,6 +132,18 @@ class FakeDraftProvider:
                 f"Would you be open to a 15 minute call about interning with your team?\n\nThank you,\n{student['name']}"
             )
         return ProviderReply(text=json.dumps({"subject": subject, "body": body, "claims": claims}))
+
+
+    @staticmethod
+    def _answer(inputs):
+        """The student's answer to a reply (outreach/reply_writing.py): its template's words, and the revisit date
+        "around March of next year" names, as a model would give it."""
+        body, claims = reply_writing.template(inputs)
+        said = "around March of next year"
+        revisit = {"revisit_on": "", "revisit_said": ""}
+        if inputs["purpose"] == "answer" and said in inputs["their_reply"]["text"]:
+            revisit = {"revisit_on": f"{int(inputs['today'][:4]) + 1}-03-01", "revisit_said": said}
+        return {"body": body, "claims": claims, **revisit}
 
 
 def provider_factory(_provider: str, _model: str) -> FakeDraftProvider:

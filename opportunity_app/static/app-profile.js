@@ -114,6 +114,8 @@
       { placeholder: "Atlanta, Bay Area" }
     );
     const breakLocation = profileField(where, "Home during breaks and summers", "break_location", profile.break_location, { placeholder: "City, ST or a target region" });
+    // How a reply to a company near home says when the student is there to meet in person.
+    const breakTimes = profileField(where, "When you're home, as a reply would say it", "break_times", profile.break_times, { placeholder: "over winter break" });
     const relocation = profileSelect(where, "Willing to relocate", "willing_to_relocate", profile.willing_to_relocate);
     const eligibility = profileGroup(form, "Work eligibility");
     const workAuthorized = profileSelect(eligibility, "Authorized to work in the U.S.", "work_authorized_us", profile.work_authorized_us);
@@ -182,6 +184,7 @@
         regions,
         preferred_locations: regionNames,
         break_location: breakLocation.value.trim(),
+        break_times: breakTimes.value.trim(),
         greeting_word: greetingWord.value.trim(),
         unnamed_greeting: unnamedGreeting.value.trim(),
         hours_per_week: hours.value ? Number(hours.value) : null,

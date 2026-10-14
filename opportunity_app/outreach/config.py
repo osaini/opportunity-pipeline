@@ -23,6 +23,8 @@ CALL_PREP_ENV = "PIPELINE_OUTREACH_CALL_PREP_PROVIDER"
 REVIEW_ENV = "PIPELINE_OUTREACH_REVIEW_PROVIDER"
 # The thank-you after a decline (outreach_thank_you); empty means the first-email writer.
 THANK_YOU_ENV = "PIPELINE_OUTREACH_THANK_YOU_PROVIDER"
+# The student's answer to a company's reply (outreach_reply_drafts); empty means the first-email writer.
+REPLY_ENV = "PIPELINE_OUTREACH_REPLY_PROVIDER"
 # Set to 1 in .env to let Codex read web pages for company research and the deep search. Off by default: the only way to
 # give Codex a web tool also switches on code mode, which Codex cannot be stopped from exposing (see agent_providers.codex_command).
 ALLOW_CODEX_ENV = CODEX_WEB_OPT_IN_ENV
@@ -34,6 +36,7 @@ PURPOSE_ENV = {
     "follow_up": FOLLOW_UP_ENV,
     "call_prep": CALL_PREP_ENV,
     "thank_you": THANK_YOU_ENV,
+    "reply": REPLY_ENV,
 }
 
 
@@ -55,8 +58,8 @@ def codex_web_allowed() -> bool:
 def resolve_provider(requested: str | None = None, purpose: str = "initial") -> tuple[str, str]:
     """Pick the provider and model for one kind of writing.
 
-    Explicit, then the setting for this purpose (follow-ups, call prep, and the
-    thank-you after a decline have their own), then PIPELINE_OUTREACH_PROVIDER, then the first provider that
+    Explicit, then the setting for this purpose (follow-ups, call prep, the
+    thank-you after a decline and answers to replies have their own), then PIPELINE_OUTREACH_PROVIDER, then the first provider that
     is set up on this computer.
     """
     own = os.environ.get(PURPOSE_ENV[purpose], "") if purpose in PURPOSE_ENV else ""

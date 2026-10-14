@@ -116,22 +116,25 @@
 
   // The dot each history event gets: what happened, at a glance. Unlisted events are plain.
   const OUTREACH_EVENT_TONES = {
-    "is-good": ["gmail_sent", "form_submitted", "form_said_sent", "thank_you_sent", "draft_approved", "follow_up_approved", "possible_reply_confirmed", "research_confirmed"],
+    "is-good": [
+      "gmail_sent", "form_submitted", "form_said_sent", "thank_you_sent", "draft_approved", "follow_up_approved", "possible_reply_confirmed",
+      "research_confirmed", "reply_sent", "reply_draft_approved",
+    ],
     "is-reply": ["reply_logged", "reply_found"],
     "is-soon": [
       "send_scheduled", "gmail_scheduled", "send_moved", "thank_you_scheduled", "follow_up_held", "thank_you_held", "possible_reply",
-      "auto_reply", "form_unconfirmed", "form_pressed", "location_ambiguous", "location_import_claim",
+      "auto_reply", "form_unconfirmed", "form_pressed", "location_ambiguous", "location_import_claim", "reply_draft_stale",
     ],
     "is-warning": [
       "bounced", "partly_bounced", "approval_withdrawn", "auto_draft_failed", "auto_follow_up_draft_failed", "scheduled_send_failed",
-      "tech_brief_failed", "thank_you_failed", "form_not_sent", "form_said_not_sent",
+      "tech_brief_failed", "thank_you_failed", "form_not_sent", "form_said_not_sent", "reply_draft_failed",
     ],
   };
   const OUTREACH_EVENT_TONE = new Map(Object.entries(OUTREACH_EVENT_TONES).flatMap(([tone, types]) => types.map((type) => [type, tone])));
   // Their detail is the app's own bookkeeping (a provider, a message id), or would repeat the label.
   const OUTREACH_QUIET_DETAILS = new Set([
     "draft_generated", "gmail_draft_created", "gmail_sent", "call_prep_generated", "thank_you_sent", "thank_you_draft_created",
-    "form_pressed", "form_said_sent", "form_said_not_sent",
+    "form_pressed", "form_said_sent", "form_said_not_sent", "reply_gmail_draft_created",
   ]);
   // The card's question after the student's press in Finish in browser (FORM_PRESSED_NOTE, outreach/targets.py): once
   // answered it is no record, so the history tells what happened instead.

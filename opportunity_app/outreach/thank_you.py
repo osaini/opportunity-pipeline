@@ -124,6 +124,8 @@ from ..student.preparation import confirmed_facts
 from ..integrations.gmail_client import GmailAuthError, GmailThrottled
 from .decline_reading import plain_decline_problem, readings_words
 from .gmail import (
+    REPLY_GMAIL_DRAFT_EVENT,
+    REPLY_SENT_EVENT,
     SENT_EVENT,
     THANK_YOU_DRAFT_EVENT,
     THANK_YOU_KIND,
@@ -291,12 +293,15 @@ def latest_reply(conn: sqlite3.Connection, target_id: str, user_id: str) -> dict
     return found[-1] if found else None
 
 
-def sent_since(conn: sqlite3.Connection, target_id: str, user_id: str, since: datetime) -> bool:
-    """Whether anything went to the company after ``since``: an email, a thank-you, a form, "I sent it", or a send under way."""
+def sent_since(conn: sqlite3.Connection, target_id: str, user_id: str, since: datetime, *, own_kind: str = "") -> bool:
+    """Whether anything went to the company after ``since``: an email, a thank-you, an answer to their reply (sent, or
+    put in Gmail Drafts to send there), a form, "I sent it", or a send under way. ``own_kind`` is the claim of the email
+    asking, which is not news to itself (an answer to a reply checks this under its own claim)."""
     for row in conn.execute(
         "SELECT event_type, to_status, created_at FROM outreach_events WHERE target_id=? AND user_id=? "
-        "AND event_type IN (?, ?, ?, ?, ?, ?, 'status')",
-        (target_id, user_id, SENT_EVENT, THANK_YOU_SENT_EVENT, THANK_YOU_DRAFT_EVENT, FORM_SUBMITTED, FORM_UNCONFIRMED, FORM_PRESSED),
+        "AND event_type IN (?, ?, ?, ?, ?, ?, ?, ?, 'status')",
+        (target_id, user_id, SENT_EVENT, THANK_YOU_SENT_EVENT, THANK_YOU_DRAFT_EVENT, REPLY_SENT_EVENT, REPLY_GMAIL_DRAFT_EVENT,
+         FORM_SUBMITTED, FORM_UNCONFIRMED, FORM_PRESSED),
     ).fetchall():
         at = parse_app_instant(row["created_at"])
         if at is None or at <= since:
@@ -306,9 +311,9 @@ def sent_since(conn: sqlite3.Connection, target_id: str, user_id: str, since: da
         return True
     # An email or form of the student's that may be on its way, or may have gone.
     for row in conn.execute(
-        "SELECT claimed_at FROM outreach_send_claims WHERE target_id=? AND user_id=? AND kind<>? AND action IN ('send', 'form') "
+        "SELECT claimed_at FROM outreach_send_claims WHERE target_id=? AND user_id=? AND kind NOT IN (?, ?) AND action IN ('send', 'form') "
         "AND state IN ('sending', 'sent', 'unconfirmed', 'clicking')",
-        (target_id, user_id, THANK_YOU_KIND),
+        (target_id, user_id, THANK_YOU_KIND, own_kind or THANK_YOU_KIND),
     ).fetchall():
         at = parse_app_instant(row["claimed_at"])
         if at is not None and at > since:

@@ -202,6 +202,8 @@ ACCOUNT_QUERIES = {
     "outreach_send_claims": "SELECT * FROM outreach_send_claims WHERE user_id=?",
     # The thank-you after a decline, its words included, as the student saw it on the card.
     "outreach_thank_yous": "SELECT * FROM outreach_thank_yous WHERE user_id=?",
+    # The student's answers to replies and revisit notes, their words included, as the card shows them.
+    "outreach_reply_drafts": "SELECT * FROM outreach_reply_drafts WHERE user_id=?",
     "user_settings": "SELECT * FROM user_settings WHERE user_id=?",
     # Everything automation did, proposed, or would have done, with the evidence it acted on; its notices; its health.
     "automation_actions": "SELECT * FROM automation_actions WHERE user_id=?",

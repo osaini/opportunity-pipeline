@@ -1418,6 +1418,90 @@
       "status_code": null
     },
     {
+      "endpoint": "write_outreach_reply",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "write_outreach_reply_api_v1_outreach__target_id__reply_draft_post",
+      "path": "/api/v1/outreach/{target_id}/reply-draft",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "edit_outreach_reply",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PATCH"
+      ],
+      "operation_id": "edit_outreach_reply_api_v1_outreach__target_id__reply_draft_patch",
+      "path": "/api/v1/outreach/{target_id}/reply-draft",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "dismiss_outreach_reply",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "operation_id": "dismiss_outreach_reply_api_v1_outreach__target_id__reply_draft_delete",
+      "path": "/api/v1/outreach/{target_id}/reply-draft",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "approve_outreach_reply",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "approve_outreach_reply_api_v1_outreach__target_id__reply_draft_approve_post",
+      "path": "/api/v1/outreach/{target_id}/reply-draft/approve",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "send_outreach_reply",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "send_outreach_reply_api_v1_outreach__target_id__reply_draft_send_post",
+      "path": "/api/v1/outreach/{target_id}/reply-draft/send",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "outreach_reply_to_gmail",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "outreach_reply_to_gmail_api_v1_outreach__target_id__reply_draft_gmail_draft_post",
+      "path": "/api/v1/outreach/{target_id}/reply-draft/gmail-draft",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "use_outreach_reply_revisit",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "use_outreach_reply_revisit_api_v1_outreach__target_id__reply_draft_revisit_post",
+      "path": "/api/v1/outreach/{target_id}/reply-draft/revisit",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
       "endpoint": "confirm_research_for_outreach",
       "include_in_schema": true,
       "kind": "route",

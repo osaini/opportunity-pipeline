@@ -178,6 +178,12 @@ FEATURES: dict[str, Feature] = {
                 "thank-you in the same thread. It goes out after a normal delay before 5pm their time, otherwise the "
                 "next weekday morning. Anything about a call, a question, a referral or 'maybe later' is left for you",
                 "outreach", "external"),
+        # Drafts only: every answer waits for the student's approval and their own Send (outreach/reply_drafts.py).
+        Feature("reply_drafts", "Draft answers to replies",
+                "When a company writes back, write your answer for you to review: thanks and the timing for a 'later', "
+                "a door a decline left open, a call they offered (your times left for you to fill in), or a question; and "
+                "the note to send when a revisit date you set arrives. Offers are left to you. Nothing is sent until you "
+                "approve it and press Send", "outreach", "internal"),
         Feature("jev_inbox_suggestions", "Jev inbox suggestions",
                 "Suggest what a pasted reply or an application email means with Jev, which sends the message text to TypeSafe. "
                 "You still confirm each change", "applications", "internal"),
@@ -647,9 +653,10 @@ def unconfirmed(conn: sqlite3.Connection, user_id: str, *, now: datetime | None 
     An 'unconfirmed' claim, and a form claim left mid-click longer than
     IN_FLIGHT_CLAIM_AGE (the app stopped while pressing the button). A first
     email is left out once the company is recorded as sent ("I sent it"), a
-    follow-up once the company has moved past Sent, and a thank-you after a
+    follow-up once the company has moved past Sent, a thank-you after a
     decline once it was sent or the student dismissed or closed it (its card
-    then says whether Gmail confirmed the earlier try). An application claim
+    then says whether Gmail confirmed the earlier try), and an answer to a
+    reply (kind 'reply') once it was sent. An application claim
     is listed when its outcome is unknown: 'unconfirmed', 'clicking' that is
     no longer held (the app stopped while submitting), or 'needs_you' or
     'failed' after the hand-over (apply_runs, rule 6).
@@ -657,9 +664,11 @@ def unconfirmed(conn: sqlite3.Connection, user_id: str, *, now: datetime | None 
     cutoff = (now_utc(now) - IN_FLIGHT_CLAIM_AGE).isoformat(timespec="microseconds")
     rows = conn.execute(
         """
-        SELECT c.target_id, c.kind, c.action, c.claimed_at, t.company, t.sent_at, t.status, y.state AS thank_you_state
+        SELECT c.target_id, c.kind, c.action, c.claimed_at, t.company, t.sent_at, t.status, y.state AS thank_you_state,
+            r.state AS reply_state, r.draft_id AS reply_draft_id
         FROM outreach_send_claims c LEFT JOIN outreach_targets t ON t.id=c.target_id
         LEFT JOIN outreach_thank_yous y ON y.target_id=c.target_id AND c.kind='thank_you'
+        LEFT JOIN outreach_reply_drafts r ON r.target_id=c.target_id
         WHERE c.user_id=? AND (c.state='unconfirmed' OR (c.state=? AND c.claimed_at<?))
         ORDER BY c.claimed_at
         """,
@@ -673,8 +682,11 @@ def unconfirmed(conn: sqlite3.Connection, user_id: str, *, now: datetime | None 
             continue
         if row["kind"] == "thank_you" and row["thank_you_state"] in ("sent", "cancelled"):
             continue
+        reply = str(row["kind"]).startswith("reply:")
+        if reply and row["kind"] == f"reply:{row['reply_draft_id']}" and row["reply_state"] == "sent":
+            continue
         items.append({
-            "target_id": row["target_id"], "company": row["company"] or "", "kind": row["kind"],
+            "target_id": row["target_id"], "company": row["company"] or "", "kind": "reply" if reply else row["kind"],
             "action": row["action"], "at": row["claimed_at"],
         })
     for row in conn.execute(
@@ -767,7 +779,7 @@ FIELD_NAMES = {
     "stage": "the stage", "applied_at": "the applied date", "intent": "the saved or passed choice", "task": "the task",
     "deadline": "the deadline", "capture": "the capture draft",
     "status": "the status", "follow_up": "the follow-up draft", "resume_pick": "the résumé choice",
-    "thank_you": "the thank-you",
+    "thank_you": "the thank-you", "reply_draft": "the reply draft",
 }
 
 
@@ -867,6 +879,11 @@ def _by_key(conn: sqlite3.Connection, user_id: str, idempotency_key: str) -> Any
     return conn.execute(
         "SELECT * FROM automation_actions WHERE user_id=? AND idempotency_key=?", (user_id, idempotency_key),
     ).fetchone()
+
+
+def recorded(conn: sqlite3.Connection, user_id: str, idempotency_key: str) -> bool:
+    """Whether an automatic action with this key was ever made, proposed or shadowed, whatever became of it since."""
+    return _by_key(conn, user_id, idempotency_key) is not None
 
 
 def action_row(conn: sqlite3.Connection, action_id: str, user_id: str) -> Any:

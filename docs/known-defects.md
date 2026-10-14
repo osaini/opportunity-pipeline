@@ -20,13 +20,13 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Browser extension | 0 | 1 | 0 | 1 |
 | Apply for me | 0 | 4 | 12 | 16 |
 | Mail, Gmail and inboxes | 0 | 4 | 8 | 12 |
-| Outreach drafting, research, forms and CLI | 0 | 8 | 4 | 12 |
+| Outreach drafting, research, forms and CLI | 0 | 8 | 5 | 13 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
 | Web API, auth and storage | 0 | 4 | 1 | 5 |
 | Scoring, scheduling and configuration | 1 | 2 | 8 | 11 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **31** | **40** | **72** |
+| **Total** | **1** | **31** | **41** | **73** |
 
 ## Start here: the high-severity entries
 
@@ -400,6 +400,13 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** The read-then-unconditional-UPDATE sequence lets both callers enqueue. One job id overwrites the other, and the orphaned job still runs a second, untracked model and research run.
 - **Suggested fix:** Use the conditional-claim pattern from `queue_research` (`opportunity_app/outreach/research.py:441-457`) and cancel the job that loses.
 - **Regression suite:** tests/ unittest (`test_outreach_call_prep`: two interleaved calls leave one active job)
+
+### A follow-up sent from the app starts a new Gmail thread instead of continuing the first email's
+- **Severity:** low (found 2026-10-13, reading outreach threads for the reply drafts)
+- **Where:** `opportunity_app/outreach/gmail.py` `_Approved.raw()` and `send_gmail_message()`, which post `{"raw": ...}` with no `threadId` and no `In-Reply-To`/`References`, for the follow-up as for the first email
+- **What happens:** The follow-up's subject starts with "Re:", but Gmail files it as a new thread for the student, and many mail clients show it to the company apart from the first email, so the person reading it does not see the note it follows up on. A reply then lands in the follow-up's thread. Reply capture and the answer to a reply (`outreach/reply_drafts.py`) both follow whichever thread the reply is in, so nothing is lost, but the student's Sent folder and the company's inbox hold two threads per company.
+- **Suggested fix:** Record the first email's Gmail thread and Message-ID when it is sent (the `gmail_sent` event already keeps `thread_id`; the RFC Message-ID needs a metadata read of the sent message), and send the follow-up with that `threadId` and `In-Reply-To`/`References`, as the thank-you and the answer to a reply are sent.
+- **Regression suite:** tests/ unittest (a follow-up's send body carries the first email's `threadId`, and its MIME carries `In-Reply-To`)
 
 ### The web-capable model calls can fetch any address, so a hostile page can carry the student's profile out in a URL
 - **Severity:** medium, privacy (found 2026-10-04, prompt-injection audit)
