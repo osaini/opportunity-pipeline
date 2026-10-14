@@ -20,13 +20,13 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Browser extension | 0 | 1 | 0 | 1 |
 | Apply for me | 0 | 4 | 12 | 16 |
 | Mail, Gmail and inboxes | 0 | 4 | 8 | 12 |
-| Outreach drafting, research, forms and CLI | 0 | 8 | 5 | 13 |
+| Outreach drafting, research, forms and CLI | 0 | 8 | 6 | 14 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
 | Web API, auth and storage | 0 | 4 | 1 | 5 |
 | Scoring, scheduling and configuration | 1 | 2 | 8 | 11 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **31** | **41** | **73** |
+| **Total** | **1** | **31** | **42** | **74** |
 
 ## Start here: the high-severity entries
 
@@ -342,6 +342,13 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** the handler calls `socket.close()` from inside Playwright's own event dispatch, which deadlocks the sync API: the first page the renderer loads that opens a WebSocket stops the render (and whatever called it, such as a contact search) for good. The form submitter had the same handler and hung its tests for nine hours. It now makes a page's WebSocket fail as a blocked connection does (`SOCKET_GUARD`), and its backstop handler only notes a socket and leaves it unconnected, closing it later from the main greenlet.
 - **Suggested fix:** as in `FormSubmitter._start`: `SOCKET_GUARD` as an init script, and a `route_web_socket` handler that makes no Playwright call.
 - **Regression suite:** tests/ unittest under Chromium (render a page that opens a WebSocket to a loopback listener: it returns, and the listener hears nothing)
+
+### Under Playwright 1.64, a press the app could not record in Finish in browser hangs the student's click
+- **Severity:** low (found 2026-10-14: CI's browser-python job installed Playwright 1.64.0, released after the 2026-10-10 run that passed on 1.63.0; the code under test was unchanged). The live machine runs 1.62, where both tests pass, so nothing is broken in use today.
+- **Where:** `opportunity_app/outreach/forms.py` `FormSubmitter` (the press binding and its `on_press` record, `_hand_to_student`); `tests/test_outreach_forms.py` `FinishInBrowserTests.test_a_form_sent_by_going_to_its_address_stays_on_screen_when_the_press_is_not_recorded` and `test_a_press_the_app_never_recorded_is_said_so_whatever_the_page_does` (the 'own-site socket' page)
+- **What happens:** When recording the student's press fails (the database is locked), the student's click on the form's send button never returns under 1.64: `Locator.click` times out after 30 seconds, where 1.63 and earlier keep the form on screen and send nothing. On a live upgrade the student would see a window that does not answer their press, though the form is still held back (nothing left in either failing test). `requirements-ui.txt` pins `playwright==1.63.0` for CI until this is understood.
+- **Suggested fix:** Find what 1.64 changed about a route or binding that raises while a navigation or submit waits on it (its release notes, then the press binding's error path), make the press return on 1.64, and lift the pin.
+- **Regression suite:** browser-python (the two tests above, under the newer Playwright)
 
 ### Finish in browser for contact forms: sends it holds back, and what its gate cannot see
 - **Severity:** low (found while making the window the student's to finish, and in six reviews of it, 2026-10-08/09). Gaps (1), (2), (4), (5) and (7) hold the form back, so nothing is sent and the record says so; (3) concerns what a page could send that is not the form; (6) could record a send as unsent, but needs a form sent only as an encoded image address, which no site the app has met does; (8) concerns only pages from the CAPTCHA hosts themselves; (9) needs a page doing it on purpose.
