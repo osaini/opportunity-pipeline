@@ -325,6 +325,13 @@ class ContentTests(unittest.TestCase):
         self.assertEqual(greeting_line(target["company"], recipient_name("Sam Park", "sam@acme.com", target), style), "Hello Sam,")
         self.assertEqual(greeting_line(target["company"], "", style), "Hello Acme Robotics team,")
 
+    def test_a_name_with_its_company_or_pronouns_in_brackets_is_still_the_person(self):
+        target = {"company": "Acme Robotics, Inc.", "contact_email": "dana@acme.com", "contact_name": "Dana Lee"}
+        self.assertEqual(recipient_name("Sam Park (Acme Robotics)", "sam@acme.com", target), "Sam Park")
+        self.assertEqual(recipient_name("Sam Park (she/her)", "sam@acme.com", target), "Sam Park")
+        self.assertEqual(recipient_name("Acme Careers (via Greenhouse)", "jobs@acme.com", target), "", "a shared inbox is still nobody")
+        self.assertEqual(recipient_name("(Acme Robotics)", "info@acme.com", target), "")
+
 
 # --- The platform, Gmail, and Jev ---------------------------------------------------------------
 
