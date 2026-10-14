@@ -185,7 +185,7 @@ def _mime(account: str, to: str, subject: str, body: str, attachment: Path | Non
     return base64.urlsafe_b64encode(message.as_bytes()).decode()
 
 
-def _sent_folder_check(reasons: dict[str, str]) -> str:
+def folder_check(reasons: dict[str, str]) -> str:
     """What the student vouches for by checking their Sent folder: a hash of exactly these reasons, echoed back to send again.
 
     The client keeps it between the two clicks, so the formula must never change.
@@ -268,7 +268,7 @@ class _Approved:
         return previous if _draft_still_there(gmail, previous["draft_id"]) else None
 
 
-def _require_account(gmail: GmailClient, account: str) -> None:
+def require_account(gmail: GmailClient, account: str) -> None:
     if not account:
         return
     profile = gmail.request("GET", "/profile")
@@ -426,7 +426,7 @@ def _approved_for(
     return approved
 
 
-def _post_under_claim(
+def post_under_claim(
     conn: sqlite3.Connection, gmail: GmailClient, target_id: str, kind: str, token: str,
     path: str, payload: dict[str, Any], *, refused: str, uncertain: str,
 ) -> dict[str, Any]:
@@ -499,7 +499,7 @@ def create_gmail_draft(
             try:
                 # The student asked for this draft, so its checks go to Gmail even while background reads wait.
                 gmail = GmailClient(conn, client, user_id, wait_out_backoff=False)
-                _require_account(gmail, account)
+                require_account(gmail, account)
                 previous = approved.live_draft(conn, gmail, user_id)
                 raw = None if previous else approved.raw(account)
             except BaseException:
@@ -509,7 +509,7 @@ def create_gmail_draft(
                 settle_send_claim(conn, target_id, kind, token, None)
                 public = _public_draft(previous)
                 return {**public, "url": draft_url(account, previous["message_id"]), "reused": True}
-            created = _post_under_claim(
+            created = post_under_claim(
                 conn, gmail, target_id, kind, token, "/drafts", {"message": {"raw": raw}},
                 refused="Gmail did not create the draft",
                 uncertain="the draft may be in your Gmail Drafts. Check Drafts before trying again",
@@ -579,7 +579,7 @@ def send_gmail_message(
         gmail = GmailClient(conn, client, user_id, wait_out_backoff=False)
         # Everything read from Gmail is read before the claim, so the claim is
         # held only across the one call that sends.
-        _require_account(gmail, account)
+        require_account(gmail, account)
         drafts = _draft_events(conn, target_id, user_id, kind)
         for _event_id, detail in drafts:
             if _draft_still_there(gmail, detail["draft_id"]):
@@ -589,7 +589,7 @@ def send_gmail_message(
                 )
             reasons[f"draft:{detail['draft_id']}"] = _DRAFT_VANISHED
         if reasons:
-            check = _sent_folder_check(reasons)
+            check = folder_check(reasons)
             if sent_folder_check != check:
                 raise SendNeedsCheckError(" ".join(dict.fromkeys(reasons.values())), check)
         seen = [event_id for event_id, _detail in drafts]
@@ -601,7 +601,7 @@ def send_gmail_message(
             return fresh, fresh.raw(account)
 
         with claimed_send(conn, target_id, user_id, kind, "send", revalidate, stale_token=stale_token) as (token, (approved, raw)):
-            sent = _post_under_claim(
+            sent = post_under_claim(
                 conn, gmail, target_id, kind, token, "/messages/send", {"raw": raw},
                 refused="Gmail did not send the email",
                 uncertain="it may have gone out. Check your Gmail Sent folder before sending again",
@@ -749,20 +749,20 @@ def send_thank_you(
             raise ValueError("The thank-you was already sent from Gmail")
         reasons[f"claim:{stale_token}"] = _thank_you_claim_reason(existing)
     if reasons:
-        check = _sent_folder_check(reasons)
+        check = folder_check(reasons)
         if automatic or sent_folder_check != check:
             raise SendNeedsCheckError(" ".join(dict.fromkeys(reasons.values())), check)
     account = sender_account()
     with client_factory() as client:
         gmail = GmailClient(conn, client, user_id, wait_out_backoff=False)
-        _require_account(gmail, account)
+        require_account(gmail, account)
 
         def revalidate() -> tuple[dict[str, Any], str]:
             fresh = _thank_you_ready(conn, target_id, user_id, fingerprint, states)
             return fresh, thank_you_mime(account, fresh)
 
         with claimed_send(conn, target_id, user_id, THANK_YOU_KIND, "send", revalidate, stale_token=stale_token) as (token, (row, raw)):
-            sent = _post_under_claim(
+            sent = post_under_claim(
                 conn, gmail, target_id, THANK_YOU_KIND, token, "/messages/send", {"raw": raw, "threadId": row["thread_id"]},
                 refused="Gmail did not send the thank-you",
                 uncertain="it may have gone out. Check your Gmail Sent folder before sending it again",
@@ -829,12 +829,12 @@ def create_thank_you_draft(
             try:
                 # The student asked for this draft, so its checks go to Gmail even while background reads wait.
                 gmail = GmailClient(conn, client, user_id, wait_out_backoff=False)
-                _require_account(gmail, account)
+                require_account(gmail, account)
                 raw = thank_you_mime(account, fresh)
             except BaseException:
                 settle_send_claim(conn, target_id, THANK_YOU_KIND, token, None)
                 raise
-            created = _post_under_claim(
+            created = post_under_claim(
                 conn, gmail, target_id, THANK_YOU_KIND, token, "/drafts", {"message": {"raw": raw, "threadId": fresh["thread_id"]}},
                 refused="Gmail did not create the draft",
                 uncertain="the draft may be in your Gmail Drafts. Check Drafts before trying again",
