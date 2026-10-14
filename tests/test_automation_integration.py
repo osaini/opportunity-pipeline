@@ -35,7 +35,7 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(groups, {
             "auto_drafts": "outreach", "bounce_recovery": "outreach", "bounce_auto_resend": "outreach", "scheduled_sending": "outreach",
             "follow_up_review": "outreach", "form_submission": "outreach", "outreach_auto_close": "outreach",
-            "auto_follow_up_drafts": "outreach", "decline_thank_you": "outreach",
+            "auto_follow_up_drafts": "outreach", "decline_thank_you": "outreach", "reply_drafts": "outreach",
             "jev_inbox_suggestions": "applications", "application_mail": "applications", "resume_variant_pick": "applications",
             "application_silence": "applications", "archive_silent_applications": "applications", "apply_agent": "applications",
             "apply_agent_lever": "applications", "apply_lever_resume_upload": "applications",
@@ -48,6 +48,7 @@ class RegistryTests(unittest.TestCase):
             "application.deadline", "application.capture_proposal",  # application mail
             "outreach.status", "outreach.follow_up_draft", "resume.pick",  # internal automation
             "outreach.thank_you",  # the thank-you after a decline
+            "outreach.reply_draft",  # the student's answer to a reply, waiting for their approval
         })
         self.assertEqual({key for key in automation.HANDLERS if not automation.undoable(key)},
                          {"application.capture_proposal", "outreach.thank_you"}, "an email that went cannot be taken back")
@@ -69,7 +70,7 @@ class BootstrapTests(unittest.TestCase):
         bootstrap.register_all()  # harmless to repeat
         self.assertEqual(sorted(automation.HANDLERS), sorted([
             "application.stage", "opportunity.intent", "application.task", "outreach.status", "outreach.follow_up_draft",
-            "resume.pick", "outreach.thank_you", "application.deadline", "application.capture_proposal",
+            "resume.pick", "outreach.thank_you", "application.deadline", "application.capture_proposal", "outreach.reply_draft",
         ]))
         self.assertEqual(sorted(automation.BREAKER_GROUPS), ["application_mail", "decline_thank_you"])
         self.assertEqual(sorted(automation.CORRECTIONS), ["application_mail"])

@@ -1232,6 +1232,7 @@ class WorkstreamBOutreachLeafTests(unittest.TestCase):
             "follow_up": "PIPELINE_OUTREACH_FOLLOW_UP_PROVIDER",
             "call_prep": "PIPELINE_OUTREACH_CALL_PREP_PROVIDER",
             "thank_you": "PIPELINE_OUTREACH_THANK_YOU_PROVIDER",
+            "reply": "PIPELINE_OUTREACH_REPLY_PROVIDER",
         })
 
     def test_answers_are_matched_to_targets_by_name_and_the_unanswered_come_back_in_batch_order(self):

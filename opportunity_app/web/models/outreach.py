@@ -78,6 +78,24 @@ class OutreachThankYouSendRequest(BaseModel):
     sent_folder_check: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
 
 
+class OutreachReplyDraftRequest(BaseModel):
+    # Notes on the current reply, for a rewrite; never a source.
+    comments: str = Field(default="", max_length=MAX_DRAFT_COMMENT_CHARS)
+    # None: the open draft's own purpose, else a revisit note when the revisit date has come, else an answer.
+    purpose: Literal["answer", "revisit"] | None = None
+
+
+class OutreachReplyEditRequest(BaseModel):
+    subject: str = Field(min_length=1, max_length=300)
+    body: str = Field(min_length=1, max_length=20_000)
+    # The reply the card showed when the student started editing.
+    fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class OutreachReplyApproveRequest(BaseModel):
+    fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class OutreachSendRequest(BaseModel):
     kind: Literal["initial", "follow_up"] = "initial"
     # The approved draft the student confirmed; a draft changed since is not sent.
@@ -147,6 +165,7 @@ class OutreachSettingsRequest(BaseModel):
     follow_up_provider: str | None = Field(default=None, max_length=40)
     call_prep_provider: str | None = Field(default=None, max_length=40)
     thank_you_provider: str | None = Field(default=None, max_length=40)
+    reply_provider: str | None = Field(default=None, max_length=40)
     review_provider: str | None = Field(default=None, max_length=40)
     research_agent: str | None = Field(default=None, max_length=40)
     company_research_agent: str | None = Field(default=None, max_length=40)

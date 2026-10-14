@@ -160,7 +160,8 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
         | _pkg(
             "outreach",
             "gmail gmail_sends delivery inbox labels schedule thank_you reply_senders automation recontact review call_prep "
-            "call_questions forms discovery research quote_check drafting draft_location interviewer email_search locate company_profile settings",
+            "call_questions forms discovery research quote_check drafting draft_location interviewer email_search locate company_profile settings "
+            "reply_writing reply_drafts",
         )
     ),
     # L5 entry points: the top-level commands and the composition root (api, bootstrap, launch, worker, daily, migrate, ops_cli,
@@ -178,7 +179,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
         | _pkg(
             "web.routers",
             ". account admin agent applications apply_agent apply_sessions automation captures connections dossier employer "
-            "extension market opportunities outreach_contacts outreach_delivery outreach_drafting outreach_research "
+            "extension market opportunities outreach_contacts outreach_delivery outreach_drafting outreach_replies outreach_research "
             "outreach_settings outreach_targets pages preparation resumes session system typesafe urgent",
         )
     ),

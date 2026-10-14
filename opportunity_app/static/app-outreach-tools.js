@@ -533,6 +533,9 @@
     const thanksField = followingField("thank_you_provider", "settings-thank-you-provider", "Who writes thank-yous after a decline",
       "Used when \"Send a thank-you when someone declines\" is on. Plain rules check every one, and the reviewer below reads it before it goes.",
       "Thank-you writer");
+    const replyField = followingField("reply_provider", "settings-reply-provider", "Who writes replies",
+      "Your answers to companies that write back, and the note for a revisit date. Each waits for your approval and your Send.",
+      "Reply writer");
 
     const review = settings.review_provider;
     const [reviewField, reviewSelect] = selectField("settings-review-provider", "Who reviews follow-ups and thank-yous",
@@ -634,7 +637,7 @@
 
     const writing = settingsSection("Writing and review",
       "Saved to this computer's .env and used right away; no restart needed. API keys stay in .env and are never shown here.");
-    writing.append(draftField, followField, thanksField, reviewField, attachField);
+    writing.append(draftField, followField, replyField, thanksField, reviewField, attachField);
     const researching = settingsSection("Research and call prep", "Saved to .env too.");
     researching.append(researchField, companyResearchField, prepField, linkedinField);
     // One save line for both sections, pinned to the bottom of the screen so it shows wherever the change was made.

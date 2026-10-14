@@ -47,7 +47,7 @@ import httpx
 
 from ..apply import runs as apply_runs, watch as apply_watch
 from ..automation import ledger as automation, internal as internal_automation
-from . import thank_you as outreach_thank_you
+from . import reply_drafts as outreach_reply_drafts, thank_you as outreach_thank_you
 from ..automation.background import PollingWorker, record_health_quietly, step_error
 from ..core.database import rollback_quietly, connect_product
 from .targets import approve_draft, get_target, heard_back, latest_event_stamp, list_targets, log_event, withdraw_auto_approval
@@ -372,6 +372,8 @@ class AutomationWorker(PollingWorker):
     one follow-up draft, and the daily archive of silent applications. Then
     the thank-yous after a plain decline (outreach_thank_you): up to three
     written and scheduled; the scheduled sends above send them when due.
+    Then the student's answers to replies and revisit notes (outreach_reply_drafts):
+    up to two written for the student to approve; nothing is sent.
     Then Apply for me's upkeep (apply_runs.run_worker_step), which needs no
     switch: a student who turned it off still has an application a stopped
     server left mid-submit finished, and once a local day their old
@@ -449,7 +451,9 @@ class AutomationWorker(PollingWorker):
                     )
                 except Exception as exc:  # noqa: BLE001 - the other steps still run, and the failure is recorded
                     _step_failed(conn, errors, due_users, exc, "Scheduled emails were not sent")
-            users = self._users_with(conn, (*SETTINGS, *internal_automation.WORKER_FEATURES, *outreach_thank_you.WORKER_FEATURES))
+            users = self._users_with(conn, (
+                *SETTINGS, *internal_automation.WORKER_FEATURES, *outreach_thank_you.WORKER_FEATURES, *outreach_reply_drafts.WORKER_FEATURES,
+            ))
             for user_id in users:
                 try:
                     self._run_for(conn, user_id, report)
@@ -467,6 +471,14 @@ class AutomationWorker(PollingWorker):
                 try:
                     # A thank-you after a plain decline, written and scheduled; sent above when due.
                     outreach_thank_you.run_for_user(conn, user_id, report, provider_factory=self._provider_factory)
+                except Exception as exc:  # noqa: BLE001 - recorded like any other step's failure
+                    _step_failed(conn, errors, [user_id], exc)
+                try:
+                    # Answers to replies and revisit notes, written for the student to approve; nothing is sent here.
+                    outreach_reply_drafts.run_for_user(
+                        conn, user_id, report, provider_factory=self._provider_factory, provider=self._draft_provider,
+                        gmail_client_factory=self._gmail_client_factory,
+                    )
                 except Exception as exc:  # noqa: BLE001 - recorded like any other step's failure
                     _step_failed(conn, errors, [user_id], exc)
             try:

@@ -28,6 +28,7 @@ ALLOWED_PROFILE_FIELDS = {
     "preferred_locations",
     "regions",
     "break_location",
+    "break_times",
     "greeting_word",
     "unnamed_greeting",
     "out_of_region_penalty",
@@ -270,7 +271,7 @@ def get_profile(conn: sqlite3.Connection, *, user_id: str) -> dict[str, Any]:
 # Every field a web save may set, and the JSON types it may hold. Scoring and
 # the outreach tools read these, so a wrong type must be refused before it is
 # stored rather than coerced into a value the student never gave.
-_TEXT_FIELDS = ("name", "school", "degree", "break_location", "summary", "greeting_word", "unnamed_greeting")
+_TEXT_FIELDS = ("name", "school", "degree", "break_location", "break_times", "summary", "greeting_word", "unnamed_greeting")
 _TEXT_LIST_FIELDS = (
     "degree_keywords",
     "preferred_role_types",

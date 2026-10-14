@@ -29,11 +29,13 @@ import threading
 from .applications import inbox as application_inbox
 from .apply import runs as apply_runs
 from .automation import triage as auto_triage, handlers as automation_handlers
-from .outreach import thank_you as outreach_thank_you
+from .outreach import reply_drafts as outreach_reply_drafts, thank_you as outreach_thank_you
 from .student import resume_variants
 
 # In the order they are filled. Each is a module with a ``register()`` function.
-_REGISTRANTS = (automation_handlers, application_inbox, outreach_thank_you, auto_triage, resume_variants, apply_runs)
+_REGISTRANTS = (
+    automation_handlers, application_inbox, outreach_thank_you, outreach_reply_drafts, auto_triage, resume_variants, apply_runs,
+)
 
 _LOCK = threading.Lock()
 _registered = False

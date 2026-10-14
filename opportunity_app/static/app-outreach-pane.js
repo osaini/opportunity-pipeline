@@ -40,6 +40,9 @@
   // From app-outreach-tools.js.
   const { outreachAppliedDirectly, outreachSetAside } = App;
 
+  // From app-outreach-reply.js.
+  const { outreachAnswerNextStep, outreachAnswerPanel, outreachHasAnswer } = App;
+
   // Defined in files that load later; looked up when called.
   const loadOutreach = (...args) => App.loadOutreach(...args);
 
@@ -115,7 +118,9 @@
       const one = item.possible_reply_count === 1;
       return { label: one ? "Check a possible reply" : "Check possible replies", hint: `${one ? "An email" : "Emails"} from them may be a reply. Say whether ${one ? "it is" : "each is"} on the card; follow-ups wait until you do.`, tab: null, tone: "is-warning" };
     }
-    if (item.revisit_due) return { label: "Get back in touch", hint: `You planned to revisit on ${formatCalendarDate(item.follow_up_at)}. Write to them, then log it here.`, tab: "history", tone: "is-warning" };
+    const answer = outreachAnswerNextStep(item);
+    if (answer) return answer;
+    if (item.revisit_due) return { label: "Get back in touch", hint: `You planned to revisit on ${formatCalendarDate(item.follow_up_at)}. Write the note to send them under Your reply.`, tab: "answer", tone: "is-warning" };
     if (item.status === "paused") {
       return item.follow_up_at
         ? { label: `Paused until ${formatCalendarDate(item.follow_up_at)}`, hint: "It comes back under Revisits due on that day.", tab: null }
@@ -186,10 +191,12 @@
   // A follow-up has somewhere to go once the first email is out, and keeps it while one is written.
   const outreachHasFollowUp = (item) => item.status === "sent" || item.status === "followed_up" || Boolean(item.follow_up_body);
 
-  // Call prep appears once a company writes back, and stays while it holds notes.
+  // Call prep appears once a company writes back, and stays while it holds notes. Your reply appears once there is
+  // a reply to answer or a revisit date has come.
   function outreachPaneTabs(item) {
     const tabs = OUTREACH_PANE_TABS.filter(([id]) => id !== "follow-up" || outreachHasFollowUp(item));
-    return OUTREACH_CALL_PREP.includes(item.status) || item.call_prep ? [["prep", "Call prep"], ...tabs] : tabs;
+    const answer = outreachHasAnswer(item) ? [["answer", "Your reply"]] : [];
+    return OUTREACH_CALL_PREP.includes(item.status) || item.call_prep ? [["prep", "Call prep"], ...answer, ...tabs] : [...answer, ...tabs];
   }
 
   // The tab a company opens on: the one you last used for it, else where its next step lives.
@@ -197,6 +204,7 @@
     const tabs = outreachPaneTabs(item).map(([id]) => id);
     const remembered = state.outreachTabs[item.id];
     if (remembered && tabs.includes(remembered)) return remembered;
+    if (tabs.includes("answer") && outreachAnswerNextStep(item)) return "answer";
     if (tabs.includes("prep")) return "prep";
     return item.contact_email || item.contact_form ? "draft" : "contact";
   }
@@ -1543,6 +1551,11 @@
       const prepPanel = panel("prep");
       prepPanel.appendChild(outreachCallPrep(item));
       prepPanels.push(prepPanel);
+    }
+    if (tabNames.answer) {
+      const answerPanel = panel("answer");
+      answerPanel.appendChild(outreachAnswerPanel(item));
+      prepPanels.push(answerPanel);
     }
     form.append(...prepPanels, draftPanel, ...followUpPanels, researchPanel, contactPanel, timingPanel, historyPanel, footer);
     loadOutreachTimeline(item.id, timelineBody, timelineCount);

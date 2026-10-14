@@ -3,7 +3,9 @@
 # pipeline, the CLI, and the existing unittest suite never import any of these.
 pytest>=9.0.3,<10
 pytest-playwright>=0.7,<1
-playwright>=1.50,<2
+# Pinned: under 1.64 two contact-form Finish in browser tests fail on Linux (docs/known-defects.md,
+# "Under Playwright 1.64 ..."). Lift the pin with that entry once they pass on the newer release.
+playwright==1.63.0
 
 # Accessibility: bundles axe-core and injects it into the live page, so scans do
 # not depend on a CDN at test time.

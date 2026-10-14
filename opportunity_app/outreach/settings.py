@@ -3,9 +3,10 @@
 None of these values is secret:
 
 - PIPELINE_OUTREACH_PROVIDER: who writes first-email drafts.
-- PIPELINE_OUTREACH_FOLLOW_UP_PROVIDER, PIPELINE_OUTREACH_CALL_PREP_PROVIDER and
-  PIPELINE_OUTREACH_THANK_YOU_PROVIDER: who writes follow-ups, call prep, and
-  the thank-you after a decline; empty means the same as first emails.
+- PIPELINE_OUTREACH_FOLLOW_UP_PROVIDER, PIPELINE_OUTREACH_CALL_PREP_PROVIDER,
+  PIPELINE_OUTREACH_THANK_YOU_PROVIDER and PIPELINE_OUTREACH_REPLY_PROVIDER: who
+  writes follow-ups, call prep, the thank-you after a decline, and the student's
+  answers to replies; empty means the same as first emails.
 - PIPELINE_OUTREACH_REVIEW_PROVIDER: who reviews a follow-up, or a thank-you
   after a decline, before it goes; empty means automatic
   (outreach_review.review_choice, per purpose).
@@ -43,6 +44,7 @@ from .config import (
     DRAFT_ENV,
     FOLLOW_UP_ENV,
     LINKEDIN_ENV,
+    REPLY_ENV,
     RESEARCH_ENV,
     REVIEW_ENV,
     THANK_YOU_ENV,
@@ -54,7 +56,10 @@ from .review import review_choice
 from ..student.resumes import DEFAULT_STORAGE, ResumeNotFoundError, list_resumes, resume_file_path
 
 # Writers that fall back to the first-email setting when left empty.
-FOLLOWING_DRAFTS = {"follow_up_provider": FOLLOW_UP_ENV, "call_prep_provider": CALL_PREP_ENV, "thank_you_provider": THANK_YOU_ENV}
+FOLLOWING_DRAFTS = {
+    "follow_up_provider": FOLLOW_UP_ENV, "call_prep_provider": CALL_PREP_ENV, "thank_you_provider": THANK_YOU_ENV,
+    "reply_provider": REPLY_ENV,
+}
 RESEARCH_AGENTS = ("claude-code", "codex-cli")
 # What the research pickers show beside an installed Codex that may not read the web yet, in place of "not set up".
 CODEX_NEEDS_OPT_IN = "needs the .env opt-in"

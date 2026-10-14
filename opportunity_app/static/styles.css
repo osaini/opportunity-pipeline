@@ -1096,6 +1096,18 @@ details.apply-plan-group .reason-list .profile-help { margin: 2px 0 0; }
 .outreach-thank-you-text pre { white-space: pre-wrap; }
 .outreach-thank-you-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .outreach-thank-you-actions:empty { display: none; }
+/* Your reply: the student's answer to a company's reply, or the note for a revisit date (app-outreach-reply.js). */
+.outreach-answer { display: grid; gap: 8px; max-width: 78ch; }
+.outreach-answer > h4, .outreach-answer .outreach-fit, .outreach-answer .outreach-note, .outreach-answer .outreach-research-warning { margin: 0; }
+.outreach-answer-editor { display: grid; gap: 8px; }
+.outreach-answer-body { min-height: 220px; }
+.outreach-answer-tags, .outreach-answer-revisit { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.outreach-answer-revisit .outreach-fit { flex: 1 1 24ch; }
+.outreach-answer-rewrite { display: grid; gap: 6px; margin-top: 4px; }
+.outreach-answer-rewrite > .secondary-button { justify-self: start; }
+.outreach-answer-sent { margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font: inherit; white-space: pre-wrap; }
+.outreach-answer-claims summary { cursor: pointer; color: var(--ink-muted); font-size: 12px; }
+.outreach-answer-claims ul { margin: 6px 0 0; padding-left: 18px; color: var(--ink-muted); font-size: 12px; }
 .outreach-possible-replies { display: grid; gap: 8px; max-width: 70ch; margin: 8px 0 0; }
 .outreach-possible-reply { padding: 8px 10px; border: 1px solid var(--warn-line); border-left: 3px solid var(--gold); border-radius: var(--radius-sm); background: var(--warn-panel); }
 .outreach-possible-reply-head { margin: 0; color: var(--ink); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }

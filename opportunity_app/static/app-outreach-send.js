@@ -130,6 +130,16 @@
     auto_follow_up_draft_failed: "Automatic follow-up draft failed",
     draft_restored: "Earlier draft restored",
     follow_up_restored: "Earlier follow-up restored",
+    reply_draft_written: "Your reply drafted",
+    reply_draft_failed: "Your reply could not be drafted",
+    reply_draft_edited: "Your reply edited",
+    reply_draft_approved: "Your reply approved",
+    reply_draft_dismissed: "Your reply dismissed",
+    reply_draft_stale: "Your reply left behind: they wrote again",
+    reply_draft_skipped: "No reply drafted",
+    reply_sent: "Your reply sent",
+    reply_gmail_draft_created: "Your reply put in Gmail Drafts",
+    revisit_date_from_reply: "Revisit date set from their reply",
     // Named apart from an ordinary "location recorded" on purpose: this is what
     // an import file claimed and the tracker refused, not what it accepted.
     location_import_claim: "Import file's unverified location claim",

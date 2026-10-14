@@ -100,6 +100,30 @@ bounce resend check first.
    back as due. Paste a reply into **Log a reply** to get a suggested status
    (call, declined, come back later); nothing changes until you click it. After
    a follow-up goes unanswered for 14 days, the card suggests No response.
+6. **Answer their reply.** Once a company writes back, the card gets a **Your
+   reply** tab. **Write a reply** drafts your answer from your confirmed
+   profile and the thread; with **Draft answers to replies** on (Outreach
+   settings → Automation) one is waiting there whenever a person replies within
+   the last three weeks. What it says follows what they wrote: thanks and their
+   timing for "get back in touch later", the one door a decline left open, a
+   call they offered (your times are left as `[your availability]`), or an
+   answer to their question (anything only you know is left in brackets).
+   If they asked you to do something, such as apply through their site, it says
+   you will. A company near your home (Profile → **Home during breaks and
+   summers**) gets a line saying when you're there (**When you're home**, such
+   as "over winter break") and that you'd like to meet in person; one near your
+   school's region gets the same for the school year. Every statement must rest
+   on your profile, the company's research or the thread, and a number, a day or
+   a time you did not give is refused. When their reply names a time to get back
+   in touch ("around March"), the tab shows their words and offers it as the
+   revisit date, and on that date the app writes the note to send them. Nothing
+   is sent on its own: **Approve** refuses while a bracket is left, and **Send**
+   asks you to confirm the recipient first. It goes in their Gmail thread, to
+   whoever wrote and anyone else on their reply, and is refused if they wrote
+   again, if you already answered in Gmail, or if anything else went to them
+   since. **Put in Gmail Drafts** moves it to your Gmail to finish there instead.
+   Offers, plain declines the thank-you answers, and replies you already answered
+   in Gmail get no draft.
 
 **Not interested.** A company you no longer want to pursue gets **Not
 interested** on its card. It moves to the Not interested tab and leaves every
@@ -128,6 +152,7 @@ PIPELINE_OUTREACH_PROVIDER=claude-code     # optional first-email writer; defaul
 PIPELINE_OUTREACH_FOLLOW_UP_PROVIDER=      # optional follow-up writer; empty = same as first emails
 PIPELINE_OUTREACH_CALL_PREP_PROVIDER=      # optional call prep writer; empty = same as first emails
 PIPELINE_OUTREACH_THANK_YOU_PROVIDER=      # optional writer of the thank-you after a decline; empty = same as first emails
+PIPELINE_OUTREACH_REPLY_PROVIDER=          # optional writer of your answers to replies; empty = same as first emails
 PIPELINE_OUTREACH_REVIEW_PROVIDER=         # optional reviewer of follow-ups and thank-yous; empty = automatic
 PIPELINE_OUTREACH_DISCOVERY_PROVIDER=claude-code  # or codex-cli: deep search, locating, Find people (codex-cli needs the next line)
 PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX=    # 1 lets Codex read the web for those and for company research; blank = Claude Code does them

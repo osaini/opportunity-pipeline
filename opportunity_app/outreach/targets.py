@@ -40,7 +40,7 @@ from .location import (
     user_regions,
 )
 from .replies import BOUNCED, bounce_notice, reply_reason, suggest_reply_status
-from ..core.timestamps import utc_now
+from ..core.timestamps import parse_app_instant, utc_now
 from ..integrations.typesafe_decisions import DecisionClient
 from ..core.user_time import user_timezone
 from ..integrations.web_fetch import public_web_url_error
@@ -711,6 +711,75 @@ def _thank_yous(conn: sqlite3.Connection, user_id: str, target_id: str | None = 
     return found
 
 
+def latest_reply_ids(conn: sqlite3.Connection, user_id: str, target_id: str | None = None) -> dict[str, str]:
+    """Each company's latest logged reply, by when it arrived: its Gmail id, or the event's id for a pasted one.
+
+    The answer the student is drafting (outreach/reply_drafts.py) is to this reply; a newer one leaves it behind.
+    Ordered as outreach_thank_you.replies orders them: by arrival (Gmail's time, else when it was logged), then by
+    when it was logged.
+    """
+    sql = "SELECT id, target_id, detail_json, created_at FROM outreach_events WHERE user_id=? AND event_type='reply_logged'"
+    params: list[Any] = [user_id]
+    if target_id:
+        sql += " AND target_id=?"
+        params.append(target_id)
+    latest: dict[str, tuple[Any, str, str]] = {}
+    for row in conn.execute(sql, params).fetchall():
+        try:
+            data = json.loads(row["detail_json"] or "{}")
+        except (TypeError, ValueError):
+            data = {}
+        data = data if isinstance(data, dict) else {}
+        at = parse_app_instant(data.get("received_at")) or parse_app_instant(row["created_at"])
+        if at is None:
+            continue
+        key = (at, str(row["created_at"]))
+        ident = str(data.get("gmail_id") or "") or str(row["id"])
+        if row["target_id"] not in latest or key > latest[row["target_id"]][:2]:
+            latest[row["target_id"]] = (*key, ident)
+    return {target: value[2] for target, value in latest.items()}
+
+
+# The card's words for an answer that is no longer to their latest message.
+REPLY_DRAFT_BEHIND = "They wrote again since this was written, so it answers an older message"
+_REPLY_DRAFT_FIELDS = (
+    "state", "purpose", "reading", "to_email", "to_name", "cc", "subject", "body", "generated_by", "comments",
+    "revisit_on", "revisit_said", "revisit_for", "note", "fingerprint", "thread_id", "reply_gmail_id", "approved_at",
+    "sent_at", "created_at", "updated_at",
+)
+
+
+def _reply_drafts(conn: sqlite3.Connection, user_id: str, target_id: str | None = None) -> dict[str, dict[str, Any]]:
+    """The answer to each company's reply the student is working on (outreach/reply_drafts.py), as its card shows it.
+
+    ``behind`` says an answer still open was written for an older message than their latest; the card offers to write
+    it again, and approving or sending it is refused (outreach_reply_drafts checks again on its own).
+    """
+    sql = f"SELECT target_id, claims_json, {', '.join(_REPLY_DRAFT_FIELDS)} FROM outreach_reply_drafts WHERE user_id=?"
+    params: list[Any] = [user_id]
+    if target_id:
+        sql += " AND target_id=?"
+        params.append(target_id)
+    rows = conn.execute(sql, params).fetchall()
+    if not rows:
+        return {}
+    latest = latest_reply_ids(conn, user_id, target_id)
+    found: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        item = {key: row[key] for key in _REPLY_DRAFT_FIELDS}
+        try:
+            item["claims"] = json.loads(row["claims_json"] or "[]")
+        except (TypeError, ValueError):
+            item["claims"] = []
+        item["to_first_name"] = contact_first_name(row["to_name"] or "")
+        item["checks"] = draft_checks(row["subject"] or "", row["body"] or "")
+        newest = latest.get(row["target_id"], "")
+        item["behind"] = bool(row["state"] in ("generated", "approved") and newest and newest != row["reply_gmail_id"])
+        item["thread_url"] = _gmail_link(f"all/{quote(row['thread_id'])}") if row["thread_id"] else ""
+        found[row["target_id"]] = item
+    return found
+
+
 def cancel_schedules(conn: sqlite3.Connection, target_id: str, user_id: str, kinds: list[str], reason: str) -> None:
     """Stop a scheduled send whose approved draft no longer stands. Runs inside the caller's transaction."""
     for kind in kinds:
@@ -871,11 +940,12 @@ def list_targets(
     home = user_home(conn, user_id, regions)
     schedules = _schedules(conn, user_id)
     thank_yous = _thank_yous(conn, user_id)
+    answers = _reply_drafts(conn, user_id)
     possible = _possible_replies(conn, user_id)
     found = _gmail_replies(conn, user_id)
     return [
         {**_record(row, today, regions, home, possible.get(row["id"]), found.get(row["id"])), "scheduled": schedules.get(row["id"], {}),
-         "thank_you": thank_yous.get(row["id"])}
+         "thank_you": thank_yous.get(row["id"]), "reply_draft": answers.get(row["id"])}
         for row in rows
     ]
 
@@ -934,6 +1004,7 @@ def get_target(
     )
     item["scheduled"] = _schedules(conn, user_id, target_id).get(target_id, {})
     item["thank_you"] = _thank_yous(conn, user_id, target_id).get(target_id)
+    item["reply_draft"] = _reply_drafts(conn, user_id, target_id).get(target_id)
     if include_events:
         item["events"] = [
             dict(event)

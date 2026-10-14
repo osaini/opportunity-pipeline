@@ -10,12 +10,14 @@ the separate read-only monitoring connection (the "google" provider). Its read s
 is what every read of the student's outreach mailbox uses: bounce notices (outreach/delivery.py),
 replies (outreach/inbox.py), job-application mail (applications/inbox.py), sends made in Gmail
 itself (outreach/gmail_sends.py), the thread check before a thank-you (outreach/thank_you.py), and
-the read-only agent mailbox reader (scripts/pipeline_mailbox.py). Its gmail.modify scope is only for
+the read-only agent mailbox reader (scripts/pipeline_mailbox.py), and the thread check before the student's answer to
+a reply goes (outreach/reply_drafts.py). Its gmail.modify scope is only for
 adding the student's label to outreach threads, sent mail and replies (outreach/labels.py); the
 app never uses it to remove a label, trash, archive or mark mail read.
 
 The authorized REST client, its rate limits and its health are in gmail_connection; the once-only claim ledger is in
-send_claims. This module is the outreach send workflow on top of both: drafts, sends, thank-yous and notices.
+send_claims. This module is the outreach send workflow on top of both: drafts, sends, thank-yous and notices, and the
+pieces the student's answer to a reply is sent with (outreach/reply_drafts.py holds that workflow).
 """
 
 from __future__ import annotations
@@ -185,7 +187,7 @@ def _mime(account: str, to: str, subject: str, body: str, attachment: Path | Non
     return base64.urlsafe_b64encode(message.as_bytes()).decode()
 
 
-def _sent_folder_check(reasons: dict[str, str]) -> str:
+def folder_check(reasons: dict[str, str]) -> str:
     """What the student vouches for by checking their Sent folder: a hash of exactly these reasons, echoed back to send again.
 
     The client keeps it between the two clicks, so the formula must never change.
@@ -268,7 +270,7 @@ class _Approved:
         return previous if _draft_still_there(gmail, previous["draft_id"]) else None
 
 
-def _require_account(gmail: GmailClient, account: str) -> None:
+def require_account(gmail: GmailClient, account: str) -> None:
     if not account:
         return
     profile = gmail.request("GET", "/profile")
@@ -426,7 +428,7 @@ def _approved_for(
     return approved
 
 
-def _post_under_claim(
+def post_under_claim(
     conn: sqlite3.Connection, gmail: GmailClient, target_id: str, kind: str, token: str,
     path: str, payload: dict[str, Any], *, refused: str, uncertain: str,
 ) -> dict[str, Any]:
@@ -499,7 +501,7 @@ def create_gmail_draft(
             try:
                 # The student asked for this draft, so its checks go to Gmail even while background reads wait.
                 gmail = GmailClient(conn, client, user_id, wait_out_backoff=False)
-                _require_account(gmail, account)
+                require_account(gmail, account)
                 previous = approved.live_draft(conn, gmail, user_id)
                 raw = None if previous else approved.raw(account)
             except BaseException:
@@ -509,7 +511,7 @@ def create_gmail_draft(
                 settle_send_claim(conn, target_id, kind, token, None)
                 public = _public_draft(previous)
                 return {**public, "url": draft_url(account, previous["message_id"]), "reused": True}
-            created = _post_under_claim(
+            created = post_under_claim(
                 conn, gmail, target_id, kind, token, "/drafts", {"message": {"raw": raw}},
                 refused="Gmail did not create the draft",
                 uncertain="the draft may be in your Gmail Drafts. Check Drafts before trying again",
@@ -579,7 +581,7 @@ def send_gmail_message(
         gmail = GmailClient(conn, client, user_id, wait_out_backoff=False)
         # Everything read from Gmail is read before the claim, so the claim is
         # held only across the one call that sends.
-        _require_account(gmail, account)
+        require_account(gmail, account)
         drafts = _draft_events(conn, target_id, user_id, kind)
         for _event_id, detail in drafts:
             if _draft_still_there(gmail, detail["draft_id"]):
@@ -589,7 +591,7 @@ def send_gmail_message(
                 )
             reasons[f"draft:{detail['draft_id']}"] = _DRAFT_VANISHED
         if reasons:
-            check = _sent_folder_check(reasons)
+            check = folder_check(reasons)
             if sent_folder_check != check:
                 raise SendNeedsCheckError(" ".join(dict.fromkeys(reasons.values())), check)
         seen = [event_id for event_id, _detail in drafts]
@@ -601,7 +603,7 @@ def send_gmail_message(
             return fresh, fresh.raw(account)
 
         with claimed_send(conn, target_id, user_id, kind, "send", revalidate, stale_token=stale_token) as (token, (approved, raw)):
-            sent = _post_under_claim(
+            sent = post_under_claim(
                 conn, gmail, target_id, kind, token, "/messages/send", {"raw": raw},
                 refused="Gmail did not send the email",
                 uncertain="it may have gone out. Check your Gmail Sent folder before sending again",
@@ -749,20 +751,20 @@ def send_thank_you(
             raise ValueError("The thank-you was already sent from Gmail")
         reasons[f"claim:{stale_token}"] = _thank_you_claim_reason(existing)
     if reasons:
-        check = _sent_folder_check(reasons)
+        check = folder_check(reasons)
         if automatic or sent_folder_check != check:
             raise SendNeedsCheckError(" ".join(dict.fromkeys(reasons.values())), check)
     account = sender_account()
     with client_factory() as client:
         gmail = GmailClient(conn, client, user_id, wait_out_backoff=False)
-        _require_account(gmail, account)
+        require_account(gmail, account)
 
         def revalidate() -> tuple[dict[str, Any], str]:
             fresh = _thank_you_ready(conn, target_id, user_id, fingerprint, states)
             return fresh, thank_you_mime(account, fresh)
 
         with claimed_send(conn, target_id, user_id, THANK_YOU_KIND, "send", revalidate, stale_token=stale_token) as (token, (row, raw)):
-            sent = _post_under_claim(
+            sent = post_under_claim(
                 conn, gmail, target_id, THANK_YOU_KIND, token, "/messages/send", {"raw": raw, "threadId": row["thread_id"]},
                 refused="Gmail did not send the thank-you",
                 uncertain="it may have gone out. Check your Gmail Sent folder before sending it again",
@@ -829,12 +831,12 @@ def create_thank_you_draft(
             try:
                 # The student asked for this draft, so its checks go to Gmail even while background reads wait.
                 gmail = GmailClient(conn, client, user_id, wait_out_backoff=False)
-                _require_account(gmail, account)
+                require_account(gmail, account)
                 raw = thank_you_mime(account, fresh)
             except BaseException:
                 settle_send_claim(conn, target_id, THANK_YOU_KIND, token, None)
                 raise
-            created = _post_under_claim(
+            created = post_under_claim(
                 conn, gmail, target_id, THANK_YOU_KIND, token, "/drafts", {"message": {"raw": raw, "threadId": fresh["thread_id"]}},
                 refused="Gmail did not create the draft",
                 uncertain="the draft may be in your Gmail Drafts. Check Drafts before trying again",
@@ -853,6 +855,46 @@ def create_thank_you_draft(
                 settle_send_claim(conn, target_id, THANK_YOU_KIND, token, "unconfirmed")
                 raise
     return {**detail, "url": draft_url(account, detail["message_id"])}
+
+
+# --- The student's answer to a reply ------------------------------------------------
+#
+# Written for the student to approve (outreach/reply_drafts.py), and sent only by their own confirmed Send. Like the
+# thank-you it answers in their thread (threadId, with In-Reply-To and References set to their Message-ID) when the
+# reply was read from Gmail, plain text with its HTML twin and no attachment. Each written draft has its own claim kind
+# (REPLY_KIND_PREFIX + draft_id), so each goes out at most once while a company can be answered more than once.
+
+REPLY_KIND_PREFIX = "reply:"
+REPLY_SENT_EVENT = "reply_sent"
+REPLY_GMAIL_DRAFT_EVENT = "reply_gmail_draft_created"
+
+
+def reply_claim_kind(draft_id: str) -> str:
+    return f"{REPLY_KIND_PREFIX}{draft_id}"
+
+
+def reply_fingerprint(to_email: str, cc: str, subject: str, body: str, reply_message_id: str, thread_id: str) -> str:
+    """What an answer is: who it goes to, its words, and the message and thread it answers."""
+    fields = ["reply", str(to_email or "").casefold(), str(cc or "").casefold(), subject or "", body or "",
+              reply_message_id or "", thread_id or ""]
+    return hashlib.sha256(json.dumps(fields, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def reply_mime(account: str, row: dict[str, Any]) -> str:
+    """The answer as Gmail sends it: in their thread by its headers when it has one, plain text and HTML, no attachment."""
+    message = EmailMessage()
+    if account:
+        message["From"] = account
+    message["To"] = formataddr((row["to_name"], row["to_email"])) if row.get("to_name") else row["to_email"]
+    if row.get("cc"):
+        message["Cc"] = row["cc"]
+    message["Subject"] = row["subject"]
+    if row.get("reply_message_id"):
+        message["In-Reply-To"] = row["reply_message_id"]
+        message["References"] = row["reply_message_id"]
+    message.set_content(row["body"])
+    message.add_alternative(html_body(row["body"]), subtype="html")
+    return base64.urlsafe_b64encode(message.as_bytes()).decode()
 
 
 # --- Notices about the connection ---------------------------------------------------
